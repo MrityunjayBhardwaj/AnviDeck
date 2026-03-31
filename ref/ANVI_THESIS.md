@@ -438,7 +438,363 @@ Placing this at the top makes every subsequent section understandable in context
 
 ---
 
-## Part VI: The Meta-Insight
+## Part VI: The Context Problem — How to Keep 105k of Knowledge Available in a 40k Window
+
+### 6.1 The Problem
+
+The framework's total knowledge — global principles, project catalogues, cognitive specs, lens protocols, dharana, dhyana — totaled ~105,000 characters. Claude Code loads CLAUDE.md into every prompt. At 105k, the framework consumed most of the context window before the user even spoke.
+
+**The naive fix that failed:** Move content from inline CLAUDE.md to `@`-referenced files. This saved zero bytes. `@`-references in CLAUDE.md are expanded inline — they're syntactic sugar for "paste this file's contents here." Moving 28k of content to three `@`-referenced files kept the total identical. The "compression" was an illusion.
+
+**The fundamental tension:** The framework needs to be available (or it can't guide reasoning). But loading it all consumes the resource it's supposed to help with (context window for actual work). The knowledge must be present without being physically loaded.
+
+### 6.2 The Solution: Three-Tier Context Architecture
+
+Not all knowledge is needed at all times. The insight: **match the loading mechanism to the temporal need.**
+
+```
+TIER 1: ALWAYS LOADED (39k)
+    What: Directives (WHAT to do) + base cognitive checks
+    When: Every single prompt
+    How: CLAUDE.md files + one @-referenced base-layer.md
+    Why: These are the routing rules and reflexes. Without them,
+         Claude can't classify the activity or apply basic checks.
+
+TIER 2: PER-ACTION (variable, from disk)
+    What: Boundary-specific traps, invariants, fatality warnings
+    When: Every Write|Edit operation
+    How: PreToolUse hook reads dharana.md from disk, injects context
+    Why: The moment you change code at a dangerous boundary is when
+         you need the boundary's known patterns. Not before, not after.
+
+TIER 3: PER-ACTIVITY (variable, from Read tool)
+    What: Full diagnostic/design/review/verification protocols
+    When: When the activity type is identified (debugging, planning, etc.)
+    How: Context Routing Protocol in CLAUDE.md classifies the message,
+         then Claude reads the relevant spec files before responding
+    Why: The full lens chaining protocol is only needed when debugging.
+         The full design chain is only needed when planning. Loading both
+         for a typo fix wastes context.
+```
+
+**The math:**
+
+| Loading pattern | Per-prompt cost | Content available |
+|----------------|----------------|-------------------|
+| Everything always loaded | 105k (exceeds limit) | 100% always |
+| Three-tier | 39k base + 0-25k on demand | 100% when relevant |
+| Vanilla Claude | 0 | 0% (amnesic) |
+
+### 6.3 Why It's Lossless
+
+Every byte of content still exists on disk and is reachable through mechanically defined paths. The question isn't "does the content exist?" — it's "can it reach Claude when needed?"
+
+**Tier 1 guarantees routing.** The Context Routing Protocol is a table in always-loaded CLAUDE.md that maps activity types to file reads. Claude sees this table every prompt. When the user says "this is broken," Claude matches it to DIAGNOSE, reads adaptive-observation.md + diagnose.md + hetvabhasa.md, and has the full diagnostic protocol before responding.
+
+**Tier 2 guarantees per-action awareness.** The hook is a shell script. It fires mechanically on every Write|Edit. It reads dharana.md from disk — NOT from context memory. Even if context is compressed and Claude has "forgotten" earlier instructions, the hook still injects fresh boundary-specific context. It's immune to context decay by design.
+
+**Tier 3 guarantees activity-specific depth.** The routing protocol doesn't load all specs — it loads the ones relevant to THIS message. A debugging message loads diagnostic specs. A planning message loads design specs. The files are read fresh from disk using the Read tool — full content, no compression, no summarization.
+
+**The lossless proof:** For any activity type, the routing table specifies which files to read. The files exist on disk. Claude reads them via the Read tool. The full content enters the current conversation context. At no point is content summarized, truncated, or approximated. It's loaded at the right time instead of every time — same content, different loading pattern.
+
+### 6.4 The Chicken-and-Egg Problem and How It Was Solved
+
+**The problem:** Claude needs the right context to reason correctly. But Claude needs to reason to know which context it needs. Context must be loaded BEFORE reasoning. But the loading decision IS reasoning.
+
+```
+Claude needs adaptive-observation.md to diagnose correctly
+    ↓ but
+Claude needs to know it's diagnosing to load adaptive-observation.md
+    ↓ but
+Knowing it's diagnosing requires reasoning about the user's message
+    ↓ but
+Reasoning about the user's message needs... the context it's trying to load
+```
+
+**Why keyword matching fails:** String matching "composition" fires on React composition, function composition, music composition, musical composition — none of which need the framework spec. The signal-to-noise ratio is unusable. Retrieval needs semantic understanding, but semantic understanding is what we're trying to provide the context FOR.
+
+**Why RAG fails:** A Graph RAG system would solve the semantic matching problem but adds 500ms-2s latency per prompt (embedding generation, vector search, document retrieval). For a local dev tool where the user expects instant response, this is unacceptable overhead.
+
+**The solution: split reasoning into two phases with different context requirements.**
+
+```
+PHASE 1: CLASSIFY (requires only the routing table — 200 chars, always loaded)
+
+    The user's message: "the audio has no snare content despite correct events"
+
+    Classification doesn't require knowing the lens chaining protocol,
+    or the boundary-pair observation spec, or the composition verification
+    steps. It requires matching the message against:
+
+    "broken, bug, failing, wrong output" → DIAGNOSE
+
+    This is pattern matching against a table. The table is 200 characters.
+    It's in always-loaded CLAUDE.md. No detail files needed.
+
+PHASE 2: LOAD + REASON (requires the activity-specific specs)
+
+    Classification says DIAGNOSE.
+    Claude reads: adaptive-observation.md, diagnose.md, hetvabhasa.md, dharana.md
+    Now has: full lens chaining protocol, all known error patterns,
+             boundary-pair observation targets, composition verification steps.
+    Reasons with complete context.
+```
+
+**Why this works:** Classification is a DIFFERENT cognitive task from reasoning. Classification needs a lookup table. Reasoning needs the full spec. By making classification trivially cheap (200-char table, always loaded), we eliminate the circular dependency. The table bridges the gap between "I need context" and "I have context."
+
+**The analogy:** A doctor doesn't need the full treatment protocol to recognize "patient presents with chest pain → cardiology." The triage table is cheap. The cardiology textbook is loaded after triage, not before. The triage table is always posted on the wall. The textbook is on the shelf. Both are available. Different loading patterns for different cognitive needs.
+
+### 6.5 The Three Enforcement Layers — Why No Single Point of Failure
+
+Each tier is mechanically independent. If one fails, the others still catch the issue.
+
+```
+TIER 1 fails (routing misclassifies the activity):
+    → Tier 2 hook still fires on Write|Edit with boundary-specific context
+    → User can explicitly invoke /anvi:debug (skill guarantees file reads)
+    → Base layer checks still run (sequence, witness, observation)
+
+TIER 2 fails (file isn't at a known boundary):
+    → Tier 1 routing already loaded the relevant diagnostic chain
+    → Tier 3 spec files are in context from activity classification
+    → Base layer generic checks still apply
+
+TIER 3 fails (no activity classified — e.g., ambiguous message):
+    → Tier 2 hook still catches boundary-specific issues on code changes
+    → Tier 1 base layer still runs generic cognitive checks
+    → User can clarify or invoke a specific /anvi: command
+
+ALL THREE fail (trivial task, no boundary, no classification):
+    → Base layer (always loaded) runs: sequence check, witness check,
+      observation check, reactivity check, completion check
+    → These generic checks catch the most common cognitive failures
+      (assuming order, reacting without diagnosing, skipping observation)
+```
+
+**Graceful degradation:**
+
+```
+Full framework   → Three tiers active, all specs loaded, hook injecting
+    ↓ (routing fails)
+Hook + base      → Boundary-specific traps on code changes + generic checks
+    ↓ (hook doesn't match)
+Base layer only  → Generic cognitive checks on every action
+    ↓ (base layer forgotten due to extreme context pressure)
+Vanilla Claude   → Standard Claude behavior, no framework
+```
+
+Each level is independently useful. The system never goes from "full framework" to "nothing." It degrades through four levels, each providing meaningful protection.
+
+### 6.6 The Technical Architecture
+
+```
+~/.claude/                              [git tracked — 10 commits]
+├── CLAUDE.md (19k)                     TIER 1: always loaded
+│   ├── Foundational principle          WHY the framework exists
+│   ├── AnviDev workflow                Development methodology
+│   ├── Domain-aligned abstractions     Boundary determination rules
+│   ├── Adaptive observation SUMMARY    Directives without mechanisms
+│   ├── Dharana/dhyana SUMMARY          Directives without mechanisms
+│   ├── Context Routing Protocol        Activity → file read table
+│   ├── Catalogue instructions          When to read/update
+│   └── 10 thinking principles          Core cognitive checks
+│
+├── anvi/cognitive-os/
+│   ├── base-layer.md (9k)              TIER 1: @-referenced, always loaded
+│   │   ├── Sequence check              Fires on every action
+│   │   ├── Witness check               Fires on every action
+│   │   ├── Completion check            Fires on every action
+│   │   ├── Observation check           Fires on every fix
+│   │   ├── Completeness check          Fires on every fix
+│   │   ├── Reactivity check            Fires on every fix
+│   │   └── Reception check             Fires on every user interaction
+│   │
+│   ├── adaptive-observation.md         TIER 3: loaded by DIAGNOSE/VERIFY
+│   │   ├── Boundary-pair observation
+│   │   ├── Lens chaining protocol
+│   │   ├── Depth resolution
+│   │   ├── Detachment rules
+│   │   ├── Lens span completeness
+│   │   ├── System lens
+│   │   ├── Composition verification
+│   │   ├── Observation grounding
+│   │   └── Design-entailed requirements
+│   │
+│   ├── dharana-spec.md                 TIER 3: loaded by PLAN/ORIENT/RESUME
+│   │   ├── Contents structure
+│   │   ├── Provenance (ORIGIN/WHY/HOW)
+│   │   ├── Instantiation routine
+│   │   ├── Promotion model
+│   │   └── Memory integration
+│   │
+│   ├── dhyana-spec.md                  TIER 3: loaded by EXECUTE/RESUME
+│   │   ├── Scoping protocol
+│   │   ├── The dhyana check
+│   │   ├── Session-level lens instantiation
+│   │   └── Hook enforcement
+│   │
+│   ├── context-rot.md                  TIER 3: loaded when context is high
+│   ├── translation.md                  TIER 3: loaded when generating output
+│   └── modes/
+│       ├── design.md                   TIER 3: loaded by PLAN
+│       ├── diagnose.md                 TIER 3: loaded by DIAGNOSE
+│       ├── review.md                   TIER 3: loaded by VERIFY
+│       └── recover.md                  TIER 3: loaded by recovery trigger
+│
+├── hooks/
+│   └── catalogue-context-injector.js   TIER 2: fires on every Write|Edit
+│       ├── Reads .anvi/dharana.md from DISK
+│       ├── Matches file path against boundary entries
+│       ├── Extracts: boundary ID, silent failures, fatality flag
+│       ├── Extracts: hetvabhasa pattern IDs referenced
+│       └── Injects as additionalContext (into conversation)
+│
+├── tools/
+│   └── anvi-dashboard.sh              System lens observation instrument
+│
+├── skills/anvi-*/SKILL.md             Each skill specifies which files to Read
+│   ├── anvi-debug       → adaptive-observation + diagnose + translation
+│   ├── anvi-plan-phase  → dharana-spec + design + translation + dharana
+│   ├── anvi-orient      → dharana-spec + dhyana-spec + dharana
+│   ├── anvi-resume-work → dhyana-spec + dharana-spec + dharana
+│   ├── anvi-verify-phase→ adaptive-observation + review + dharana
+│   └── anvi-do          → classifies then loads per activity type
+│
+├── workflows/
+│   └── do.md                          Full routing workflow (classify→load→route)
+│
+├── memory/                            Global memory (versioned)
+├── projects/*/memory/                 Per-project memory (versioned)
+└── thesis/
+    ├── ANVI_THESIS.md                 This document
+    └── CLAUDE_FULL_2026-03-31.md      Pre-compression backup
+
+
+PROJECT/.anvi/                         [per-project catalogues]
+├── hetvabhasa.md                      Error patterns (diagnostic lookup)
+├── vyapti.md                          Invariants (deductive constraints)
+├── krama.md                           Lifecycle patterns (ordering rules)
+└── dharana.md                         Project instantiation
+    ├── Boundaries (with ORIGIN/WHY/HOW)
+    ├── Invariant spans (ALIGNED/MISALIGNED)
+    ├── Lens configuration (instantiated steps)
+    ├── Organizational health (fatality test)
+    ├── Composition pairs
+    └── Observation tool inventory
+```
+
+### 6.7 The Complete End-to-End Flow
+
+```
+USER SENDS MESSAGE
+    │
+    ▼
+┌──────────────────────────────────────────────────┐
+│ TIER 1: ALWAYS IN CONTEXT (39k)                  │
+│                                                    │
+│ Claude sees: CLAUDE.md + project CLAUDE.md         │
+│            + base-layer.md                         │
+│                                                    │
+│ The Context Routing Protocol fires:                │
+│                                                    │
+│   "Is this debugging?"                             │
+│       → match: "broken/bug/failing/wrong output"   │
+│   "Is this planning?"                              │
+│       → match: "plan/design/architect/approach"    │
+│   "Is this coding?"                                │
+│       → match: "build/implement/create/code"       │
+│   "Is this verifying?"                             │
+│       → match: "verify/check/test/review"          │
+│   "Is this trivial?"                               │
+│       → match: "typo/rename/format"                │
+│                                                    │
+│ Classification: DIAGNOSE                           │
+└──────────────┬───────────────────────────────────┘
+               │
+               ▼
+┌──────────────────────────────────────────────────┐
+│ TIER 3: ACTIVITY-SPECIFIC CONTEXT LOADING        │
+│                                                    │
+│ Claude reads (via Read tool):                      │
+│   ~/.claude/anvi/cognitive-os/                     │
+│     adaptive-observation.md  (full diagnostic spec)│
+│     modes/diagnose.md        (diagnose lens chain) │
+│     translation.md           (output rules)        │
+│   .anvi/                                           │
+│     hetvabhasa.md  (check FIRST for known patterns)│
+│     dharana.md     (which boundaries are in scope) │
+│                                                    │
+│ Full context now loaded for THIS activity.          │
+└──────────────┬───────────────────────────────────┘
+               │
+               ▼
+┌──────────────────────────────────────────────────┐
+│ CLAUDE REASONS WITH FULL CONTEXT                  │
+│                                                    │
+│ Has: directives (Tier 1) + full specs (Tier 3)     │
+│     + all known error patterns + boundary info     │
+│                                                    │
+│ Follows: diagnose chain →                          │
+│   gather observations → classify problem type →    │
+│   scan boundaries (dharana-scoped) →               │
+│   compress to root cause → prove with observation  │
+│                                                    │
+│ Response includes tool calls: Write, Edit           │
+└──────────────┬───────────────────────────────────┘
+               │
+               ▼
+┌──────────────────────────────────────────────────┐
+│ TIER 2: HOOK FIRES ON WRITE|EDIT (mechanical)    │
+│                                                    │
+│ catalogue-context-injector.js:                     │
+│   1. Reads .anvi/dharana.md from DISK              │
+│   2. File being edited: AudioInterpreter.ts        │
+│   3. Matches against dharana boundaries            │
+│   4. Hit: B2 (AudioInterpreter ↔ SuperSonicBridge) │
+│   5. B2 has FATALITY flag (5 error patterns)       │
+│   6. Injects into conversation:                    │
+│      "DHYANA: editing AudioInterpreter.ts touches  │
+│       boundary B2. FATALITY — 3+ error patterns    │
+│       cluster here. Extra verification required."  │
+│                                                    │
+│ Claude now sees this injection AS WELL AS the      │
+│ Tier 3 specs it already loaded. Double coverage.   │
+└──────────────┬───────────────────────────────────┘
+               │
+               ▼
+┌──────────────────────────────────────────────────┐
+│ CODE CHANGE WITH FULL AWARENESS                   │
+│                                                    │
+│ Tier 1: Base principles + project blind spots      │
+│ Tier 2: Boundary-specific traps (mechanical)       │
+│ Tier 3: Full diagnostic protocol (activity-loaded) │
+│                                                    │
+│ After fix: observation check fires (base layer)    │
+│ After fix: catalogue update check (CLAUDE.md)      │
+│ After fix: composition check if multiple changes   │
+└──────────────────────────────────────────────────┘
+```
+
+### 6.8 Every Case Covered
+
+| Case | Tier 1 | Tier 2 | Tier 3 | Coverage |
+|------|--------|--------|--------|----------|
+| Debug a bug | Routing classifies DIAGNOSE | Hook on code changes | Full diagnostic spec loaded | Complete |
+| Plan a feature | Routing classifies PLAN | Hook if editing during plan | Full design spec loaded | Complete |
+| Implement code | Routing classifies EXECUTE | Hook on every Write/Edit | Dhyana spec loaded | Complete |
+| Verify/review | Routing classifies VERIFY | Hook on code changes | Full review spec loaded | Complete |
+| Resume session | Routing classifies RESUME | Hook on code changes | Dhyana + dharana specs loaded | Complete |
+| Fix a typo | Routing classifies TRIVIAL | Hook (silent — no boundary match) | None needed | Complete |
+| Ambiguous message | Routing uncertain | Hook still fires on code changes | User clarifies or invokes /anvi:* | Graceful |
+| Context compressed | CLAUDE.md re-loads (fresh per prompt) | Hook reads from DISK (immune) | Routing re-fires on next message | Recoverable |
+| User invokes /anvi:debug | Skill guarantees specific file reads | Hook on code changes | Skill-loaded specs | Complete |
+| Mid-session, new activity type | Routing reclassifies | Hook continues | New specs loaded for new type | Complete |
+
+**Zero gaps. Three independent mechanisms. Graceful degradation.**
+
+---
+
+## Part VII: The Meta-Insight
 
 The framework itself demonstrates its own thesis.
 
@@ -449,8 +805,11 @@ Building it was an empirical process — we discovered each mechanism through fr
 - Recurrence friction → catalogues
 - Context decay friction → hook injection
 - Dashboard friction → design-entailed requirements
+- 105k context overflow → three-tier architecture
+- Chicken-and-egg → classify-then-load protocol
+- @-reference illusion → tier separation (always vs on-demand vs mechanical)
 
-But NOW the framework is built, future work is deductive. The catalogues state what to check. Dharana instantiates where. Dhyana runs the checks continuously. The hook enforces per-action. The system lens observes itself.
+But NOW the framework is built, future work is deductive. The catalogues state what to check. Dharana instantiates where. Dhyana runs the checks continuously. The hook enforces per-action. The routing protocol ensures the right spec is loaded for the right activity. The system lens observes itself.
 
 The transition from empirical to deductive is itself the proof: building the framework was hard (empirical, discovery-driven). Using the framework is targeted (deductive, catalogue-driven). The cost curve flattened — not because the problems got easier, but because the accumulated knowledge made reasoning about them cheaper.
 
@@ -461,6 +820,8 @@ That's the thesis. Everything else is mechanism.
 ---
 
 *Written 2026-03-31. Sonic Pi Web project, framework design session.*
-*Framework repo: `~/.claude/.git` — 4 commits tracking the complete build.*
+*Framework repo: `~/.claude/.git` — 10 commits tracking the complete build.*
 *Project dharana: `artifacts/.anvi/dharana.md` — 4 boundaries, 5 invariant spans, 4 composition pairs.*
 *Active hook: `catalogue-context-injector.js` — fires on every Write|Edit.*
+*Context Routing Protocol: classifies every non-trivial message, loads activity-specific specs.*
+*Per-prompt injection: 39k (down from 105k). Full 105k available on demand. Zero information lost.*
