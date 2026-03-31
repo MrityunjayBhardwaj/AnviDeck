@@ -511,3 +511,252 @@ html, body {
   font-style: italic;
   padding: 8px 0;
 }
+
+/* Timeline bar */
+.timeline-bar {
+  flex-shrink: 0;
+  background: var(--bg-1);
+  border-top: 1px solid var(--border);
+  padding: 8px 16px 12px;
+}
+
+.timeline-empty {
+  color: var(--text-2);
+  font-style: italic;
+  text-align: center;
+  padding: 8px;
+}
+
+.timeline-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.timeline-info {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.timeline-btn {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  padding: 2px 8px;
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.timeline-btn:hover {
+  background: var(--bg-3);
+  color: var(--text-1);
+}
+
+.timeline-btn.active {
+  background: rgba(124, 140, 245, 0.2);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Range slider */
+.timeline-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  background: var(--bg-3);
+  border-radius: 2px;
+  outline: none;
+  margin-bottom: 6px;
+}
+
+.timeline-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: 2px solid var(--bg-0);
+}
+
+.timeline-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: 2px solid var(--bg-0);
+}
+
+/* Track with markers */
+.timeline-track {
+  position: relative;
+  height: 20px;
+}
+
+.timeline-filled {
+  position: absolute;
+  top: 9px;
+  left: 0;
+  height: 2px;
+  background: var(--accent-dim);
+  border-radius: 1px;
+  pointer-events: none;
+}
+
+.timeline-diff-range {
+  position: absolute;
+  top: 6px;
+  height: 8px;
+  background: rgba(124, 140, 245, 0.15);
+  border: 1px solid rgba(124, 140, 245, 0.3);
+  border-radius: 2px;
+  display: none;
+  pointer-events: none;
+}
+
+.timeline-markers {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 20px;
+}
+
+.timeline-marker {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  background: var(--bg-3);
+  border: 1px solid var(--border-active);
+  border-radius: 50%;
+  top: 7px;
+  transform: translateX(-50%);
+  cursor: pointer;
+  z-index: 1;
+}
+
+.timeline-marker:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  z-index: 10;
+}
+
+.timeline-marker.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  width: 8px;
+  height: 8px;
+  top: 6px;
+  z-index: 5;
+}
+
+.timeline-marker.diff-from {
+  background: var(--cyan);
+  border-color: var(--cyan);
+}
+
+.timeline-marker.marker-red {
+  border-color: var(--red);
+}
+
+.timeline-marker.marker-red:hover,
+.timeline-marker.marker-red.active {
+  background: var(--red);
+}
+
+.timeline-marker.marker-yellow {
+  border-color: var(--yellow);
+}
+
+.timeline-marker.marker-cyan {
+  border-color: var(--cyan);
+}
+
+/* Marker tooltip */
+.timeline-tooltip {
+  display: none;
+  position: absolute;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-2);
+  border: 1px solid var(--border-active);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  white-space: nowrap;
+  z-index: 100;
+  pointer-events: none;
+}
+
+.timeline-marker:hover .timeline-tooltip {
+  display: block;
+}
+
+.tt-hash {
+  font-size: 11px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.tt-msg {
+  font-size: 11px;
+  color: var(--text-0);
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tt-date {
+  font-size: 10px;
+  color: var(--text-2);
+}
+
+.tt-files {
+  font-size: 10px;
+  color: var(--text-2);
+}
+
+/* Diff viewer */
+.diff-content {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.diff-header {
+  color: var(--text-2);
+  font-weight: 600;
+}
+
+.diff-file {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.diff-hunk {
+  color: var(--cyan);
+}
+
+.diff-add {
+  color: var(--green);
+  background: rgba(74, 222, 128, 0.08);
+}
+
+.diff-del {
+  color: var(--red);
+  background: rgba(248, 113, 113, 0.08);
+}

@@ -15,4 +15,6 @@ export const api = {
   projectMemory: (name: string) => get<MemoryEntry[]>(`/project/${encodeURIComponent(name)}/memory`),
   globalMemory: () => get<MemoryEntry[]>("/memory"),
   timeline: (limit = 100, offset = 0) => get<TimelinePoint[]>(`/timeline?limit=${limit}&offset=${offset}`),
+  diff: (from: string, to: string) => get<{ from: string; to: string; diff: string }>(`/diff/${from}/${to}`),
+  stateAt: (hash: string, file: string) => get<{ hash: string; file: string; content: string }>(`/state-at/${hash}?file=${encodeURIComponent(file)}`),
 };

@@ -1,12 +1,17 @@
 import { api } from "./api";
 import { CommandCenter } from "./components/CommandCenter";
 import { ProjectView } from "./components/ProjectView";
-import type { ProjectSummary, ProjectState } from "../shared/types";
+import { Timeline, type TimelineState } from "./components/Timeline";
+import { DiffViewer } from "./components/DiffViewer";
+import type { ProjectSummary, ProjectState, TimelinePoint } from "../shared/types";
 
 // State
 let currentView: "home" | "project" = "home";
 let projects: ProjectSummary[] = [];
 let currentProject: ProjectState | null = null;
+let timelinePoints: TimelinePoint[] = [];
+let timelineState: TimelineState | null = null;
+let diffContent: string | null = null;
 
 const app = document.getElementById("app")!;
 
@@ -66,14 +71,47 @@ function render() {
     main.appendChild(ProjectView(currentProject, navigateHome));
   }
 
+  // Show diff viewer if in diff mode
+  if (diffContent !== null) {
+    main.appendChild(DiffViewer(diffContent));
+  }
+
   body.appendChild(main);
   app.appendChild(body);
+
+  // Timeline bar at the bottom
+  if (timelinePoints.length > 0) {
+    const initialIndex = timelineState?.selectedIndex ?? 0;
+    const timeline = Timeline(timelinePoints, initialIndex, onTimelineChange);
+    app.appendChild(timeline);
+  }
+}
+
+async function onTimelineChange(state: TimelineState) {
+  timelineState = state;
+
+  if (state.diffFromIndex !== null) {
+    // Diff mode: fetch diff between two commits
+    const from = state.points[state.diffFromIndex];
+    const to = state.points[state.selectedIndex];
+    try {
+      const result = await api.diff(from.hash, to.hash);
+      diffContent = result.diff;
+    } catch {
+      diffContent = "Failed to load diff";
+    }
+  } else {
+    diffContent = null;
+  }
+
+  render();
 }
 
 async function navigateToProject(name: string) {
   try {
     currentProject = await api.project(name);
     currentView = "project";
+    diffContent = null;
     render();
   } catch (err) {
     console.error("Failed to load project:", err);
@@ -83,13 +121,19 @@ async function navigateToProject(name: string) {
 function navigateHome() {
   currentView = "home";
   currentProject = null;
+  diffContent = null;
   render();
 }
 
 // Initial load
 async function init() {
   try {
-    projects = await api.projects();
+    const [projectsData, timeline] = await Promise.all([
+      api.projects(),
+      api.timeline(200),
+    ]);
+    projects = projectsData;
+    timelinePoints = timeline;
     render();
   } catch (err) {
     app.innerHTML = `<div style="padding:20px;color:var(--red)">Failed to connect to AnviDeck server. Is it running on port 3000?</div>`;

@@ -23,27 +23,38 @@ export async function getTimeline(
   limit = 100,
   offset = 0
 ): Promise<TimelinePoint[]> {
+  // Use a unique commit delimiter to avoid ambiguity with --name-only blank lines
+  const DELIM = "---COMMIT---";
   const raw = await gitCmd([
     "log",
     `--skip=${offset}`,
     `-n`,
     `${limit}`,
-    "--format=%H|%s|%aI",
+    `--format=${DELIM}%n%H|%s|%aI`,
     "--name-only",
   ]);
 
   if (!raw) return [];
 
   const points: TimelinePoint[] = [];
-  const blocks = raw.split("\n\n");
+  const blocks = raw.split(DELIM).filter(Boolean);
 
   for (const block of blocks) {
     const lines = block.split("\n").filter(Boolean);
     if (lines.length === 0) continue;
 
-    const [metaLine, ...fileLines] = lines;
-    const [hash, message, dateStr] = metaLine.split("|");
-    if (!hash || !message) continue;
+    const metaLine = lines[0];
+    const pipeIdx1 = metaLine.indexOf("|");
+    if (pipeIdx1 === -1) continue;
+
+    const hash = metaLine.slice(0, pipeIdx1);
+    const rest = metaLine.slice(pipeIdx1 + 1);
+    const pipeIdx2 = rest.lastIndexOf("|");
+    if (pipeIdx2 === -1) continue;
+
+    const message = rest.slice(0, pipeIdx2);
+    const dateStr = rest.slice(pipeIdx2 + 1);
+    const fileLines = lines.slice(1);
 
     points.push({
       hash,
