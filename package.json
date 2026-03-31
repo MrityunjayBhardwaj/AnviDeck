@@ -4,8 +4,9 @@
   "description": "Cognitive framework observability deck for Ānvīkṣikī",
   "type": "module",
   "scripts": {
-    "dev": "bun run server/index.ts",
-    "start": "bun run server/index.ts"
+    "build": "bun run build.ts",
+    "dev": "bun run build.ts && bun run server/index.ts",
+    "start": "bun run build.ts && bun run server/index.ts"
   },
   "dependencies": {
     "hono": "^4.0.0"
