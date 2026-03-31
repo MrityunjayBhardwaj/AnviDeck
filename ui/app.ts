@@ -9,6 +9,7 @@ import {
   addRouteEntry,
   resetTrace,
 } from "./components/CognitiveTrace";
+import { SystemLens } from "./components/SystemLens";
 import {
   ContextBudget,
   addHookToBudget,
@@ -25,7 +26,7 @@ import type {
 } from "../shared/types";
 
 // State
-let currentView: "home" | "project" | "trace" = "home";
+let currentView: "home" | "project" | "trace" | "system-lens" = "home";
 let projects: ProjectSummary[] = [];
 let currentProject: ProjectState | null = null;
 let timelinePoints: TimelinePoint[] = [];
@@ -72,6 +73,12 @@ function render() {
   traceItem.addEventListener("click", navigateToTrace);
   nav.appendChild(traceItem);
 
+  const lensItem = document.createElement("div");
+  lensItem.className = `nav-item${currentView === "system-lens" ? " active" : ""}`;
+  lensItem.textContent = "System Lens";
+  lensItem.addEventListener("click", navigateToSystemLens);
+  nav.appendChild(lensItem);
+
   sidebar.appendChild(nav);
 
   // Projects section
@@ -115,6 +122,8 @@ function render() {
   } else if (currentView === "trace") {
     main.appendChild(CognitiveTrace(render));
     main.appendChild(ContextBudget());
+  } else if (currentView === "system-lens") {
+    main.appendChild(SystemLens(projects, render));
   }
 
   // Show diff viewer if in diff mode
@@ -172,6 +181,13 @@ function navigateHome() {
 
 function navigateToTrace() {
   currentView = "trace";
+  currentProject = null;
+  diffContent = null;
+  render();
+}
+
+function navigateToSystemLens() {
+  currentView = "system-lens";
   currentProject = null;
   diffContent = null;
   render();

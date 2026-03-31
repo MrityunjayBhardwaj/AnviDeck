@@ -106,6 +106,32 @@ export type WSMessage =
   | { type: "session"; data: SessionContext }
   | { type: "heartbeat" };
 
+// -- System Lens types --
+
+export interface ContributionCell {
+  status: "contributed" | "not-relevant" | "stale";
+  fireCount: number;
+}
+
+export interface ContributionRow {
+  entryId: string;
+  entryTitle: string;
+  catalogue: string;
+  sessions: Record<string, ContributionCell>;
+  totalFires: number;
+  lastFired: string | null;
+  created: string | null;
+  why?: string;
+}
+
+export interface HookLogSession {
+  sid: string;
+  entries: HookLogEntry[];
+  boundaries: string[];
+  totalFires: number;
+  fatalityFires: number;
+}
+
 // -- API response types --
 
 export interface ProjectSummary {

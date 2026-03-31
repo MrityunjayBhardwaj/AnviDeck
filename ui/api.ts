@@ -1,4 +1,4 @@
-import type { ProjectSummary, ProjectState, MemoryEntry, TimelinePoint } from "../shared/types";
+import type { ProjectSummary, ProjectState, MemoryEntry, TimelinePoint, HookLogSession } from "../shared/types";
 
 const BASE = "/api";
 
@@ -17,4 +17,6 @@ export const api = {
   timeline: (limit = 100, offset = 0) => get<TimelinePoint[]>(`/timeline?limit=${limit}&offset=${offset}`),
   diff: (from: string, to: string) => get<{ from: string; to: string; diff: string }>(`/diff/${from}/${to}`),
   stateAt: (hash: string, file: string) => get<{ hash: string; file: string; content: string }>(`/state-at/${hash}?file=${encodeURIComponent(file)}`),
+  hookLogs: () => get<{ sessions: HookLogSession[] }>("/hook-logs"),
+  entryDates: (name: string) => get<Record<string, { created: string; lastModified: string }>>(`/project/${encodeURIComponent(name)}/entry-dates`),
 };
