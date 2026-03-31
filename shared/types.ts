@@ -73,6 +73,39 @@ export interface WatchEvent {
   timestamp: Date;
 }
 
+// -- Real-time types --
+
+export interface HookLogEntry {
+  ts: string;
+  sid: string;
+  file: string;
+  boundaries: string[];
+  fatality: boolean;
+  patterns: string[];
+  invariants: string[];
+}
+
+export interface RouteLogEntry {
+  ts: string;
+  sid: string;
+  file: string;
+  category: string;
+  tier: number;
+}
+
+export interface SessionContext {
+  sessionId: string;
+  model?: string;
+  contextRemaining?: number;
+  cwd?: string;
+}
+
+export type WSMessage =
+  | { type: "hook"; data: HookLogEntry }
+  | { type: "route"; data: RouteLogEntry }
+  | { type: "session"; data: SessionContext }
+  | { type: "heartbeat" };
+
 // -- API response types --
 
 export interface ProjectSummary {

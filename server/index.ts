@@ -1,8 +1,11 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { websocket } from "hono/bun";
 import { join } from "node:path";
 import api from "./routes/api";
+import ws, { broadcast } from "./routes/ws";
 import { watchGlobal } from "./watchers/file-watcher";
+import { watchHookLogs } from "./watchers/hook-logger";
 
 const app = new Hono();
 
@@ -11,6 +14,9 @@ app.use("/*", cors());
 
 // Mount API routes
 app.route("/api", api);
+
+// Mount WebSocket route
+app.route("/", ws);
 
 // Serve UI static files
 const UI_DIR = join(import.meta.dir, "..", "ui");
@@ -50,10 +56,18 @@ const stopWatching = watchGlobal((event) => {
   console.log(`[watch] ${event.type}: ${event.path}`);
 });
 
+// Start hook log watcher → broadcast to WebSocket clients
+const stopHookLogs = watchHookLogs((type, entry) => {
+  const msg = JSON.stringify({ type, data: entry });
+  broadcast(msg);
+  console.log(`[hook-log] ${type}: ${JSON.stringify(entry).slice(0, 100)}`);
+});
+
 // Graceful shutdown
 process.on("SIGINT", () => {
   console.log("\nShutting down...");
   stopWatching();
+  stopHookLogs();
   process.exit(0);
 });
 
@@ -63,4 +77,5 @@ console.log(`AnviDeck server running at http://localhost:${port}`);
 export default {
   port,
   fetch: app.fetch,
+  websocket,
 };
