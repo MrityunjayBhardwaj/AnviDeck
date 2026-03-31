@@ -198,8 +198,8 @@ function renderLiveLog(): HTMLElement {
   return container;
 }
 
-export function RoutingView(onRender: () => void): HTMLElement {
-  renderCb = onRender;
+export function RoutingView(nav: { render: () => void }): HTMLElement {
+  renderCb = nav.render;
 
   const container = document.createElement("div");
   container.className = "routing-view";
@@ -210,12 +210,12 @@ export function RoutingView(onRender: () => void): HTMLElement {
   container.appendChild(header);
 
   if (state.loading) {
-    container.innerHTML += `<div class="trace-empty">Loading architecture...</div>`;
+    container.innerHTML += `<div class="loading-state"><div class="loading-spinner"></div><span>Loading architecture...</span></div>`;
     return container;
   }
 
   if (!state.arch) {
-    container.innerHTML += `<div class="trace-empty">Loading...</div>`;
+    container.innerHTML += `<div class="loading-state"><div class="loading-spinner"></div><span>Loading routing data...</span></div>`;
     setTimeout(loadArchitecture, 0);
     return container;
   }

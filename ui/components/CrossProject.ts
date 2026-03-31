@@ -189,8 +189,8 @@ function renderMemoryOverview(): HTMLElement {
   return section;
 }
 
-export function CrossProject(onRender: () => void): HTMLElement {
-  renderCb = onRender;
+export function CrossProject(nav: { render: () => void }): HTMLElement {
+  renderCb = nav.render;
 
   const container = document.createElement("div");
   container.className = "cross-project";
@@ -201,12 +201,12 @@ export function CrossProject(onRender: () => void): HTMLElement {
   container.appendChild(header);
 
   if (state.loading) {
-    container.innerHTML += `<div class="trace-empty">Analyzing patterns across projects...</div>`;
+    container.innerHTML += `<div class="loading-state"><div class="loading-spinner"></div><span>Analyzing patterns across projects...</span></div>`;
     return container;
   }
 
   if (!state.data) {
-    container.innerHTML += `<div class="trace-empty">Loading...</div>`;
+    container.innerHTML += `<div class="loading-state"><div class="loading-spinner"></div><span>Loading cross-project data...</span></div>`;
     setTimeout(loadData, 0);
     return container;
   }

@@ -301,8 +301,8 @@ function renderRoutingPanel(): HTMLElement {
  * Render the full CognitiveTrace component.
  * Call with a render callback to enable live updates.
  */
-export function CognitiveTrace(onRender: () => void): HTMLElement {
-  renderCallback = onRender;
+export function CognitiveTrace(nav: { render: () => void }): HTMLElement {
+  renderCallback = nav.render;
 
   const container = document.createElement("div");
   container.className = "cognitive-trace";

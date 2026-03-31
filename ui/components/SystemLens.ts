@@ -388,10 +388,17 @@ function renderEntryTimeline(): HTMLElement {
 
 export function SystemLens(
   projects: ProjectSummary[],
-  onRender: () => void
+  nav: { render: () => void }
 ): HTMLElement {
-  renderCb = onRender;
+  renderCb = nav.render;
   state.projects = projects;
+
+  // Check if navigated here with a specific project
+  const preselected = (window as any).__systemLensProject;
+  if (preselected && preselected !== state.selectedProject) {
+    delete (window as any).__systemLensProject;
+    setTimeout(() => loadProject(preselected), 0);
+  }
 
   const container = document.createElement("div");
   container.className = "system-lens";
@@ -403,26 +410,23 @@ export function SystemLens(
   container.appendChild(header);
 
   if (state.loading) {
-    container.innerHTML += `<div class="trace-empty">Loading...</div>`;
+    container.innerHTML += `<div class="loading-state"><div class="loading-spinner"></div><span>Loading...</span></div>`;
     return container;
   }
 
   if (!state.selectedProject) {
-    container.innerHTML += `<div class="trace-empty">Select a project to view contribution data.</div>`;
-
-    // Auto-select the project with most catalogues
-    if (!state.selectedProject && state.projects.length > 0) {
-      const best = [...state.projects]
-        .filter((p) => Object.values(p.catalogueCounts).reduce((s, n) => s + n, 0) > 0)
-        .sort((a, b) => {
-          const ac = Object.values(a.catalogueCounts).reduce((s, n) => s + n, 0);
-          const bc = Object.values(b.catalogueCounts).reduce((s, n) => s + n, 0);
-          return bc - ac;
-        })[0];
-      if (best) {
-        setTimeout(() => loadProject(best.name), 0);
-      }
+    // Auto-select best project
+    const best = [...state.projects]
+      .filter((p) => Object.values(p.catalogueCounts).reduce((s, n) => s + n, 0) > 0)
+      .sort((a, b) => {
+        const ac = Object.values(a.catalogueCounts).reduce((s, n) => s + n, 0);
+        const bc = Object.values(b.catalogueCounts).reduce((s, n) => s + n, 0);
+        return bc - ac;
+      })[0];
+    if (best) {
+      setTimeout(() => loadProject(best.name), 0);
     }
+    container.innerHTML += `<div class="loading-state"><div class="loading-spinner"></div><span>Loading project data...</span></div>`;
     return container;
   }
 

@@ -169,46 +169,51 @@ Patterns that span multiple projects.
 ```
 AnviDeck/
 ├── server/
-│   ├── index.ts              ✅ Hono server (lightweight, TypeScript)
+│   ├── index.ts              ✅ Hono + WebSocket server, file watchers, broadcast
 │   ├── routes/
-│   │   ├── api.ts            ✅ REST API for all data
-│   │   └── ws.ts             🔲 Phase 4: WebSocket for real-time session data
+│   │   ├── api.ts            ✅ REST API (projects, catalogues, hook-logs, cross-project, routing-architecture, entry-dates)
+│   │   └── ws.ts             ✅ WebSocket server (hono/bun upgradeWebSocket, client tracking, heartbeat)
 │   ├── readers/
 │   │   ├── catalogue.ts      ✅ Parse .anvi/ markdown files + boundary extraction
 │   │   ├── memory.ts         ✅ Parse memory/ markdown files with frontmatter
 │   │   └── git-history.ts    ✅ Read git log, show file at commit, diff
 │   └── watchers/
 │       ├── file-watcher.ts   ✅ Watch .anvi/ and memory/ for changes
-│       ├── hook-logger.ts    🔲 Phase 4: Tail /tmp/anvi-hook-*.log files
-│       └── route-logger.ts   🔲 Phase 4: Detect routing decisions from Read calls
+│       └── hook-logger.ts    ✅ Tail /tmp/anvi-hook-*.log + anvi-route-*.log, parse JSON, broadcast
+├── hooks/ (symlinks to ~/.claude/hooks/)
+│   ├── catalogue-context-injector.js → ~/.claude/hooks/catalogue-context-injector.js  ✅ + AnviDeck logging
+│   ├── anvi-route-logger.js  → ~/.claude/hooks/anvi-route-logger.js  ✅ PostToolUse Read detection
+│   └── settings.json         → ~/.claude/settings.json
 ├── ui/
 │   ├── index.html            ✅ Single page app shell
-│   ├── app.ts                ✅ Main app, routing, state, navigation
-│   ├── api.ts                ✅ Typed API client
+│   ├── app.ts                ✅ Main app — selective DOM updates, Nav API, WebSocket, cross-linking
+│   ├── api.ts                ✅ Typed API client (all endpoints)
 │   ├── components/
-│   │   ├── CommandCenter.ts  ✅ Home view (project list, health, stats)
-│   │   ├── ProjectView.ts    ✅ Project deep dive (catalogues, dharana, memory, boundaries)
+│   │   ├── CommandCenter.ts  ✅ Quick actions, insights banner, project list with badges
+│   │   ├── ProjectView.ts    ✅ Project deep dive + breadcrumb + quick links to other views
 │   │   ├── CatalogueTree.ts  ✅ Collapsible entries with tags + provenance
 │   │   ├── Timeline.ts       ✅ Git commit slider with diff mode + markers
 │   │   ├── DiffViewer.ts     ✅ Syntax-highlighted diff display
-│   │   ├── CognitiveTrace.ts 🔲 Phase 4: Real-time session view
-│   │   ├── ContextBudget.ts  🔲 Phase 4: Three-tier context usage visualization
-│   │   ├── SystemLens.ts     🔲 Phase 5: Self-observation dashboard
-│   │   ├── ContributionMatrix.ts 🔲 Phase 5: Heat map of entry contributions
-│   │   ├── CrossProject.ts   🔲 Phase 6: Multi-project intelligence
-│   │   └── RoutingView.ts    🔲 Phase 7: Context routing visualization
+│   │   ├── CognitiveTrace.ts ✅ 3-panel live: Hook Activity, Dhyana State, Routing Decisions
+│   │   ├── ContextBudget.ts  ✅ Three-tier context usage bar visualization
+│   │   ├── SystemLens.ts     ✅ Contribution matrix, pruning candidates, entry timeline
+│   │   ├── CrossProject.ts   ✅ Recurring patterns, shared invariants, memory network
+│   │   ├── RoutingView.ts    ✅ Three-tier diagram, routing table, coverage verification
+│   │   ├── BrainView.ts      🔲 Phase 8: State + Flow + Evolution tabs
+│   │   └── GitHubTrace.ts    🔲 Phase 9: Knowledge → artifact → outcome loop
 │   └── styles/
-│       └── deck.css          ✅ Dark theme, monospace, all component styles (763 lines)
+│       └── deck.css          ✅ Dark theme, monospace, all component styles (~2,400 lines)
 ├── shared/
-│   ├── types.ts              ✅ Full type definitions (86 lines)
+│   ├── types.ts              ✅ Full type definitions (~170 lines)
 │   └── parser.ts             ✅ Markdown → structured data parser (161 lines)
+├── .planning/                ✅ Phase plans + research (phases 4-7)
 ├── ref/
-│   ├── ANVI_THESIS.md        ✅ Framework thesis (827 lines)
+│   ├── ANVI_THESIS.md        ✅ Framework thesis (923 lines, includes Part VIII)
 │   └── DATA_EXAMPLES.md      ✅ Parsed data examples for every type
 ├── build.ts                  ✅ Single esbuild pass via Bun
 ├── package.json              ✅ Hono + TypeScript + Bun
 ├── tsconfig.json             ✅
-├── CLAUDE.md                 ✅ Project instructions
+├── CLAUDE.md                 ✅ Project instructions (reflects all 9 phases)
 └── BUILD.md                  ← This file
 ```
 
@@ -348,7 +353,7 @@ async function stateAtCommit(hash: string): Promise<FrameworkState> {
 
 **Verified:** Slider shows 10 framework commits, diff between any two points works.
 
-### Phase 4: Real-Time Session Trace (live observability) — NEXT
+### Phase 4: Real-Time Session Trace (live observability) — COMPLETE
 **Goal:** Watch the framework operate in real-time during a Claude Code session. See which boundaries are active, which checks fire, which files get loaded by the context routing protocol.
 
 **4.1 Hook logger** — update `catalogue-context-injector.js` to write structured log:
@@ -402,7 +407,7 @@ async function stateAtCommit(hash: string): Promise<FrameworkState> {
 - Context Budget: Tier 1 (39k) + Tier 3 (25k) = 64k used
 - Dhyana panel: B2 active, SP8/SP9/SP10/SP11/SP12 listed, SV12/SV13 invariants flagged
 
-### Phase 5: System Lens Dashboard (self-observation) — TODO
+### Phase 5: System Lens Dashboard (self-observation) — COMPLETE
 **Goal:** Visualize whether the framework is actually helping.
 
 - Contribution matrix: entries × sessions heat map
@@ -424,7 +429,7 @@ async function stateAtCommit(hash: string): Promise<FrameworkState> {
 
 **Verification:** After 3+ sessions, the matrix shows which entries pulled their weight.
 
-### Phase 6: Cross-Project Intelligence (pattern recognition) — TODO
+### Phase 6: Cross-Project Intelligence (pattern recognition) — COMPLETE
 **Goal:** Find patterns that span multiple projects.
 
 - Recurring error patterns: scan all projects' hetvabhasa for structurally similar entries
@@ -437,7 +442,7 @@ async function stateAtCommit(hash: string): Promise<FrameworkState> {
 
 **Verification:** Cross-project patterns surfaced automatically without manual comparison.
 
-### Phase 7: Context Routing Visualization — TODO (new, from framework session)
+### Phase 7: Context Routing Visualization — COMPLETE
 **Goal:** Visualize the three-tier context architecture and routing decisions.
 
 - Architecture diagram: interactive view of Tier 1/2/3 with file sizes
@@ -447,6 +452,66 @@ async function stateAtCommit(hash: string): Promise<FrameworkState> {
 - Chicken-and-egg visualization: show the classify→load→reason pipeline
 
 **Verification:** User can see that every activity type has a complete, lossless context path.
+
+### Phase 8: Brain View (project cognitive state) — NEXT
+**Goal:** Single dense screen showing everything the framework knows about a project, how it's operating, and how understanding has evolved. The "virtual brain" of a project.
+
+Three tabs within one "Brain" view:
+
+**8.1 State — Situation Map:**
+- Four horizontal strata: Boundaries (top) → Traps (hetvabhasa) → Rules (vyapti) → Sequences (krama)
+- Each boundary as a box: size = pattern count, color = severity (red = fatality, yellow = warning, green = clean)
+- Each entry shows which boundary it belongs to (dot indicator)
+- Sidebar: memory entries + session activity summary
+- Everything on one screen, zero clicks to understand
+
+**8.2 Flow — Cognitive Trace Timeline:**
+- Horizontal time axis with vertical lanes for each tier
+- Tier 1: solid bar (always active)
+- Tier 3: colored blocks showing routing decisions (DIAGNOSE, PLAN, IMPLEMENT, REVIEW)
+- Tier 2: spike marks showing hook fires with boundary labels
+- Below spikes: pattern IDs that activated (SP8, SP9, etc.)
+- Click any spike → drill down to full activation chain (what was injected, why, which entries)
+- Stars marking new entries created during session
+
+**8.3 Evolution — Learning Over Time:**
+- Entry count growth over sessions (from git history of .anvi/ files)
+- When specific entries were created/modified
+- Fire rates per entry over time (from hook logs)
+- Key moments: "fatality detected", "new axis created", "consolidation planned"
+- Shows the system literally getting smarter session over session
+
+**Verification:** Open Brain view for sonicPiWeb → see all 41 entries across 4 strata with severity coloring. Click a boundary → see activation history. Evolution tab shows growth from 0 to 41 entries with key moments annotated.
+
+### Phase 9: GitHub Trace (knowledge → artifact → outcome loop) — TODO
+**Goal:** Close the loop from brain knowledge to GitHub artifacts. For any catalogue entry, see which issues/PRs/commits it informed. For any GitHub artifact, see which brain entries were active when it was created.
+
+**9.1 Correlation Engine:**
+- Scan commit messages for catalogue IDs (SP8, SV12, B2) → high confidence link
+- Scan issue/PR bodies for catalogue keywords → high confidence
+- Match commit file paths with hook fire file paths → medium confidence
+- Temporal proximity: entry created → commit within 24h on same files → medium confidence
+- Uses `gh` CLI (already authenticated) + local `git log`
+
+**9.2 Entry → Artifact View:**
+- For each catalogue entry: linked issues, PRs, commits with confidence scores
+- Shows the full lifecycle: knowledge created → hook activated → bug found → fix merged → knowledge refined
+
+**9.3 Artifact → Entry View (reverse):**
+- For each GitHub issue/PR: which brain entries were active when it was created
+- "This PR was informed by SP8, SP9, and SV12 — the framework caught the param mismatch"
+
+**9.4 Cognitive Loop Visualization:**
+```
+OBSERVE → LEARN → ACTIVATE → ACT → PRODUCE → VERIFY → REFINE → loop
+(session)  (entry)  (hook)    (Claude) (issue/PR)  (test)  (update)
+```
+- Each step traceable
+- Click any node → see the data at that step
+
+**Verification:** Click SP8 in Brain view → see Issue #47, PR #48, commit abc123 linked with "high" confidence. Click Issue #47 → see SP8, SP9 as informing entries. The loop is visible end to end.
+
+**Data model decision: NO Neo4j.** Investigated graph visualization (2026-04-01): 41 nodes, 27 edges, 1.6% density — too sparse for graph layout. Data is stratified by cognitive function, not networked. Tables and strata represent it correctly. `gh` CLI + local git provide all needed data. Zero external infrastructure maintained.
 
 ---
 
@@ -478,9 +543,11 @@ async function stateAtCommit(hash: string): Promise<FrameworkState> {
 
 5. **Multi-session concurrent:** ~~If two Claude Code sessions are active simultaneously~~ **RESOLVED:** Session ID in log filenames distinguishes them. Each WebSocket client can filter by session.
 
-6. **Context routing logging (NEW):** The routing protocol fires inside Claude's reasoning — not via a hook. How to capture routing decisions externally? Options: (a) PostToolUse hook that detects Read calls to spec files, (b) Claude writes to a log file as part of routing, (c) infer from which files were Read in the session. **Option (a) is cleanest.**
+6. **Context routing logging (NEW):** ~~The routing protocol fires inside Claude's reasoning — not via a hook.~~ **RESOLVED in Phase 4:** PostToolUse hook (`anvi-route-logger.js`) detects Read calls to spec files. Logs to `/tmp/anvi-route-{session_id}.log`. Option (a) implemented.
 
-7. **Contribution tracking data model (NEW):** The system lens needs "did this entry contribute?" data per session. Where is this stored? Options: (a) session report files in memory/, (b) a dedicated `.anvi/system-lens.json`, (c) derive from git diffs + hook logs. **Needs decision before Phase 5.**
+7. **Contribution tracking data model (NEW):** ~~The system lens needs "did this entry contribute?" data per session.~~ **RESOLVED in Phase 5:** Derive from hook logs + catalogues at render time. No new persistent file needed. "Should-have-caught" (red cells) deferred to future session report annotation.
+
+8. **GitHub trace confidence scoring (NEW):** How reliable are the correlations between catalogue entries and GitHub artifacts? High confidence = explicit ID mention (SP8 in commit message). Medium = file overlap + temporal proximity. Low = keyword only. **Needs calibration during Phase 9 implementation.**
 
 ---
 
@@ -488,12 +555,16 @@ async function stateAtCommit(hash: string): Promise<FrameworkState> {
 
 AnviDeck is successful when:
 
-1. **At any point in a conversation**, the user can open the browser and see exactly what the framework is doing — which boundaries are scoped, which checks are firing, what dharana says about the current file.
+1. **At any point in a conversation**, the user can open the browser and see exactly what the framework is doing — which boundaries are scoped, which checks are firing, what dharana says about the current file. ✅ (Phase 4: Live Trace)
 
-2. **At session end**, the system lens dashboard shows concrete data: contribution counts, stale candidates, cost vs catch — not guesses.
+2. **At session end**, the system lens dashboard shows concrete data: contribution counts, stale candidates, cost vs catch — not guesses. ✅ (Phase 5: System Lens)
 
-3. **Across sessions**, the timeline slider shows the framework's evolution — when entries were added, when fatality was detected, when the SoundLayer consolidation was decided.
+3. **Across sessions**, the timeline slider shows the framework's evolution — when entries were added, when fatality was detected, when the SoundLayer consolidation was decided. ✅ (Phase 3: Timeline + Phase 5: Entry Timeline)
 
-4. **Across projects**, recurring patterns are surfaced automatically — the user doesn't need to manually compare catalogues.
+4. **Across projects**, recurring patterns are surfaced automatically — the user doesn't need to manually compare catalogues. ✅ (Phase 6: Cross-Project Intelligence)
 
-5. **Zero friction:** Opening `localhost:3000` shows everything. No login, no config, no waiting.
+5. **Zero friction:** Opening `localhost:3000` shows everything. No login, no config, no waiting. ✅ (All phases)
+
+6. **Brain View** (Phase 8): For any project, see the complete cognitive state on one screen — what the brain knows (state), what it's doing right now (flow), and how it got here (evolution).
+
+7. **Full traceability** (Phase 9): For any catalogue entry, trace to the GitHub artifacts it informed. For any issue/PR, trace back to the brain entries that were active. The full loop from knowledge to artifact is visible.

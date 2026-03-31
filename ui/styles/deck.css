@@ -1849,3 +1849,355 @@ html, body {
 .routing-feed {
   max-height: 300px;
 }
+
+/* =====================================================
+   UX POLISH — Overrides & additions for smooth experience
+   ===================================================== */
+
+/* --- Global: Smooth transitions --- */
+.main-content {
+  transition: none; /* prevent flash on content swap */
+  scroll-behavior: smooth;
+}
+
+/* --- Loading states --- */
+.loading-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 48px;
+  color: var(--text-1);
+  font-size: 13px;
+}
+
+.loading-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--bg-3);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.error-state {
+  padding: 32px;
+  color: var(--red);
+  text-align: center;
+  font-size: 13px;
+}
+
+/* --- Header polish --- */
+.header-title {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  color: var(--accent);
+}
+
+.deck-header .status.disconnected {
+  color: var(--red);
+}
+
+/* --- Navigation: buttons instead of divs, consistent hover --- */
+.nav-item,
+.project-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 12px;
+  border: none;
+  background: none;
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--radius);
+  border-left: 3px solid transparent;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.nav-item:hover,
+.project-item:hover {
+  background: var(--bg-2);
+  color: var(--text-0);
+}
+
+.nav-item.active {
+  background: var(--bg-3);
+  color: var(--accent);
+  border-left-color: var(--accent);
+}
+
+.project-item.active {
+  background: var(--bg-3);
+  color: var(--accent);
+  border-left-color: var(--accent);
+}
+
+/* Focus for keyboard navigation */
+.nav-item:focus-visible,
+.project-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* --- Empty states: clearer, more contrast --- */
+.trace-empty,
+.empty {
+  padding: 20px 16px;
+  color: var(--text-1);
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.6;
+  background: var(--bg-2);
+  border-radius: var(--radius);
+  border: 1px dashed var(--border);
+  margin: 8px;
+}
+
+/* --- Scroll & overflow fixes --- */
+.cognitive-trace {
+  height: auto;
+  flex: 1;
+  min-height: 0;
+  max-height: calc(100vh - 220px);
+}
+
+.trace-feed {
+  max-height: 500px;
+}
+
+.dhyana-content {
+  max-height: 500px;
+}
+
+/* Timeline wrapper */
+.timeline-wrapper {
+  flex-shrink: 0;
+}
+
+/* --- Hover states for all interactive items --- */
+.hook-entry { transition: background 0.1s; }
+.route-entry { transition: background 0.1s; }
+.route-entry:hover { background: var(--bg-2); }
+.pattern-card { transition: border-color 0.15s; }
+.pattern-card:hover { border-color: var(--border-active); }
+.routing-card { transition: border-color 0.15s; }
+.routing-card:hover { border-color: var(--border-active); }
+.catalogue-group { transition: border-color 0.15s; }
+.prune-item { transition: border-color 0.15s; }
+.prune-item:hover { border-color: var(--yellow); }
+.dhyana-boundary { transition: background 0.1s; cursor: default; }
+.timeline-item { transition: background 0.1s; }
+.timeline-item:hover { background: var(--bg-2); }
+
+/* --- Section headers: bigger, more spacing --- */
+.section-header {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-1);
+  margin: 16px 0 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* --- Matrix cells: bigger hit targets --- */
+.matrix-cell {
+  height: 26px;
+  min-width: 48px;
+  cursor: default;
+}
+
+/* --- Scoped CSS fixes for duplicate class names --- */
+.cognitive-trace .boundary-id {
+  font-weight: 700;
+  color: var(--cyan);
+  font-size: 12px;
+}
+
+.cognitive-trace .boundary-name {
+  color: var(--text-0);
+  font-size: 12px;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cognitive-trace .entry-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cross-project .entry-id {
+  font-weight: 700;
+  color: var(--cyan);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.cross-project .memory-type {
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--accent);
+}
+
+.cross-project .memory-name {
+  color: var(--text-0);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- Select focus fix --- */
+.lens-select:focus {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* --- Accessibility: reduced motion --- */
+@media (prefers-reduced-motion: reduce) {
+  .fatality-badge { animation: none; }
+  .loading-spinner { animation: none; border-top-color: var(--accent); }
+  * { transition-duration: 0s !important; }
+}
+
+/* --- Expand/collapse transitions --- */
+.entry-details,
+.pattern-entries,
+.routing-card-detail {
+  animation: slideDown 0.15s ease-out;
+}
+
+@keyframes slideDown {
+  from { opacity: 0; max-height: 0; }
+  to { opacity: 1; max-height: 500px; }
+}
+
+/* --- Responsive breakpoints --- */
+@media (max-width: 1100px) {
+  .cognitive-trace {
+    grid-template-columns: 1fr 1fr;
+  }
+  .cognitive-trace .routing-panel {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 900px) {
+  .sidebar {
+    width: 180px;
+    min-width: 180px;
+  }
+  .cognitive-trace {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 700px) {
+  .sidebar {
+    width: 140px;
+    min-width: 140px;
+  }
+  .deck-header {
+    padding: 6px 12px;
+  }
+  .main-content {
+    padding: 8px;
+  }
+  .lens-summary {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+}
+
+/* --- Scrollbar styling (webkit) --- */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--bg-3);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-active);
+}
+
+/* =====================================================
+   UX FLOW — Quick actions, insights, cross-links
+   ===================================================== */
+
+.command-center { display: flex; flex-direction: column; gap: 16px; }
+
+.quick-actions { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+
+.action-card {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 16px 8px; background: var(--bg-1); border: 1px solid var(--border);
+  border-radius: var(--radius); cursor: pointer; font-family: var(--font-mono);
+  color: var(--text-1); text-align: center;
+  transition: border-color 0.15s, background 0.15s, transform 0.1s;
+}
+.action-card:hover { border-color: var(--accent); background: var(--bg-2); transform: translateY(-1px); }
+.action-card:active { transform: translateY(0); }
+.action-card:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.action-icon { font-size: 20px; color: var(--accent); font-weight: 700; }
+.action-label { font-size: 12px; font-weight: 600; color: var(--text-0); }
+.action-desc { font-size: 10px; color: var(--text-2); line-height: 1.3; }
+
+.insights-section { display: flex; flex-direction: column; gap: 6px; }
+.insight { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--bg-1); border-radius: var(--radius); border: 1px solid var(--border); }
+.insight-red { border-left: 3px solid var(--red); }
+.insight-yellow { border-left: 3px solid var(--yellow); }
+.insight-cyan { border-left: 3px solid var(--cyan); }
+.insight-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.insight-message { flex: 1; font-size: 12px; color: var(--text-0); line-height: 1.4; }
+.insight-action { flex-shrink: 0; padding: 4px 10px; background: var(--bg-3); border: 1px solid var(--border); border-radius: var(--radius); color: var(--accent); font-family: var(--font-mono); font-size: 11px; cursor: pointer; transition: background 0.15s; }
+.insight-action:hover { background: var(--accent-dim); color: var(--text-0); }
+
+.project-row { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 8px 12px; background: none; border: none; border-bottom: 1px solid var(--bg-2); color: var(--text-0); font-family: var(--font-mono); font-size: var(--font-size); cursor: pointer; text-align: left; transition: background 0.1s; }
+.project-row:hover { background: var(--bg-2); }
+.project-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.project-row-name { font-weight: 600; }
+.project-row-stats { display: flex; gap: 6px; flex-shrink: 0; }
+.badge.dim { color: var(--text-2); background: var(--bg-2); }
+.badge.warn { color: var(--yellow); background: rgba(250, 204, 21, 0.1); }
+
+.breadcrumb { display: flex; align-items: center; gap: 8px; padding: 8px 0; margin-bottom: 12px; font-size: 12px; color: var(--text-2); }
+.breadcrumb-link { background: none; border: none; color: var(--accent); font-family: var(--font-mono); font-size: 12px; cursor: pointer; padding: 2px 4px; border-radius: 2px; transition: background 0.15s; }
+.breadcrumb-link:hover { background: var(--bg-2); text-decoration: underline; }
+.breadcrumb-current { color: var(--text-0); font-weight: 600; }
+
+.project-quick-links { display: flex; gap: 6px; margin-bottom: 12px; }
+.quick-link-btn { padding: 4px 12px; background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius); color: var(--accent); font-family: var(--font-mono); font-size: 11px; cursor: pointer; transition: background 0.15s, border-color 0.15s; }
+.quick-link-btn:hover { background: var(--bg-3); border-color: var(--accent); }
+.quick-link-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+@media (max-width: 900px) { .quick-actions { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 600px) { .quick-actions { grid-template-columns: 1fr; } .project-quick-links { flex-wrap: wrap; } }

@@ -27,75 +27,122 @@ import type {
   RouteLogEntry,
 } from "../shared/types";
 
+// --- Navigation API (passed to all components for cross-linking) ---
+export interface Nav {
+  toHome: () => void;
+  toProject: (name: string) => void;
+  toTrace: () => void;
+  toSystemLens: (project?: string) => void;
+  toCrossProject: () => void;
+  toRouting: () => void;
+  render: () => void;
+}
+
 // State
-let currentView: "home" | "project" | "trace" | "system-lens" | "cross-project" | "routing" = "home";
+type ViewName = "home" | "project" | "trace" | "system-lens" | "cross-project" | "routing";
+let currentView: ViewName = "home";
 let projects: ProjectSummary[] = [];
 let currentProject: ProjectState | null = null;
 let timelinePoints: TimelinePoint[] = [];
 let timelineState: TimelineState | null = null;
 let diffContent: string | null = null;
 let wsConnected = false;
+let loading = false;
+let firstVisit = true;
+
+const nav: Nav = {
+  toHome: () => navigateTo("home"),
+  toProject: (name: string) => navigateToProject(name),
+  toTrace: () => navigateTo("trace"),
+  toSystemLens: (project?: string) => {
+    navigateTo("system-lens");
+    if (project) {
+      // SystemLens will pick this up
+      (window as any).__systemLensProject = project;
+    }
+  },
+  toCrossProject: () => navigateTo("cross-project"),
+  toRouting: () => navigateTo("routing"),
+  render,
+};
+
+// DOM refs — preserved across renders to prevent flicker
+let headerEl: HTMLElement | null = null;
+let sidebarEl: HTMLElement | null = null;
+let mainEl: HTMLElement | null = null;
+let timelineEl: HTMLElement | null = null;
 
 const app = document.getElementById("app")!;
 
+function ensureStructure() {
+  if (!headerEl) {
+    app.innerHTML = "";
+
+    headerEl = document.createElement("div");
+    headerEl.className = "deck-header";
+    app.appendChild(headerEl);
+
+    const body = document.createElement("div");
+    body.className = "deck-body";
+
+    sidebarEl = document.createElement("div");
+    sidebarEl.className = "sidebar";
+    body.appendChild(sidebarEl);
+
+    mainEl = document.createElement("div");
+    mainEl.className = "main-content";
+    body.appendChild(mainEl);
+
+    app.appendChild(body);
+
+    timelineEl = document.createElement("div");
+    timelineEl.className = "timeline-wrapper";
+    app.appendChild(timelineEl);
+  }
+}
+
 function render() {
-  app.innerHTML = "";
+  ensureStructure();
+  renderHeader();
+  renderSidebar();
+  renderMain();
+  renderTimeline();
+}
 
-  // Header
-  const header = document.createElement("div");
-  header.className = "deck-header";
-  header.innerHTML = `
-    <h1>Anvi Deck</h1>
-    <span class="status ${wsConnected ? "live" : "disconnected"}">${wsConnected ? "live" : "disconnected"}</span>
+function renderHeader() {
+  headerEl!.innerHTML = `
+    <h1 class="header-title">ANVI DECK</h1>
+    <span class="status ${wsConnected ? "live" : "disconnected"}" role="status" aria-label="WebSocket ${wsConnected ? "connected" : "disconnected"}">${wsConnected ? "live" : "disconnected"}</span>
   `;
-  app.appendChild(header);
+}
 
-  // Body
-  const body = document.createElement("div");
-  body.className = "deck-body";
+function renderSidebar() {
+  sidebarEl!.innerHTML = "";
 
-  // Sidebar
-  const sidebar = document.createElement("div");
-  sidebar.className = "sidebar";
+  // Navigation
+  const navSection = document.createElement("div");
+  navSection.className = "sidebar-section";
+  navSection.innerHTML = `<h3>Views</h3>`;
 
-  // Navigation section
-  const nav = document.createElement("div");
-  nav.className = "sidebar-section";
-  nav.innerHTML = `<h3>Views</h3>`;
+  const views: { id: ViewName; label: string; extra?: string }[] = [
+    { id: "home", label: "Command Center" },
+    { id: "trace", label: "Live Trace", extra: wsConnected ? '<span class="ws-indicator connected"></span>' : '<span class="ws-indicator"></span>' },
+    { id: "system-lens", label: "System Lens" },
+    { id: "cross-project", label: "Cross-Project" },
+    { id: "routing", label: "Routing" },
+  ];
 
-  const homeItem = document.createElement("div");
-  homeItem.className = `nav-item${currentView === "home" ? " active" : ""}`;
-  homeItem.textContent = "Command Center";
-  homeItem.addEventListener("click", navigateHome);
-  nav.appendChild(homeItem);
+  for (const v of views) {
+    const item = document.createElement("button");
+    item.className = `nav-item${currentView === v.id ? " active" : ""}`;
+    item.innerHTML = `${v.label} ${v.extra ?? ""}`;
+    item.addEventListener("click", () => navigateTo(v.id));
+    navSection.appendChild(item);
+  }
 
-  const traceItem = document.createElement("div");
-  traceItem.className = `nav-item${currentView === "trace" ? " active" : ""}`;
-  traceItem.innerHTML = `Live Trace ${wsConnected ? '<span class="ws-indicator connected"></span>' : '<span class="ws-indicator"></span>'}`;
-  traceItem.addEventListener("click", navigateToTrace);
-  nav.appendChild(traceItem);
+  sidebarEl!.appendChild(navSection);
 
-  const lensItem = document.createElement("div");
-  lensItem.className = `nav-item${currentView === "system-lens" ? " active" : ""}`;
-  lensItem.textContent = "System Lens";
-  lensItem.addEventListener("click", navigateToSystemLens);
-  nav.appendChild(lensItem);
-
-  const cpItem = document.createElement("div");
-  cpItem.className = `nav-item${currentView === "cross-project" ? " active" : ""}`;
-  cpItem.textContent = "Cross-Project";
-  cpItem.addEventListener("click", navigateToCrossProject);
-  nav.appendChild(cpItem);
-
-  const routingItem = document.createElement("div");
-  routingItem.className = `nav-item${currentView === "routing" ? " active" : ""}`;
-  routingItem.textContent = "Routing";
-  routingItem.addEventListener("click", navigateToRouting);
-  nav.appendChild(routingItem);
-
-  sidebar.appendChild(nav);
-
-  // Projects section
+  // Projects
   const section = document.createElement("div");
   section.className = "sidebar-section";
   section.innerHTML = `<h3>Projects</h3>`;
@@ -107,11 +154,8 @@ function render() {
   });
 
   for (const p of sorted) {
-    const catCount = Object.values(p.catalogueCounts).reduce(
-      (s, n) => s + n,
-      0
-    );
-    const item = document.createElement("div");
+    const catCount = Object.values(p.catalogueCounts).reduce((s, n) => s + n, 0);
+    const item = document.createElement("button");
     item.className = `project-item${currentView === "project" && currentProject?.name === p.name ? " active" : ""}`;
     item.innerHTML = `
       <span class="name">${p.name}</span>
@@ -122,47 +166,57 @@ function render() {
     section.appendChild(item);
   }
 
-  sidebar.appendChild(section);
-  body.appendChild(sidebar);
+  sidebarEl!.appendChild(section);
+}
 
-  // Main content
-  const main = document.createElement("div");
-  main.className = "main-content";
+function renderMain() {
+  const prevView = mainEl!.dataset.view;
+  const sameView = prevView === currentView;
+  const scrollTop = sameView ? mainEl!.scrollTop : 0;
+
+  mainEl!.innerHTML = "";
+  mainEl!.dataset.view = currentView;
+
+  if (loading) {
+    mainEl!.innerHTML = `<div class="loading-state"><div class="loading-spinner"></div><span>Loading...</span></div>`;
+    return;
+  }
 
   if (currentView === "home") {
-    main.appendChild(CommandCenter(projects, navigateToProject));
+    mainEl!.appendChild(CommandCenter(projects, nav));
   } else if (currentView === "project" && currentProject) {
-    main.appendChild(ProjectView(currentProject, navigateHome));
+    mainEl!.appendChild(ProjectView(currentProject, nav));
   } else if (currentView === "trace") {
-    main.appendChild(CognitiveTrace(render));
-    main.appendChild(ContextBudget());
+    mainEl!.appendChild(CognitiveTrace(nav));
+    mainEl!.appendChild(ContextBudget());
   } else if (currentView === "system-lens") {
-    main.appendChild(SystemLens(projects, render));
+    mainEl!.appendChild(SystemLens(projects, nav));
   } else if (currentView === "cross-project") {
-    main.appendChild(CrossProject(render));
+    mainEl!.appendChild(CrossProject(nav));
   } else if (currentView === "routing") {
-    main.appendChild(RoutingView(render));
+    mainEl!.appendChild(RoutingView(nav));
   }
 
-  // Show diff viewer if in diff mode
   if (diffContent !== null) {
-    main.appendChild(DiffViewer(diffContent));
+    mainEl!.appendChild(DiffViewer(diffContent));
   }
 
-  body.appendChild(main);
-  app.appendChild(body);
+  if (sameView) {
+    mainEl!.scrollTop = scrollTop;
+  }
+}
 
-  // Timeline bar at the bottom
+function renderTimeline() {
   if (timelinePoints.length > 0) {
+    timelineEl!.innerHTML = "";
     const initialIndex = timelineState?.selectedIndex ?? 0;
     const timeline = Timeline(timelinePoints, initialIndex, onTimelineChange);
-    app.appendChild(timeline);
+    timelineEl!.appendChild(timeline);
   }
 }
 
 async function onTimelineChange(state: TimelineState) {
   timelineState = state;
-
   if (state.diffFromIndex !== null) {
     const from = state.points[state.diffFromIndex];
     const to = state.points[state.selectedIndex];
@@ -175,91 +229,59 @@ async function onTimelineChange(state: TimelineState) {
   } else {
     diffContent = null;
   }
+  renderMain();
+}
 
+function navigateTo(view: ViewName) {
+  currentView = view;
+  currentProject = null;
+  diffContent = null;
+  loading = false;
+  firstVisit = false;
   render();
 }
 
 async function navigateToProject(name: string) {
+  currentView = "project";
+  loading = true;
+  diffContent = null;
+  firstVisit = false;
+  render();
   try {
     currentProject = await api.project(name);
-    currentView = "project";
-    diffContent = null;
-    render();
   } catch (err) {
     console.error("Failed to load project:", err);
   }
-}
-
-function navigateHome() {
-  currentView = "home";
-  currentProject = null;
-  diffContent = null;
+  loading = false;
   render();
 }
 
-function navigateToTrace() {
-  currentView = "trace";
-  currentProject = null;
-  diffContent = null;
-  render();
-}
-
-function navigateToSystemLens() {
-  currentView = "system-lens";
-  currentProject = null;
-  diffContent = null;
-  render();
-}
-
-function navigateToCrossProject() {
-  currentView = "cross-project";
-  currentProject = null;
-  diffContent = null;
-  render();
-}
-
-function navigateToRouting() {
-  currentView = "routing";
-  currentProject = null;
-  diffContent = null;
-  render();
-}
-
-// WebSocket connection
+// WebSocket
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
 function connectWebSocket(): void {
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
   const url = `${protocol}//${location.host}/ws`;
-
   try {
     ws = new WebSocket(url);
-
     ws.onopen = () => {
       wsConnected = true;
-      console.log("[ws] connected");
-      render();
+      renderHeader();
+      renderSidebar();
     };
-
     ws.onclose = () => {
       wsConnected = false;
       ws = null;
-      console.log("[ws] disconnected, reconnecting in 3s...");
-      render();
+      renderHeader();
+      renderSidebar();
       reconnectTimer = setTimeout(connectWebSocket, 3000);
     };
-
-    ws.onerror = () => {
-      // onclose will fire after this
-    };
-
+    ws.onerror = () => {};
     ws.onmessage = (evt) => {
       try {
         const msg: WSMessage = JSON.parse(evt.data);
-
         if (msg.type === "heartbeat") return;
-
         if (msg.type === "hook") {
           const entry = msg.data as HookLogEntry;
           addHookEntry(entry);
@@ -270,17 +292,16 @@ function connectWebSocket(): void {
           addRouteToBudget(entry);
           addRouteToLog(entry);
         }
-      } catch {
-        // Ignore malformed messages
-      }
+      } catch {}
     };
   } catch {
     reconnectTimer = setTimeout(connectWebSocket, 3000);
   }
 }
 
-// Initial load
 async function init() {
+  ensureStructure();
+  mainEl!.innerHTML = `<div class="loading-state"><div class="loading-spinner"></div><span>Loading projects...</span></div>`;
   try {
     const [projectsData, timeline] = await Promise.all([
       api.projects(),
@@ -290,11 +311,9 @@ async function init() {
     timelinePoints = timeline;
     render();
   } catch (err) {
-    app.innerHTML = `<div style="padding:20px;color:var(--red)">Failed to connect to AnviDeck server. Is it running on port 3000?</div>`;
+    mainEl!.innerHTML = `<div class="error-state">Failed to connect to AnviDeck server. Is it running on port 3000?</div>`;
     console.error(err);
   }
-
-  // Start WebSocket connection
   connectWebSocket();
 }
 
