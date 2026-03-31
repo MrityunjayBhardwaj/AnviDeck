@@ -3,15 +3,22 @@
 Browser-based observability dashboard for the Ānvīkṣikī cognitive framework. The primary observation instrument for watching the framework operate across all projects, all sessions, in real-time and historically.
 
 ### Required Reading
-1. `BUILD.md` — Complete specification: 6 views, 6 phases, technical architecture, stack decisions, data sources
-2. `~/.claude/thesis/ANVI_THESIS.md` — WHY the framework exists, every mechanism explained
-3. `~/.claude/CLAUDE.md` — The framework itself (principles, catalogues, dharana, dhyana, system lens)
+1. `BUILD.md` — Complete specification: 7 views, 7 phases (1-3 COMPLETE), architecture, data sources
+2. `ref/ANVI_THESIS.md` — WHY the framework exists, Part VI covers the three-tier context architecture this dashboard observes
+3. `ref/DATA_EXAMPLES.md` — Exact input/output for every data type the parser handles
 
-### What This Project Is
+### Current State
 
-The Anvi framework accumulates state: catalogues, dharana entries, memory, session data. A system that accumulates state NECESSARILY needs observability. AnviDeck is that observability — design-entailed, not speculative.
+Phases 1-3 COMPLETE (2,431 lines). App builds and runs (`bun run dev`).
 
-The user opens `localhost:3000` and sees the complete cognitive state: which boundaries are scoped, which checks are firing, what dharana says about the current file, how the framework has evolved over time.
+| Done | Remaining |
+|------|-----------|
+| Data layer + REST API | Phase 4: Real-time session trace (WebSocket + hook logger) |
+| Command Center + Project View | Phase 5: System lens dashboard |
+| Timeline slider with diff mode | Phase 6: Cross-project intelligence |
+| | Phase 7: Context routing visualization |
+
+**Next:** Phase 4 — real-time observability. See BUILD.md Phase 4 (6 subtasks: hook logger, routing logger, WebSocket, cognitive trace, dhyana panel, context budget view).
 
 ### Architecture Decisions
 
@@ -19,11 +26,11 @@ The user opens `localhost:3000` and sees the complete cognitive state: which bou
 
 **Plain TypeScript UI** — no React/Vue/Svelte. Components are functions returning DOM elements. The UI is information-dense and read-heavy — reactivity frameworks add build complexity without proportional benefit.
 
-**No build pipeline for UI** — serve via Bun directly, or single esbuild pass. No webpack, no vite.
+**No build pipeline** — single esbuild pass via `bun run build.ts`. No webpack, no vite.
 
 **Filesystem-only data** — all data read from `~/.claude/` (git repo, catalogues, memory). No database, no API keys, no external services.
 
-**Dark theme, monospace** — engineering instrument, not marketing page. Think Grafana, Bloomberg terminal.
+**Dark theme, monospace** — engineering instrument aesthetic. Grafana/Bloomberg, not Notion.
 
 ### Data Sources
 
@@ -34,17 +41,18 @@ The user opens `localhost:3000` and sees the complete cognitive state: which bou
 | Project memory | `~/.claude/projects/*/memory/*.md` | Glob + parse |
 | Catalogues | `{project}/.anvi/*.md` or `{project}/artifacts/.anvi/*.md` | Glob + parse |
 | Version history | `~/.claude/.git` | git log, git show |
-| Hook activity | `/tmp/anvi-hook-*.log` | Tail + watch |
-| Active sessions | `/tmp/claude-ctx-*.json` | Read + watch |
+| Hook activity | `/tmp/anvi-hook-{session_id}.log` | Tail + watch (Phase 4) |
+| Routing decisions | `/tmp/anvi-route-{session_id}.log` | PostToolUse hook (Phase 4) |
+| Active sessions | `/tmp/claude-ctx-{session_id}.json` | Read + watch |
 
-### Build Phases (from BUILD.md)
+### What This Dashboard Observes (the Three-Tier Architecture)
 
-1. **Data layer + API** — markdown parser, git reader, file watcher, Hono REST routes
-2. **Command Center + Project View** — home view, project deep dive, catalogue trees
-3. **Timeline Slider** — git commit slider, state reconstruction, diff mode
-4. **Real-Time Session Trace** — WebSocket from hook logs, cognitive trace
-5. **System Lens Dashboard** — contribution matrix, cost vs catch, pruning
-6. **Cross-Project Intelligence** — recurring patterns, memory network
+The Anvi framework loads context in three tiers:
+- **Tier 1 (always, 39k):** CLAUDE.md + project CLAUDE.md + base-layer.md
+- **Tier 2 (per-action, hook):** catalogue-context-injector reads dharana from disk on Write|Edit
+- **Tier 3 (per-activity, routing):** Context Routing Protocol classifies user message, loads relevant spec files
+
+AnviDeck visualizes all three tiers: what's always loaded (static), what the hook injected (per-action), and what the routing loaded (per-activity). The Context Budget view (Phase 4.6) shows the combined context usage.
 
 ### Constraints
 
@@ -53,18 +61,3 @@ The user opens `localhost:3000` and sees the complete cognitive state: which bou
 - Fast startup — lazy file reads, immediate UI render
 - Read-heavy, write-light — observe, don't modify (except staleness marking and pruning)
 - Bun as runtime (fast, TypeScript-native)
-
-### Key Types (defined in shared/types.ts)
-
-```typescript
-interface CatalogueEntry {
-  id: string; title: string; sections: Record<string, string>;
-  tags: string[]; origin?: string; why?: string; how?: string;
-}
-interface Catalogue { name: string; path: string; entries: CatalogueEntry[]; lastModified: Date; }
-interface ProjectState {
-  name: string; path: string; catalogues: Catalogue[]; memory: MemoryEntry[];
-  fatalitySignals: number; misalignedInvariants: number; blindSpots: number;
-}
-interface TimelinePoint { hash: string; message: string; date: Date; filesChanged: string[]; }
-```
