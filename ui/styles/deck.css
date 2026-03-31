@@ -1628,3 +1628,224 @@ html, body {
   color: var(--text-2);
   text-align: center;
 }
+
+/* --- Phase 7: Context Routing Visualization --- */
+
+.routing-view {
+  padding: 12px 0;
+  height: 100%;
+  overflow-y: auto;
+}
+
+/* Tier diagram */
+.routing-diagram {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+
+.tier-block {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+}
+
+.tier-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.tier-label {
+  font-weight: 700;
+  font-size: 12px;
+  min-width: 50px;
+}
+
+.tier-name {
+  font-size: 12px;
+  color: var(--text-0);
+  font-weight: 600;
+}
+
+.tier-tokens {
+  font-size: 11px;
+  color: var(--text-2);
+  margin-left: auto;
+}
+
+.tier-desc {
+  font-size: 11px;
+  color: var(--text-2);
+  margin-bottom: 8px;
+}
+
+.tier-bar-container {
+  height: 6px;
+  background: var(--bg-3);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.tier-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.tier-files {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tier-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  font-size: 11px;
+}
+
+.tier-file .file-name {
+  color: var(--text-0);
+  flex: 1;
+}
+
+.tier-file .file-size {
+  color: var(--text-2);
+  min-width: 50px;
+  text-align: right;
+}
+
+.tier-file .file-tokens {
+  color: var(--text-2);
+  min-width: 50px;
+  text-align: right;
+}
+
+/* Routing table */
+.routing-table-section {
+  margin-bottom: 24px;
+}
+
+.routing-card {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 6px;
+  overflow: hidden;
+}
+
+.routing-card.selected {
+  border-color: var(--accent);
+}
+
+.routing-card-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+
+.routing-card-header:hover {
+  background: var(--bg-2);
+}
+
+.activity-name {
+  font-weight: 700;
+  color: var(--text-0);
+  font-size: 13px;
+  min-width: 100px;
+}
+
+.activity-cost {
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.activity-breakdown {
+  font-size: 11px;
+  color: var(--text-2);
+  margin-left: auto;
+}
+
+.routing-card-detail {
+  padding: 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-2);
+}
+
+/* File chain visualization */
+.file-chain {
+  margin-bottom: 12px;
+}
+
+.chain-section {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  flex-wrap: wrap;
+}
+
+.chain-label {
+  font-size: 11px;
+  font-weight: 600;
+  min-width: 120px;
+  flex-shrink: 0;
+}
+
+.chain-file {
+  font-size: 11px;
+  color: var(--text-0);
+  background: var(--bg-3);
+  padding: 2px 6px;
+  border-radius: 2px;
+}
+
+.chain-tokens {
+  color: var(--text-2);
+  font-size: 10px;
+}
+
+.chain-arrow {
+  color: var(--text-2);
+  text-align: center;
+  font-size: 12px;
+  padding: 2px 0;
+}
+
+/* Coverage check */
+.coverage-check {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.coverage-file {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 2px;
+}
+
+.coverage-file.exists {
+  color: var(--green);
+  background: rgba(74, 222, 128, 0.1);
+}
+
+.coverage-file.missing {
+  color: var(--red);
+  background: rgba(248, 113, 113, 0.1);
+}
+
+/* Live routing log */
+.routing-feed {
+  max-height: 300px;
+}

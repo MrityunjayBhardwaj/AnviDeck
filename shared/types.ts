@@ -106,6 +106,37 @@ export type WSMessage =
   | { type: "session"; data: SessionContext }
   | { type: "heartbeat" };
 
+// -- Routing Architecture types --
+
+export interface RoutingFileInfo {
+  path: string;
+  name: string;
+  sizeBytes: number;
+  estimatedTokens: number;
+}
+
+export interface RoutingTier {
+  tier: number;
+  name: string;
+  description: string;
+  files: RoutingFileInfo[];
+  totalTokens: number;
+}
+
+export interface RoutingTableEntry {
+  activity: string;
+  files: string[];
+  catalogues: string[];
+  totalTokens: number;
+  fileDetails: RoutingFileInfo[];
+}
+
+export interface RoutingArchitecture {
+  tiers: RoutingTier[];
+  routingTable: RoutingTableEntry[];
+  totalCapacity: number;
+}
+
 // -- Cross-Project types --
 
 export interface CrossProjectPattern {

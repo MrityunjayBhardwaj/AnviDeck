@@ -171,6 +171,152 @@ api.get("/diff/:from/:to", async (c) => {
   return c.json({ from, to, diff });
 });
 
+// GET /api/routing-architecture — three-tier context architecture with file sizes
+api.get("/routing-architecture", async (c) => {
+  const home = process.env.HOME ?? "/Users/mrityunjaybhardwaj";
+  const anviDir = join(home, ".claude", "anvi", "cognitive-os");
+  const claudeMdPath = join(home, ".claude", "CLAUDE.md");
+
+  function fileInfo(filePath: string, displayName?: string) {
+    try {
+      const stat = statSync(filePath);
+      const sizeBytes = stat.size;
+      const estimatedTokens = Math.round(sizeBytes / 4);
+      return {
+        path: filePath,
+        name: displayName ?? filePath.split("/").pop() ?? filePath,
+        sizeBytes,
+        estimatedTokens,
+      };
+    } catch {
+      return {
+        path: filePath,
+        name: displayName ?? filePath.split("/").pop() ?? filePath,
+        sizeBytes: 0,
+        estimatedTokens: 0,
+      };
+    }
+  }
+
+  // Tier 1: Always loaded
+  const tier1Files = [
+    fileInfo(claudeMdPath, "CLAUDE.md (global)"),
+    fileInfo(join(anviDir, "base-layer.md"), "base-layer.md"),
+  ];
+
+  // Tier 2: Hook injection (dynamic, no static files)
+  const tier2Files = [
+    {
+      path: join(home, ".claude", "hooks", "catalogue-context-injector.js"),
+      name: "catalogue-context-injector.js (dynamic injection)",
+      sizeBytes: 0,
+      estimatedTokens: 500, // average injection size
+    },
+  ];
+
+  // Tier 3: Per-activity routing
+  const routingTable = [
+    {
+      activity: "Debugging",
+      files: ["adaptive-observation.md", "diagnose.md"],
+      catalogues: ["hetvabhasa.md"],
+    },
+    {
+      activity: "Planning",
+      files: ["dharana-spec.md", "design.md"],
+      catalogues: ["dharana.md"],
+    },
+    {
+      activity: "Implementing",
+      files: ["dhyana-spec.md"],
+      catalogues: ["dharana.md", "vyapti.md", "krama.md"],
+    },
+    {
+      activity: "Verifying",
+      files: ["adaptive-observation.md", "review.md"],
+      catalogues: ["dharana.md"],
+    },
+    {
+      activity: "Resuming",
+      files: ["dhyana-spec.md", "dharana-spec.md"],
+      catalogues: ["dharana.md"],
+    },
+  ];
+
+  // Build tier 3 file list (unique)
+  const tier3FileNames = new Set<string>();
+  for (const route of routingTable) {
+    for (const f of route.files) tier3FileNames.add(f);
+  }
+
+  const tier3Files = [...tier3FileNames].map((f) => {
+    // Try modes/ subdirectory first, then root
+    const modesPath = join(anviDir, "modes", f);
+    const rootPath = join(anviDir, f);
+    try {
+      statSync(modesPath);
+      return fileInfo(modesPath, f);
+    } catch {
+      return fileInfo(rootPath, f);
+    }
+  });
+
+  const tier1Total = tier1Files.reduce((s, f) => s + f.estimatedTokens, 0);
+  const tier2Total = tier2Files.reduce((s, f) => s + f.estimatedTokens, 0);
+  const tier3Total = tier3Files.reduce((s, f) => s + f.estimatedTokens, 0);
+
+  // Build routing table with token costs
+  const routingTableWithCosts = routingTable.map((route) => {
+    const files = route.files.map((f) => {
+      const modesPath = join(anviDir, "modes", f);
+      const rootPath = join(anviDir, f);
+      try {
+        statSync(modesPath);
+        return fileInfo(modesPath, f);
+      } catch {
+        return fileInfo(rootPath, f);
+      }
+    });
+    const totalTokens =
+      tier1Total + files.reduce((s, f) => s + f.estimatedTokens, 0);
+    return {
+      activity: route.activity,
+      files: route.files,
+      catalogues: route.catalogues,
+      totalTokens,
+      fileDetails: files,
+    };
+  });
+
+  return c.json({
+    tiers: [
+      {
+        tier: 1,
+        name: "Always Loaded",
+        description: "Loaded every prompt. Global instructions + base cognitive checks.",
+        files: tier1Files,
+        totalTokens: tier1Total,
+      },
+      {
+        tier: 2,
+        name: "Per-Action (Hook)",
+        description: "Injected by catalogue-context-injector on Write|Edit. Project-specific boundary checks.",
+        files: tier2Files,
+        totalTokens: tier2Total,
+      },
+      {
+        tier: 3,
+        name: "Per-Activity (Routed)",
+        description: "Loaded based on activity classification. Full spec files for the current task type.",
+        files: tier3Files,
+        totalTokens: tier3Total,
+      },
+    ],
+    routingTable: routingTableWithCosts,
+    totalCapacity: 200_000,
+  });
+});
+
 // GET /api/cross-project — cross-project pattern analysis
 api.get("/cross-project", async (c) => {
   const projects = await discoverProjects();

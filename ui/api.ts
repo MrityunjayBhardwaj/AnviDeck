@@ -1,4 +1,4 @@
-import type { ProjectSummary, ProjectState, MemoryEntry, TimelinePoint, HookLogSession, CrossProjectData } from "../shared/types";
+import type { ProjectSummary, ProjectState, MemoryEntry, TimelinePoint, HookLogSession, CrossProjectData, RoutingArchitecture } from "../shared/types";
 
 const BASE = "/api";
 
@@ -19,5 +19,6 @@ export const api = {
   stateAt: (hash: string, file: string) => get<{ hash: string; file: string; content: string }>(`/state-at/${hash}?file=${encodeURIComponent(file)}`),
   hookLogs: () => get<{ sessions: HookLogSession[] }>("/hook-logs"),
   crossProject: () => get<CrossProjectData>("/cross-project"),
+  routingArchitecture: () => get<RoutingArchitecture>("/routing-architecture"),
   entryDates: (name: string) => get<Record<string, { created: string; lastModified: string }>>(`/project/${encodeURIComponent(name)}/entry-dates`),
 };

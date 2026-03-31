@@ -11,6 +11,7 @@ import {
 } from "./components/CognitiveTrace";
 import { SystemLens } from "./components/SystemLens";
 import { CrossProject } from "./components/CrossProject";
+import { RoutingView, addRouteToLog } from "./components/RoutingView";
 import {
   ContextBudget,
   addHookToBudget,
@@ -27,7 +28,7 @@ import type {
 } from "../shared/types";
 
 // State
-let currentView: "home" | "project" | "trace" | "system-lens" | "cross-project" = "home";
+let currentView: "home" | "project" | "trace" | "system-lens" | "cross-project" | "routing" = "home";
 let projects: ProjectSummary[] = [];
 let currentProject: ProjectState | null = null;
 let timelinePoints: TimelinePoint[] = [];
@@ -86,6 +87,12 @@ function render() {
   cpItem.addEventListener("click", navigateToCrossProject);
   nav.appendChild(cpItem);
 
+  const routingItem = document.createElement("div");
+  routingItem.className = `nav-item${currentView === "routing" ? " active" : ""}`;
+  routingItem.textContent = "Routing";
+  routingItem.addEventListener("click", navigateToRouting);
+  nav.appendChild(routingItem);
+
   sidebar.appendChild(nav);
 
   // Projects section
@@ -133,6 +140,8 @@ function render() {
     main.appendChild(SystemLens(projects, render));
   } else if (currentView === "cross-project") {
     main.appendChild(CrossProject(render));
+  } else if (currentView === "routing") {
+    main.appendChild(RoutingView(render));
   }
 
   // Show diff viewer if in diff mode
@@ -209,6 +218,13 @@ function navigateToCrossProject() {
   render();
 }
 
+function navigateToRouting() {
+  currentView = "routing";
+  currentProject = null;
+  diffContent = null;
+  render();
+}
+
 // WebSocket connection
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -252,6 +268,7 @@ function connectWebSocket(): void {
           const entry = msg.data as RouteLogEntry;
           addRouteEntry(entry);
           addRouteToBudget(entry);
+          addRouteToLog(entry);
         }
       } catch {
         // Ignore malformed messages
