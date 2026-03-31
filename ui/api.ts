@@ -1,4 +1,4 @@
-import type { ProjectSummary, ProjectState, MemoryEntry, TimelinePoint, HookLogSession } from "../shared/types";
+import type { ProjectSummary, ProjectState, MemoryEntry, TimelinePoint, HookLogSession, CrossProjectData } from "../shared/types";
 
 const BASE = "/api";
 
@@ -18,5 +18,6 @@ export const api = {
   diff: (from: string, to: string) => get<{ from: string; to: string; diff: string }>(`/diff/${from}/${to}`),
   stateAt: (hash: string, file: string) => get<{ hash: string; file: string; content: string }>(`/state-at/${hash}?file=${encodeURIComponent(file)}`),
   hookLogs: () => get<{ sessions: HookLogSession[] }>("/hook-logs"),
+  crossProject: () => get<CrossProjectData>("/cross-project"),
   entryDates: (name: string) => get<Record<string, { created: string; lastModified: string }>>(`/project/${encodeURIComponent(name)}/entry-dates`),
 };

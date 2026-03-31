@@ -171,6 +171,196 @@ api.get("/diff/:from/:to", async (c) => {
   return c.json({ from, to, diff });
 });
 
+// GET /api/cross-project — cross-project pattern analysis
+api.get("/cross-project", async (c) => {
+  const projects = await discoverProjects();
+  const allEntries: {
+    project: string;
+    catalogue: string;
+    id: string;
+    title: string;
+    sections: Record<string, string>;
+    tags: string[];
+  }[] = [];
+  const allMemory: {
+    project: string;
+    name: string;
+    description: string;
+    type: string;
+  }[] = [];
+
+  // Load all projects with catalogues
+  for (const proj of projects) {
+    const catalogues = await readCatalogues(proj.decoded);
+    for (const cat of catalogues) {
+      for (const entry of cat.entries) {
+        allEntries.push({
+          project: proj.name,
+          catalogue: cat.name,
+          id: entry.id,
+          title: entry.title,
+          sections: entry.sections,
+          tags: entry.tags,
+        });
+      }
+    }
+
+    const memory = await readProjectMemory(proj.encoded);
+    for (const mem of memory) {
+      allMemory.push({
+        project: proj.name,
+        name: mem.name,
+        description: mem.description,
+        type: mem.type,
+      });
+    }
+  }
+
+  // Find recurring hetvabhasa patterns across projects
+  const hetvabhasaEntries = allEntries.filter((e) => e.catalogue === "hetvabhasa");
+  const recurringPatterns = findRecurringPatterns(hetvabhasaEntries);
+
+  // Find shared vyapti invariants across projects
+  const vyaptiEntries = allEntries.filter((e) => e.catalogue === "vyapti");
+  const sharedInvariants = findRecurringPatterns(vyaptiEntries);
+
+  // Group memory by type
+  const memoryByType: Record<
+    string,
+    { project: string; name: string; description: string }[]
+  > = {};
+  for (const mem of allMemory) {
+    if (!memoryByType[mem.type]) memoryByType[mem.type] = [];
+    memoryByType[mem.type].push({
+      project: mem.project,
+      name: mem.name,
+      description: mem.description,
+    });
+  }
+
+  return c.json({
+    recurringPatterns,
+    sharedInvariants,
+    memoryNetwork: { byType: memoryByType, totalCount: allMemory.length },
+    projectCount: projects.length,
+  });
+});
+
+/**
+ * Find entries across different projects that share significant keywords
+ * in their title or sections.
+ */
+function findRecurringPatterns(
+  entries: {
+    project: string;
+    catalogue: string;
+    id: string;
+    title: string;
+    sections: Record<string, string>;
+    tags: string[];
+  }[]
+): {
+  keyword: string;
+  entries: { project: string; entryId: string; title: string; content: string }[];
+}[] {
+  // Extract significant keywords from each entry
+  const stopWords = new Set([
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "shall", "can", "need", "must", "ought",
+    "and", "but", "or", "nor", "not", "so", "yet", "both", "either",
+    "neither", "each", "every", "all", "any", "few", "more", "most",
+    "other", "some", "such", "no", "only", "own", "same", "than",
+    "too", "very", "just", "because", "as", "until", "while", "of",
+    "at", "by", "for", "with", "about", "against", "between", "through",
+    "during", "before", "after", "above", "below", "to", "from", "up",
+    "down", "in", "out", "on", "off", "over", "under", "again", "further",
+    "then", "once", "here", "there", "when", "where", "why", "how",
+    "this", "that", "these", "those", "what", "which", "who", "whom",
+    "it", "its", "if", "into",
+  ]);
+
+  function extractKeywords(text: string): string[] {
+    return text
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length >= 4 && !stopWords.has(w));
+  }
+
+  // Build keyword → entries map
+  const keywordMap = new Map<
+    string,
+    Set<string> // project names
+  >();
+  const keywordEntries = new Map<
+    string,
+    { project: string; entryId: string; title: string; content: string }[]
+  >();
+
+  for (const entry of entries) {
+    const text = [
+      entry.title,
+      ...Object.values(entry.sections),
+      ...entry.tags,
+    ].join(" ");
+    const keywords = extractKeywords(text);
+
+    for (const kw of new Set(keywords)) {
+      if (!keywordMap.has(kw)) keywordMap.set(kw, new Set());
+      keywordMap.get(kw)!.add(entry.project);
+
+      if (!keywordEntries.has(kw)) keywordEntries.set(kw, []);
+      // Avoid duplicating same entry for same keyword
+      const existing = keywordEntries.get(kw)!;
+      if (!existing.some((e) => e.entryId === entry.id && e.project === entry.project)) {
+        existing.push({
+          project: entry.project,
+          entryId: entry.id,
+          title: entry.title,
+          content: Object.values(entry.sections).join(" ").slice(0, 200),
+        });
+      }
+    }
+  }
+
+  // Find keywords that appear in 2+ different projects
+  const patterns: {
+    keyword: string;
+    entries: { project: string; entryId: string; title: string; content: string }[];
+  }[] = [];
+
+  for (const [keyword, projectSet] of keywordMap) {
+    if (projectSet.size >= 2) {
+      patterns.push({
+        keyword,
+        entries: keywordEntries.get(keyword) ?? [],
+      });
+    }
+  }
+
+  // Sort by number of projects (most widespread first), then by entry count
+  patterns.sort((a, b) => {
+    const aProjects = new Set(a.entries.map((e) => e.project)).size;
+    const bProjects = new Set(b.entries.map((e) => e.project)).size;
+    if (bProjects !== aProjects) return bProjects - aProjects;
+    return b.entries.length - a.entries.length;
+  });
+
+  // Deduplicate: if two keywords have the exact same entry set, keep the one with more entries
+  const seen = new Set<string>();
+  const deduped: typeof patterns = [];
+  for (const p of patterns) {
+    const key = p.entries.map((e) => `${e.project}:${e.entryId}`).sort().join("|");
+    if (!seen.has(key)) {
+      seen.add(key);
+      deduped.push(p);
+    }
+  }
+
+  return deduped.slice(0, 50); // top 50
+}
+
 // GET /api/hook-logs — aggregated hook log data from /tmp/
 api.get("/hook-logs", (c) => {
   const sessions: Record<

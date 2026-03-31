@@ -10,6 +10,7 @@ import {
   resetTrace,
 } from "./components/CognitiveTrace";
 import { SystemLens } from "./components/SystemLens";
+import { CrossProject } from "./components/CrossProject";
 import {
   ContextBudget,
   addHookToBudget,
@@ -26,7 +27,7 @@ import type {
 } from "../shared/types";
 
 // State
-let currentView: "home" | "project" | "trace" | "system-lens" = "home";
+let currentView: "home" | "project" | "trace" | "system-lens" | "cross-project" = "home";
 let projects: ProjectSummary[] = [];
 let currentProject: ProjectState | null = null;
 let timelinePoints: TimelinePoint[] = [];
@@ -79,6 +80,12 @@ function render() {
   lensItem.addEventListener("click", navigateToSystemLens);
   nav.appendChild(lensItem);
 
+  const cpItem = document.createElement("div");
+  cpItem.className = `nav-item${currentView === "cross-project" ? " active" : ""}`;
+  cpItem.textContent = "Cross-Project";
+  cpItem.addEventListener("click", navigateToCrossProject);
+  nav.appendChild(cpItem);
+
   sidebar.appendChild(nav);
 
   // Projects section
@@ -124,6 +131,8 @@ function render() {
     main.appendChild(ContextBudget());
   } else if (currentView === "system-lens") {
     main.appendChild(SystemLens(projects, render));
+  } else if (currentView === "cross-project") {
+    main.appendChild(CrossProject(render));
   }
 
   // Show diff viewer if in diff mode
@@ -188,6 +197,13 @@ function navigateToTrace() {
 
 function navigateToSystemLens() {
   currentView = "system-lens";
+  currentProject = null;
+  diffContent = null;
+  render();
+}
+
+function navigateToCrossProject() {
+  currentView = "cross-project";
   currentProject = null;
   diffContent = null;
   render();

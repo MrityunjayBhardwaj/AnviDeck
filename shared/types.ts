@@ -106,6 +106,23 @@ export type WSMessage =
   | { type: "session"; data: SessionContext }
   | { type: "heartbeat" };
 
+// -- Cross-Project types --
+
+export interface CrossProjectPattern {
+  keyword: string;
+  entries: { project: string; entryId: string; title: string; content: string }[];
+}
+
+export interface CrossProjectData {
+  recurringPatterns: CrossProjectPattern[];
+  sharedInvariants: CrossProjectPattern[];
+  memoryNetwork: {
+    byType: Record<string, { project: string; name: string; description: string }[]>;
+    totalCount: number;
+  };
+  projectCount: number;
+}
+
 // -- System Lens types --
 
 export interface ContributionCell {

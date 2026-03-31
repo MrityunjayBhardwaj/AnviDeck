@@ -1474,3 +1474,157 @@ html, body {
   color: var(--green);
   font-weight: 600;
 }
+
+/* --- Phase 6: Cross-Project Intelligence --- */
+
+.cross-project {
+  padding: 12px 0;
+  height: 100%;
+  overflow-y: auto;
+}
+
+.cp-section {
+  margin-bottom: 24px;
+}
+
+.cp-desc {
+  font-size: 12px;
+  color: var(--text-2);
+  margin-bottom: 12px;
+}
+
+.pattern-card {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 6px;
+  overflow: hidden;
+}
+
+.pattern-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  cursor: pointer;
+  flex-wrap: wrap;
+}
+
+.pattern-header:hover {
+  background: var(--bg-2);
+}
+
+.pattern-keyword {
+  font-weight: 700;
+  color: var(--accent);
+  font-size: 13px;
+}
+
+.pattern-count {
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.pattern-projects {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.project-badge {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.pattern-entries {
+  padding: 4px 12px 8px;
+  border-top: 1px solid var(--border);
+}
+
+.pattern-entry {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--bg-2);
+  flex-wrap: wrap;
+}
+
+.entry-id {
+  font-weight: 700;
+  color: var(--cyan);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.entry-title-text {
+  font-size: 12px;
+  color: var(--text-0);
+}
+
+.entry-preview {
+  width: 100%;
+  font-size: 11px;
+  color: var(--text-2);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+/* Memory network */
+.memory-group {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+
+.memory-group-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--bg-2);
+}
+
+.memory-type {
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--accent);
+}
+
+.memory-count {
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.memory-entries {
+  padding: 4px 12px;
+}
+
+.memory-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--bg-2);
+  font-size: 12px;
+}
+
+.memory-name {
+  color: var(--text-0);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memory-more {
+  padding: 6px 0;
+  font-size: 11px;
+  color: var(--text-2);
+  text-align: center;
+}
