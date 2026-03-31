@@ -1,0 +1,1 @@
+/Users/mrityunjaybhardwaj/.claude/hooks/catalogue-context-injector.js
