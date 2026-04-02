@@ -31,7 +31,7 @@ Phases 1-7 COMPLETE (~7,000 lines). UX polish pass done. App builds and runs (`b
 |------|-----------|
 | Data layer + REST API | Phase 8: Brain View (project cognitive state — situation map + flow + evolution) |
 | Command Center + Project View | Phase 9: GitHub Trace (knowledge → artifact → outcome loop via `gh` CLI) |
-| Timeline slider with diff mode | |
+| Timeline slider with diff mode | Phase 10: Ground Truth Visualization (three-layer grounding observability) |
 | Real-time session trace (WebSocket + hooks) | |
 | System Lens dashboard (contribution matrix) | |
 | Cross-project intelligence (pattern recognition) | |

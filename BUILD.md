@@ -513,6 +513,61 @@ OBSERVE → LEARN → ACTIVATE → ACT → PRODUCE → VERIFY → REFINE → loo
 
 **Data model decision: NO Neo4j.** Investigated graph visualization (2026-04-01): 41 nodes, 27 edges, 1.6% density — too sparse for graph layout. Data is stratified by cognitive function, not networked. Tables and strata represent it correctly. `gh` CLI + local git provide all needed data. Zero external infrastructure maintained.
 
+### Phase 10: Ground Truth Visualization (three-layer grounding observability) — TODO
+
+**Goal:** Visualize the three-layer grounding chain (Catalogue → Ground Truth doc → source code) introduced in Anvi v1.1.0. Show which entries are grounded, which are ungrounded, and let the user click through the full provenance chain.
+
+**Why this matters:** Ground Truth docs (`artifacts/ref/GROUND_TRUTH_*.md`) trace external system pipelines with `file:line` citations. Every catalogue entry should have a `**REF:**` field pointing to these docs. Without visibility into grounding status, ungrounded entries accumulate silently — the very failure mode Ground Truth was designed to prevent.
+
+**10.1 Grounding Health in Command Center:**
+- Add to Framework Health panel: `Grounding: 14/22 entries (64%)` with color (green >80%, yellow >50%, red <50%)
+- Per-project grounding percentage in project list
+- Ungrounded entries count as a health signal alongside fatality/misaligned/blind spots
+
+**10.2 Ground Truth Inventory in ProjectView:**
+- New panel: "Ground Truth Documents"
+- Table: system name, doc path, lines, code citations, stages, last modified date
+- Source directories: `artifacts/ref/sources/[system]/` with file count
+- Grounding bar: visual showing grounded vs ungrounded entries per catalogue
+
+**10.3 REF Display in CatalogueTree:**
+- Each catalogue entry shows its `**REF:**` field below the title
+- REF is clickable → opens the referenced Ground Truth doc section
+- Ungrounded entries highlighted with amber border
+- Filter: "show ungrounded only" toggle
+
+**10.4 Provenance Chain Drill-Down:**
+- Click any REF → shows: Ground Truth doc section (the interpretation) + cited source code lines
+- Three-panel view: Catalogue entry | Ground Truth section | Source code snippet
+- The full chain visible on one screen: compact claim → interpretation with context → actual code
+
+**10.5 BrainView Ground Truth Layer:**
+- In the State tab: overlay showing which boundaries have Ground Truth docs
+- Boundaries WITH Ground Truth: solid border
+- Boundaries WITHOUT: dashed border with "OPAQUE" label
+- Click boundary → shows Ground Truth doc's boundary map entry for that boundary
+
+**10.6 Server-Side:**
+- New reader: `server/readers/ground-truth.ts`
+  - Scans `artifacts/ref/GROUND_TRUTH_*.md` files
+  - Parses: system name (from filename), line count, code citation count (regex `[a-z_]+\.(js|rb|ts):\d+`), stage count (`## STAGE`)
+  - Scans `artifacts/ref/sources/*/` directories for file inventory
+- New API endpoint: `GET /api/projects/:name/grounding`
+  - Returns `GroundingStatus`: total/grounded/ungrounded entries, Ground Truth doc list, source directories
+- Update existing endpoints to include `groundingPercent` in ProjectSummary
+
+**Verification:**
+- Open Command Center → grounding percentage visible per project
+- Click project → Ground Truth Inventory panel shows all docs with stats
+- Click catalogue entry with REF → three-panel provenance drill-down works
+- Click ungrounded entry → amber highlight, no REF to display
+- BrainView shows solid vs dashed boundaries for grounded vs opaque
+
+**Dependencies:**
+- Phase 8 (BrainView) for the boundary overlay
+- Types already in `shared/types.ts`: `GroundTruthDoc`, `GroundingStatus`, `CatalogueEntry.ref`, `CatalogueEntry.grounded`
+- Parser already extracts `**REF:**` fields (v1.1.0 commit `ab99487`)
+
 ---
 
 ## Design Principles for AnviDeck Itself
@@ -568,3 +623,5 @@ AnviDeck is successful when:
 6. **Brain View** (Phase 8): For any project, see the complete cognitive state on one screen — what the brain knows (state), what it's doing right now (flow), and how it got here (evolution).
 
 7. **Full traceability** (Phase 9): For any catalogue entry, trace to the GitHub artifacts it informed. For any issue/PR, trace back to the brain entries that were active. The full loop from knowledge to artifact is visible.
+
+8. **Grounded claims** (Phase 10): For any catalogue entry, see whether it's grounded in source code. Click through the three-layer chain: entry → Ground Truth doc → source file:line. Ungrounded entries are visually flagged. The dashboard answers: "how much of our knowledge is actually backed by code?"
