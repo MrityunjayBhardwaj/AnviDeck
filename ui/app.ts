@@ -18,6 +18,8 @@ import {
   addRouteToBudget,
   resetBudget,
 } from "./components/ContextBudget";
+import { BrainView, addBrainHookEvent, addBrainRouteEvent } from "./components/BrainView";
+import { GitHubTrace } from "./components/GitHubTrace";
 import type {
   ProjectSummary,
   ProjectState,
@@ -35,11 +37,14 @@ export interface Nav {
   toSystemLens: (project?: string) => void;
   toCrossProject: () => void;
   toRouting: () => void;
+  toBrain: (project: string) => void;
+  toGitHubTrace: (project?: string) => void;
   render: () => void;
 }
 
 // State
-type ViewName = "home" | "project" | "trace" | "system-lens" | "cross-project" | "routing";
+type ViewName = "home" | "project" | "trace" | "system-lens" | "cross-project" | "routing" | "brain" | "github-trace";
+let currentBrainProject: string | null = null;
 let currentView: ViewName = "home";
 let projects: ProjectSummary[] = [];
 let currentProject: ProjectState | null = null;
@@ -63,14 +68,24 @@ const nav: Nav = {
   },
   toCrossProject: () => navigateTo("cross-project"),
   toRouting: () => navigateTo("routing"),
+  toBrain: (project: string) => {
+    currentBrainProject = project;
+    navigateTo("brain");
+  },
+  toGitHubTrace: (project?: string) => {
+    if (project) currentBrainProject = project;
+    navigateTo("github-trace");
+  },
   render,
 };
 
 // DOM refs — preserved across renders to prevent flicker
 let headerEl: HTMLElement | null = null;
 let sidebarEl: HTMLElement | null = null;
+let sidebarToggle: HTMLElement | null = null;
 let mainEl: HTMLElement | null = null;
 let timelineEl: HTMLElement | null = null;
+let sidebarCollapsed = false;
 
 const app = document.getElementById("app")!;
 
@@ -85,9 +100,24 @@ function ensureStructure() {
     const body = document.createElement("div");
     body.className = "deck-body";
 
+    const sidebarWrap = document.createElement("div");
+    sidebarWrap.className = "sidebar-wrap";
+
+    sidebarToggle = document.createElement("button");
+    sidebarToggle.className = "sidebar-toggle";
+    sidebarToggle.innerHTML = `<span class="sidebar-toggle-icon">◀</span>`;
+    sidebarToggle.addEventListener("click", () => {
+      sidebarCollapsed = !sidebarCollapsed;
+      sidebarWrap.classList.toggle("collapsed", sidebarCollapsed);
+      sidebarToggle!.querySelector(".sidebar-toggle-icon")!.textContent = sidebarCollapsed ? "▶" : "◀";
+    });
+    sidebarWrap.appendChild(sidebarToggle);
+
     sidebarEl = document.createElement("div");
     sidebarEl.className = "sidebar";
-    body.appendChild(sidebarEl);
+    sidebarWrap.appendChild(sidebarEl);
+
+    body.appendChild(sidebarWrap);
 
     mainEl = document.createElement("div");
     mainEl.className = "main-content";
@@ -127,6 +157,7 @@ function renderSidebar() {
   const views: { id: ViewName; label: string; extra?: string }[] = [
     { id: "home", label: "Command Center" },
     { id: "trace", label: "Live Trace", extra: wsConnected ? '<span class="ws-indicator connected"></span>' : '<span class="ws-indicator"></span>' },
+    { id: "brain", label: "Brain" },
     { id: "system-lens", label: "System Lens" },
     { id: "cross-project", label: "Cross-Project" },
     { id: "routing", label: "Routing" },
@@ -195,6 +226,17 @@ function renderMain() {
     mainEl!.appendChild(CrossProject(nav));
   } else if (currentView === "routing") {
     mainEl!.appendChild(RoutingView(nav));
+  } else if (currentView === "github-trace") {
+    const gtProject = currentBrainProject ?? projects[0]?.name ?? "";
+    const projectNames = projects.map((p) => p.name);
+    mainEl!.appendChild(GitHubTrace(projectNames, gtProject, nav));
+  } else if (currentView === "brain") {
+    const brainProject = currentBrainProject ?? projects[0]?.name;
+    if (brainProject) {
+      mainEl!.appendChild(BrainView(brainProject, nav, projects.map((p) => p.name)));
+    } else {
+      mainEl!.innerHTML = `<div class="brain-empty"><div class="brain-empty-title">No project selected</div><div class="brain-empty-desc">Click a project in the sidebar to view its brain.</div></div>`;
+    }
   }
 
   if (diffContent !== null) {
@@ -207,11 +249,16 @@ function renderMain() {
 }
 
 function renderTimeline() {
-  if (timelinePoints.length > 0) {
+  const showTimeline = currentView === "home" || currentView === "project";
+  if (timelinePoints.length > 0 && showTimeline) {
     timelineEl!.innerHTML = "";
+    timelineEl!.style.display = "";
     const initialIndex = timelineState?.selectedIndex ?? 0;
     const timeline = Timeline(timelinePoints, initialIndex, onTimelineChange);
     timelineEl!.appendChild(timeline);
+  } else {
+    timelineEl!.innerHTML = "";
+    timelineEl!.style.display = "none";
   }
 }
 
@@ -286,11 +333,13 @@ function connectWebSocket(): void {
           const entry = msg.data as HookLogEntry;
           addHookEntry(entry);
           addHookToBudget(entry);
+          addBrainHookEvent(entry);
         } else if (msg.type === "route") {
           const entry = msg.data as RouteLogEntry;
           addRouteEntry(entry);
           addRouteToBudget(entry);
           addRouteToLog(entry);
+          addBrainRouteEvent(entry);
         }
       } catch {}
     };

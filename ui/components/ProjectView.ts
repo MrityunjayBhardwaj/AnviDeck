@@ -24,6 +24,7 @@ export function ProjectView(
   quickLinks.className = "project-quick-links";
 
   const links: { label: string; onClick: () => void }[] = [
+    { label: "Brain", onClick: () => nav.toBrain(project.name) },
     { label: "System Lens", onClick: () => nav.toSystemLens(project.name) },
     { label: "Live Trace", onClick: nav.toTrace },
     { label: "Cross-Project", onClick: nav.toCrossProject },
