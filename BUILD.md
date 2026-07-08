@@ -4,7 +4,7 @@
 
 A browser-based observability dashboard for the Ānvīkṣikī cognitive framework. The primary observation instrument for watching the framework operate across all projects, all sessions, in real-time and historically.
 
-Open `localhost:3000` in a browser. See everything. Click anything. Slide the timeline. Understand what led to every cognition and action.
+Open `localhost:4000` in a browser. See everything. Click anything. Slide the timeline. Understand what led to every cognition and action.
 
 ## Why This Exists (Design-Entailed)
 
@@ -563,7 +563,7 @@ AnviDeck is successful when:
 
 4. **Across projects**, recurring patterns are surfaced automatically — the user doesn't need to manually compare catalogues. ✅ (Phase 6: Cross-Project Intelligence)
 
-5. **Zero friction:** Opening `localhost:3000` shows everything. No login, no config, no waiting. ✅ (All phases)
+5. **Zero friction:** Opening `localhost:4000` shows everything. No login, no config, no waiting. ✅ (All phases)
 
 6. **Brain View** (Phase 8): For any project, see the complete cognitive state on one screen — what the brain knows (state), what it's doing right now (flow), and how it got here (evolution).
 
