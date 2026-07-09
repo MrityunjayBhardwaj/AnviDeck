@@ -7,6 +7,22 @@ Browser-based observability dashboard for the Ānvīkṣikī cognitive framework
 2. `ref/ANVI_THESIS.md` — WHY the framework exists, Part VI covers the three-tier context architecture this dashboard observes
 3. `ref/DATA_EXAMPLES.md` — Exact input/output for every data type the parser handles
 
+### v1.1.0 Ground Truth Awareness
+
+AnviDeck now understands the three-layer grounding abstraction:
+- `CatalogueEntry.ref` — the `**REF:**` field from catalogue entries (links to Ground Truth docs)
+- `CatalogueEntry.grounded` — boolean, true if entry has a non-UNGROUNDED REF
+- `GroundingStatus` — per-project stats: grounded/ungrounded counts, Ground Truth doc inventory
+- `ProjectSummary.groundingPercent` — percentage of entries with Ground Truth refs
+- Parser extracts `**REF:**` lines from catalogue markdown
+
+**Still needed (future phases):**
+- Server reader for Ground Truth doc inventory (scan `artifacts/ref/GROUND_TRUTH_*.md`)
+- ProjectView grounding status panel (bar chart: grounded vs ungrounded)
+- CatalogueTree REF display (clickable links to Ground Truth docs)
+- BrainView Ground Truth layer (show which boundaries have Ground Truth docs)
+- Command Center grounding health metric
+
 ### Current State
 
 Phases 1-7 COMPLETE (~7,000 lines). UX polish pass done. App builds and runs (`bun run dev`).
@@ -15,7 +31,7 @@ Phases 1-7 COMPLETE (~7,000 lines). UX polish pass done. App builds and runs (`b
 |------|-----------|
 | Data layer + REST API | Phase 8: Brain View (project cognitive state — situation map + flow + evolution) |
 | Command Center + Project View | Phase 9: GitHub Trace (knowledge → artifact → outcome loop via `gh` CLI) |
-| Timeline slider with diff mode | |
+| Timeline slider with diff mode | Phase 10: Ground Truth Visualization (three-layer grounding observability) |
 | Real-time session trace (WebSocket + hooks) | |
 | System Lens dashboard (contribution matrix) | |
 | Cross-project intelligence (pattern recognition) | |

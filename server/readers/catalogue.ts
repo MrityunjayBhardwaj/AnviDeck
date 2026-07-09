@@ -1,33 +1,25 @@
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { parseCatalogueEntries } from "../../shared/parser";
+import { resolveDir } from "../../shared/anvi-paths";
 import type { Catalogue, BoundaryInfo } from "../../shared/types";
 
 const CATALOGUE_NAMES = ["hetvabhasa", "vyapti", "krama", "dharana"];
 
 /**
+ * The knowledge catalogues that count toward grounding. Matches anvi's
+ * session-start hook and anvi-tools, which measure grounding over these three
+ * only — dharana is the meta/focus catalogue and is excluded from the denominator.
+ */
+export const GROUNDING_CATALOGUES = ["hetvabhasa", "vyapti", "krama"];
+
+/**
  * Find the .anvi/ directory for a project.
- * Checks both `{projectPath}/.anvi` and `{projectPath}/artifacts/.anvi`.
+ * Resolves through the shared resolver, which also checks the centralized
+ * `~/.anvideck/projects/{name}/.anvi` location (where anvi now keeps catalogues).
  */
 export function findAnviDir(projectPath: string): string | null {
-  const candidates = [
-    join(projectPath, ".anvi"),
-    join(projectPath, "artifacts", ".anvi"),
-  ];
-
-  for (const candidate of candidates) {
-    try {
-      const s = Bun.file(candidate);
-      // Bun.file doesn't check dirs — use sync stat
-      const fs = require("node:fs");
-      if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
-        return candidate;
-      }
-    } catch {
-      continue;
-    }
-  }
-  return null;
+  return resolveDir(projectPath, ".anvi");
 }
 
 /**

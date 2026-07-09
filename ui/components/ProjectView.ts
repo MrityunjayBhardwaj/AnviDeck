@@ -24,6 +24,7 @@ export function ProjectView(
   quickLinks.className = "project-quick-links";
 
   const links: { label: string; onClick: () => void }[] = [
+    { label: "Brain", onClick: () => nav.toBrain(project.name) },
     { label: "System Lens", onClick: () => nav.toSystemLens(project.name) },
     { label: "Live Trace", onClick: nav.toTrace },
     { label: "Cross-Project", onClick: nav.toCrossProject },
@@ -102,6 +103,38 @@ export function ProjectView(
 
     boundaryCard.appendChild(list);
     el.appendChild(boundaryCard);
+  }
+
+  // Ground Truth Inventory
+  const g = project.grounding;
+  if (g) {
+    const gtCard = document.createElement("div");
+    gtCard.className = "card";
+    const gtPct = g.totalEntries > 0 ? Math.round((g.groundedEntries / g.totalEntries) * 100) : 0;
+    const gtColor = gtPct > 80 ? "var(--green)" : gtPct > 50 ? "var(--yellow)" : "var(--red)";
+
+    let gtBody = `<div class="gt-grounding-row"><span class="gt-label">Grounding:</span><div class="gt-bar"><div class="gt-bar-fill" style="width:${Math.max(gtPct, 2)}%;background:${gtColor}"></div></div><span class="gt-pct" style="color:${gtColor}">${g.groundedEntries}/${g.totalEntries} (${gtPct}%)</span></div>`;
+
+    if (g.groundTruthDocs.length > 0) {
+      gtBody += `<div class="gt-docs-title">Documents:</div>`;
+      for (const doc of g.groundTruthDocs) {
+        gtBody += `<div class="gt-doc-row"><span class="gt-doc-name">${doc.system}</span><span class="gt-doc-stat">${doc.lines} lines</span><span class="gt-doc-stat">${doc.codeCitations} refs</span><span class="gt-doc-stat">${doc.stages} stages</span></div>`;
+      }
+    }
+    if (g.sourceDirectories.length > 0) {
+      gtBody += `<div class="gt-docs-title">Sources:</div>`;
+      for (const dir of g.sourceDirectories) { gtBody += `<div class="gt-doc-row"><span class="gt-doc-name">${dir}/</span></div>`; }
+    }
+    if (g.ungroundedEntries > 0) {
+      const ids: string[] = [];
+      for (const cat of project.catalogues) { for (const e of cat.entries) { if (!e.grounded) ids.push(e.id); } }
+      if (ids.length > 0) gtBody += `<div class="gt-ungrounded">Ungrounded: <span class="gt-ungrounded-ids">${ids.slice(0, 12).join(", ")}${ids.length > 12 ? ` +${ids.length - 12} more` : ""}</span></div>`;
+    }
+    if (g.totalEntries === 0 && g.groundTruthDocs.length === 0) {
+      gtBody = `<div class="gt-empty">No Ground Truth docs. Run /anvi:ground to establish grounding.</div>`;
+    }
+    gtCard.innerHTML = `<div class="card-header"><h2>Ground Truth</h2></div><div class="card-body">${gtBody}</div>`;
+    el.appendChild(gtCard);
   }
 
   // Catalogues

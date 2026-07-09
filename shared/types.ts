@@ -8,6 +8,10 @@ export interface CatalogueEntry {
   origin?: string;
   why?: string;
   how?: string;
+  /** Ground Truth REF — provenance chain to source code */
+  ref?: string;
+  /** Whether entry is grounded (has REF to Ground Truth doc) */
+  grounded: boolean;
 }
 
 export interface Catalogue {
@@ -37,6 +41,23 @@ export interface BoundaryInfo {
   patternCount: number;
 }
 
+export interface GroundTruthDoc {
+  system: string;
+  path: string;
+  lines: number;
+  codeCitations: number;
+  stages: number;
+  lastModified: Date;
+}
+
+export interface GroundingStatus {
+  totalEntries: number;
+  groundedEntries: number;
+  ungroundedEntries: number;
+  groundTruthDocs: GroundTruthDoc[];
+  sourceDirectories: string[];
+}
+
 export interface ProjectState {
   name: string;
   path: string;
@@ -46,6 +67,7 @@ export interface ProjectState {
   misalignedInvariants: number;
   blindSpots: number;
   boundaries: BoundaryInfo[];
+  grounding: GroundingStatus;
 }
 
 // -- Timeline types --
@@ -180,6 +202,61 @@ export interface HookLogSession {
   fatalityFires: number;
 }
 
+// -- Brain View types --
+
+export interface BrainStratum {
+  name: string;
+  catalogue: string;
+  entries: CatalogueEntry[];
+  color: string;
+}
+
+export interface BrainBoundaryNode {
+  id: string;
+  name: string;
+  patternCount: number;
+  fatality: boolean;
+  linkedEntries: string[];
+}
+
+export interface BrainFlowEvent {
+  ts: string;
+  tier: number;
+  label: string;
+  fatality: boolean;
+  patterns: string[];
+  source: "hook" | "route";
+}
+
+// -- GitHub Trace types --
+
+export interface GitHubArtifact {
+  type: "issue" | "pr" | "commit";
+  id: string;
+  title: string;
+  url: string | null;
+  date: string;
+  confidence: "high" | "medium";
+  matchedKeywords: string[];
+}
+
+export interface EntryTrace {
+  entryId: string;
+  entryTitle: string;
+  catalogue: string;
+  artifacts: GitHubArtifact[];
+}
+
+export interface GitHubTrace {
+  project: string;
+  repoUrl: string | null;
+  entries: EntryTrace[];
+  artifactCount: { issues: number; prs: number; commits: number };
+  correlationCount: number;
+  cachedAt: string;
+  error: string | null;
+}
+
 // -- API response types --
 
 export interface ProjectSummary {
@@ -190,4 +267,8 @@ export interface ProjectSummary {
   fatalitySignals: number;
   misalignedInvariants: number;
   blindSpots: number;
+  /** Percentage of catalogue entries with Ground Truth REFs (0-100) */
+  groundingPercent: number;
+  /** Number of Ground Truth docs found */
+  groundTruthDocCount: number;
 }

@@ -6,6 +6,7 @@ import {
   extractBoundaries,
   countSignals,
   findAnviDir,
+  GROUNDING_CATALOGUES,
 } from "../readers/catalogue";
 import { readProjectMemory, readGlobalMemory } from "../readers/memory";
 import {
@@ -13,6 +14,8 @@ import {
   showAtCommit,
   diffCommits,
 } from "../readers/git-history";
+import { readGroundingStatus } from "../readers/ground-truth";
+import { resolveDir } from "../../shared/anvi-paths";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { execSync } from "node:child_process";
 import type { ProjectSummary, ProjectState, HookLogEntry } from "../../shared/types";
@@ -77,12 +80,35 @@ api.get("/projects", async (c) => {
       catalogueCounts[cat.name] = cat.entries.length;
     }
 
+    // Grounding stats — over the knowledge catalogues only (dharana excluded,
+    // matching anvi's grounding metric).
+    let totalEntries = 0;
+    let groundedEntries = 0;
+    for (const cat of catalogues) {
+      if (!GROUNDING_CATALOGUES.includes(cat.name)) continue;
+      for (const entry of cat.entries) {
+        totalEntries++;
+        if (entry.grounded) groundedEntries++;
+      }
+    }
+    const groundingPercent = totalEntries > 0 ? Math.round((groundedEntries / totalEntries) * 100) : 0;
+
+    // Count Ground Truth docs
+    let groundTruthDocCount = 0;
+    try {
+      const refDir = resolveDir(proj.decoded, "ref");
+      const refFiles = refDir ? readdirSync(refDir) : [];
+      groundTruthDocCount = refFiles.filter((f: string) => f.startsWith("GROUND_TRUTH_") && f.endsWith(".md")).length;
+    } catch {}
+
     summaries.push({
       name: proj.name,
       path: proj.decoded,
       catalogueCounts,
       memoryCount: memory.length,
       ...signals,
+      groundingPercent,
+      groundTruthDocCount,
     });
   }
 
@@ -102,6 +128,8 @@ api.get("/project/:name", async (c) => {
   const signals = countSignals(catalogues);
   const boundaries = extractBoundaries(catalogues);
 
+  const grounding = await readGroundingStatus(proj.decoded);
+
   const state: ProjectState = {
     name: proj.name,
     path: proj.decoded,
@@ -109,6 +137,7 @@ api.get("/project/:name", async (c) => {
     memory,
     boundaries,
     ...signals,
+    grounding,
   };
 
   return c.json(state);
@@ -636,5 +665,291 @@ api.get("/project/:name/entry-dates", async (c) => {
 
   return c.json(dates);
 });
+
+// ---- GitHub Trace ----
+
+const STOP_WORDS = new Set([
+  "the", "and", "for", "with", "from", "that", "this", "into", "when",
+  "which", "where", "there", "then", "they", "them", "their", "have",
+  "been", "being", "will", "would", "could", "should", "does", "done",
+  "what", "more", "some", "each", "over", "also", "only", "same",
+  "both", "very", "just", "than", "used", "uses", "using", "call",
+  "calls", "code", "file", "line", "type", "name", "data", "null",
+  "true", "false", "value", "values", "return", "returns", "function",
+  "class", "method", "object", "array", "error", "result", "output",
+]);
+
+function extractKeywords(text: string): string[] {
+  return [...new Set(
+    text.toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length >= 4 && !STOP_WORDS.has(w))
+  )];
+}
+
+function entryKeywords(entry: { title: string; sections: Record<string, string>; why?: string }): string[] {
+  const text = [
+    entry.title,
+    entry.sections["Root cause"] ?? "",
+    entry.sections["Detection signal"] ?? "",
+    entry.sections["STATEMENT"] ?? "",
+    entry.why ?? "",
+  ].join(" ");
+  return extractKeywords(text);
+}
+
+function scoreArtifact(
+  artifactTitle: string,
+  artifactBody: string,
+  artifactDate: string,
+  keywords: string[],
+  entryCreatedAt: string | null,
+): { confidence: "high" | "medium" | null; matchedKeywords: string[] } {
+  const titleLower = artifactTitle.toLowerCase();
+  const bodyLower = artifactBody.toLowerCase();
+
+  const titleMatches = keywords.filter((kw) => titleLower.includes(kw));
+  const bodyMatches = keywords.filter((kw) => bodyLower.includes(kw) && !titleMatches.includes(kw));
+
+  // Temporal proximity bonus: entry created within 48h of artifact
+  let temporalBonus = false;
+  if (entryCreatedAt) {
+    const entryTs = new Date(entryCreatedAt).getTime();
+    const artTs = new Date(artifactDate).getTime();
+    const diffHours = Math.abs(entryTs - artTs) / (1000 * 60 * 60);
+    if (diffHours <= 48) temporalBonus = true;
+  }
+
+  const allMatched = [...titleMatches, ...bodyMatches];
+  if (allMatched.length === 0) return { confidence: null, matchedKeywords: [] };
+
+  let confidence: "high" | "medium" | null = null;
+  if (titleMatches.length >= 3 || titleMatches.length >= 2 || (titleMatches.length >= 1 && temporalBonus)) {
+    confidence = "high";
+  } else if (bodyMatches.length >= 3 || (bodyMatches.length >= 2 && temporalBonus)) {
+    confidence = "high";
+  } else if (titleMatches.length >= 1 || bodyMatches.length >= 2) {
+    confidence = "medium";
+  } else if (temporalBonus && allMatched.length >= 1) {
+    confidence = "medium";
+  }
+
+  return { confidence, matchedKeywords: allMatched.slice(0, 8) };
+}
+
+function readCache(name: string): { data: unknown; age: number } | null {
+  const path = join("/tmp", `anvi-github-trace-${name}.json`);
+  try {
+    const { statSync, readFileSync } = require("node:fs");
+    const st = statSync(path);
+    const age = (Date.now() - st.mtimeMs) / 1000;
+    const data = JSON.parse(readFileSync(path, "utf8"));
+    return { data, age };
+  } catch {
+    return null;
+  }
+}
+
+function writeCache(name: string, data: unknown): void {
+  const path = join("/tmp", `anvi-github-trace-${name}.json`);
+  try {
+    const { writeFileSync } = require("node:fs");
+    writeFileSync(path, JSON.stringify(data));
+  } catch {
+    // cache write failure is non-fatal
+  }
+}
+
+// GET /api/project/:name/github-trace
+api.get("/project/:name/github-trace", async (c) => {
+  const name = c.req.param("name");
+  const forceRefresh = c.req.query("refresh") === "1";
+
+  const projects = await discoverProjects();
+  const proj = projects.find((p) => p.name === name);
+  if (!proj) return c.json({ error: "Project not found" }, 404);
+
+  // Return cached if fresh enough
+  if (!forceRefresh) {
+    const cached = readCache(name);
+    if (cached && cached.age < 600) {
+      return c.json(cached.data);
+    }
+  }
+
+  const catalogues = await readCatalogues(proj.decoded);
+
+  // Fetch commits (always available)
+  let commits: { hash: string; date: string; subject: string }[] = [];
+  try {
+    const raw = execSync(
+      `git log --format="%H|||%aI|||%s" -n 100`,
+      { cwd: proj.decoded, encoding: "utf8", timeout: 8000 }
+    ).trim();
+    commits = raw.split("\n")
+      .filter(Boolean)
+      .map((line) => {
+        const [hash, date, ...rest] = line.split("|||");
+        return { hash: (hash ?? "").slice(0, 8), date: date ?? "", subject: rest.join("|||") };
+      });
+  } catch {
+    // git unavailable for this project
+  }
+
+  // Fetch issues + PRs via gh CLI
+  let issues: { number: number; title: string; body: string; createdAt: string; url: string }[] = [];
+  let prs: { number: number; title: string; body: string; createdAt: string; url: string }[] = [];
+  let repoUrl: string | null = null;
+  let ghError: string | null = null;
+
+  try {
+    const issueRaw = execSync(
+      `gh issue list --json number,title,body,createdAt,url --limit 100`,
+      { cwd: proj.decoded, encoding: "utf8", timeout: 12000 }
+    );
+    issues = JSON.parse(issueRaw);
+  } catch (e: unknown) {
+    ghError = e instanceof Error ? e.message.split("\n")[0] : "gh issue list failed";
+  }
+
+  try {
+    const prRaw = execSync(
+      `gh pr list --json number,title,body,createdAt,url --limit 50 --state all`,
+      { cwd: proj.decoded, encoding: "utf8", timeout: 12000 }
+    );
+    prs = JSON.parse(prRaw);
+  } catch (e: unknown) {
+    if (!ghError) ghError = e instanceof Error ? e.message.split("\n")[0] : "gh pr list failed";
+  }
+
+  try {
+    const repoRaw = execSync(
+      `gh repo view --json url`,
+      { cwd: proj.decoded, encoding: "utf8", timeout: 8000 }
+    );
+    repoUrl = JSON.parse(repoRaw)?.url ?? null;
+  } catch {
+    // repo url non-critical
+  }
+
+  // Fetch entry creation dates for temporal proximity
+  const entryDatesMap: Record<string, string> = {};
+  const anviDirPath = findAnviDir(proj.decoded);
+  if (anviDirPath) {
+    for (const cat of catalogues) {
+      try {
+        const gitDate = execSync(
+          `git log --diff-filter=A --format="%aI" -- "${cat.path}" | tail -1`,
+          { cwd: proj.decoded, encoding: "utf8", timeout: 5000 }
+        ).trim();
+        for (const entry of cat.entries) {
+          if (!entryDatesMap[entry.id]) entryDatesMap[entry.id] = gitDate;
+        }
+      } catch {
+        // use empty string — no temporal bonus
+      }
+    }
+  }
+
+  // Correlate entries with artifacts
+  const entryTraces: EntryTrace[] = [];
+  let correlationCount = 0;
+
+  for (const cat of catalogues) {
+    for (const entry of cat.entries) {
+      const keywords = entryKeywords(entry);
+      if (keywords.length === 0) continue;
+
+      const artifacts: GitHubArtifact[] = [];
+      const entryCreated = entryDatesMap[entry.id] ?? null;
+
+      // Score issues
+      for (const issue of issues) {
+        const { confidence, matchedKeywords } = scoreArtifact(
+          issue.title, issue.body ?? "", issue.createdAt, keywords, entryCreated
+        );
+        if (confidence) {
+          artifacts.push({
+            type: "issue",
+            id: `#${issue.number}`,
+            title: issue.title,
+            url: issue.url,
+            date: issue.createdAt,
+            confidence,
+            matchedKeywords,
+          });
+        }
+      }
+
+      // Score PRs
+      for (const pr of prs) {
+        const { confidence, matchedKeywords } = scoreArtifact(
+          pr.title, pr.body ?? "", pr.createdAt, keywords, entryCreated
+        );
+        if (confidence) {
+          artifacts.push({
+            type: "pr",
+            id: `#${pr.number}`,
+            title: pr.title,
+            url: pr.url,
+            date: pr.createdAt,
+            confidence,
+            matchedKeywords,
+          });
+        }
+      }
+
+      // Score commits (title only — body too noisy)
+      for (const commit of commits) {
+        const { confidence, matchedKeywords } = scoreArtifact(
+          commit.subject, "", commit.date, keywords, entryCreated
+        );
+        if (confidence) {
+          artifacts.push({
+            type: "commit",
+            id: commit.hash,
+            title: commit.subject,
+            url: repoUrl ? `${repoUrl}/commit/${commit.hash}` : null,
+            date: commit.date,
+            confidence,
+            matchedKeywords,
+          });
+        }
+      }
+
+      // Sort by confidence then date
+      artifacts.sort((a, b) => {
+        if (a.confidence !== b.confidence) return a.confidence === "high" ? -1 : 1;
+        return new Date(b.date).getTime() - new Date(a.date).getTime();
+      });
+
+      if (artifacts.length > 0) correlationCount++;
+
+      entryTraces.push({
+        entryId: entry.id,
+        entryTitle: entry.title,
+        catalogue: cat.name,
+        artifacts,
+      });
+    }
+  }
+
+  const result: GitHubTrace = {
+    project: name,
+    repoUrl,
+    entries: entryTraces,
+    artifactCount: { issues: issues.length, prs: prs.length, commits: commits.length },
+    correlationCount,
+    cachedAt: new Date().toISOString(),
+    error: ghError,
+  };
+
+  writeCache(name, result);
+  return c.json(result);
+});
+
+// Need to import EntryTrace and GitHubTrace for type annotation above
+import type { EntryTrace, GitHubTrace } from "../../shared/types";
 
 export default api;

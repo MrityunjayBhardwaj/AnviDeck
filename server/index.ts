@@ -71,7 +71,7 @@ process.on("SIGINT", () => {
   process.exit(0);
 });
 
-const port = parseInt(process.env.PORT ?? "3000", 10);
+const port = parseInt(process.env.PORT ?? "4000", 10);
 console.log(`AnviDeck server running at http://localhost:${port}`);
 
 export default {

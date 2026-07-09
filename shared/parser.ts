@@ -95,7 +95,21 @@ function parseEntryBlock(
   const why = extractProvenance(body, "WHY");
   const how = extractProvenance(body, "HOW");
 
-  return { id, title: titleRaw, sections, tags, origin, why, how };
+  // Extract Ground Truth REF field (v1.1.0+)
+  const ref = sections["REF"] || extractRefLine(body);
+  const grounded = !!ref && !ref.includes("UNGROUNDED");
+
+  return { id, title: titleRaw, sections, tags, origin, why, how, ref, grounded };
+}
+
+/**
+ * Extract **REF:** line from entry body.
+ * REF lines link catalogue entries to Ground Truth docs (v1.1.0+).
+ * Format: **REF:** GROUND_TRUTH_X.md#section — file:line description
+ */
+function extractRefLine(body: string): string | undefined {
+  const match = body.match(/\*\*REF:\*\*\s*(.+)/);
+  return match ? match[1].trim() : undefined;
 }
 
 function extractProvenance(
