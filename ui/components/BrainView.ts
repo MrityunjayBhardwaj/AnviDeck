@@ -241,9 +241,21 @@ function renderProjectMode(project: ProjectState): HTMLElement {
     const maxCount = Math.max(...nodes.map((n) => n.patternCount), 1);
     for (const node of nodes) {
       const color = node.fatality ? "var(--red)" : node.patternCount > 2 ? "var(--yellow)" : "var(--green)";
+      // Check if boundary has Ground Truth coverage
+      const gtDocs = project.grounding?.groundTruthDocs ?? [];
+      const boundaryWords = node.name.toLowerCase().split(/[\s↔←→\-]+/).filter((w) => w.length > 2);
+      const hasGT = gtDocs.some((doc) => {
+        const sys = doc.system.toLowerCase();
+        if (sys.length <= 2) return false;
+        // Bidirectional: a boundary identifier concatenates the GT subject with a
+        // suffix (e.g. "SuperSonicBridge" ⊇ "supersonic"), so the doc system is a
+        // substring of the boundary word — not the reverse. Match either direction.
+        return boundaryWords.some((w) => sys.includes(w) || w.includes(sys));
+      });
+
       const card = document.createElement("div");
-      card.className = `boundary-card${node.fatality ? " fatality" : ""}${isSelected("boundary", node.id) ? " selected" : ""}`;
-      card.innerHTML = `<div class="boundary-id" style="color:${color}">${node.id}</div><div class="boundary-name">${node.name}</div><div class="boundary-bar-container"><div class="boundary-bar-fill" style="width:${Math.max((node.patternCount / maxCount) * 100, 4)}%;background:${color}"></div></div><div class="boundary-meta">${node.patternCount} entries${node.fatality ? ' <span class="fatality-tag">FATALITY</span>' : ""}</div>`;
+      card.className = `boundary-card${node.fatality ? " fatality" : ""}${isSelected("boundary", node.id) ? " selected" : ""}${hasGT ? "" : " opaque"}`;
+      card.innerHTML = `<div class="boundary-id" style="color:${color}">${node.id}${hasGT ? "" : ' <span class="opaque-tag">OPAQUE</span>'}</div><div class="boundary-name">${node.name}</div><div class="boundary-bar-container"><div class="boundary-bar-fill" style="width:${Math.max((node.patternCount / maxCount) * 100, 4)}%;background:${color}"></div></div><div class="boundary-meta">${node.patternCount} entries${node.fatality ? ' <span class="fatality-tag">FATALITY</span>' : ""}</div>`;
       card.addEventListener("click", () => select("boundary", node.id));
       cards.appendChild(card);
     }
