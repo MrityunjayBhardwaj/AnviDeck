@@ -8,28 +8,74 @@ export function CatalogueTree(catalogues: Catalogue[]): HTMLElement {
     return el;
   }
 
-  for (const cat of catalogues) {
-    el.appendChild(CatalogueGroup(cat));
+  const ungroundedTotal = catalogues.reduce(
+    (s, c) => s + c.entries.filter((e) => !e.grounded).length,
+    0
+  );
+
+  let ungroundedOnly = false;
+
+  // Filter bar — "show ungrounded only" toggle
+  const filterBar = document.createElement("div");
+  filterBar.className = "catalogue-filter";
+  const toggle = document.createElement("button");
+  toggle.className = "catalogue-filter-toggle";
+  const groups = document.createElement("div");
+  groups.className = "catalogue-groups";
+
+  function renderGroups() {
+    groups.innerHTML = "";
+    const visible = ungroundedOnly
+      ? catalogues
+          .map((c) => ({ ...c, entries: c.entries.filter((e) => !e.grounded) }))
+          .filter((c) => c.entries.length > 0)
+      : catalogues;
+    if (visible.length === 0) {
+      groups.innerHTML = `<div class="empty">No ungrounded entries — all grounded.</div>`;
+      return;
+    }
+    for (const cat of visible) {
+      groups.appendChild(CatalogueGroup(cat, ungroundedOnly));
+    }
   }
+
+  function renderToggle() {
+    toggle.classList.toggle("active", ungroundedOnly);
+    toggle.setAttribute("aria-pressed", String(ungroundedOnly));
+    toggle.innerHTML = `<span class="filter-dot"></span>Show ungrounded only <span class="filter-count">${ungroundedTotal}</span>`;
+  }
+
+  toggle.addEventListener("click", () => {
+    ungroundedOnly = !ungroundedOnly;
+    renderToggle();
+    renderGroups();
+  });
+
+  renderToggle();
+  filterBar.appendChild(toggle);
+  el.appendChild(filterBar);
+
+  renderGroups();
+  el.appendChild(groups);
 
   return el;
 }
 
-function CatalogueGroup(catalogue: Catalogue): HTMLElement {
+function CatalogueGroup(catalogue: Catalogue, expanded = false): HTMLElement {
   const group = document.createElement("div");
   group.className = "catalogue-group";
 
   const header = document.createElement("div");
   header.className = "catalogue-header";
   header.innerHTML = `
-    <span class="arrow">▸</span>
+    <span class="arrow${expanded ? " open" : ""}">▸</span>
     <span class="cat-name">${catalogue.name}</span>
     <span class="cat-count">${catalogue.entries.length}</span>
   `;
 
   const entriesEl = document.createElement("div");
   entriesEl.className = "catalogue-entries";
-  entriesEl.style.display = "none";
+  entriesEl.style.display = expanded ? "block" : "none";
 
   for (const entry of catalogue.entries) {
     entriesEl.appendChild(EntryItem(entry));
@@ -49,7 +95,7 @@ function CatalogueGroup(catalogue: Catalogue): HTMLElement {
 
 function EntryItem(entry: CatalogueEntry): HTMLElement {
   const item = document.createElement("div");
-  item.className = "catalogue-entry";
+  item.className = `catalogue-entry${!entry.grounded ? " entry-ungrounded" : ""}`;
 
   const header = document.createElement("div");
   header.className = "entry-header";
@@ -73,7 +119,16 @@ function EntryItem(entry: CatalogueEntry): HTMLElement {
 
   let detailHtml = "";
   for (const [key, value] of Object.entries(entry.sections)) {
+    // REF is rendered explicitly below with grounding styling — the parser leaves
+    // it in sections too, so skip it here to avoid a duplicate line.
+    if (key === "REF") continue;
     detailHtml += `<div class="section"><span class="section-key">${key}:</span><span class="section-value">${escapeHtml(value)}</span></div>`;
+  }
+
+  if (entry.ref) {
+    detailHtml += `<div class="section entry-ref-line"><span class="section-key">REF:</span><span class="section-value ref-value">${escapeHtml(entry.ref)}</span></div>`;
+  } else {
+    detailHtml += `<div class="section entry-ref-line"><span class="section-key">REF:</span><span class="section-value ref-missing">UNGROUNDED</span></div>`;
   }
 
   if (entry.origin || entry.why || entry.how) {

@@ -2508,3 +2508,44 @@ button:focus-visible {
 .reverse-keywords { font-size: 10px; color: var(--text-2); margin-left: auto; font-style: italic; }
 
 @media (max-width: 700px) { .loop-diagram { gap: 0; } .loop-node { min-width: 52px; } .loop-node-label { font-size: 8px; } }
+
+/* ---- Ground Truth ---- */
+
+/* Grounding bar (ProjectView) */
+.gt-grounding-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.gt-label { font-size: 12px; color: var(--text-1); font-weight: 600; flex-shrink: 0; }
+.gt-bar { flex: 1; height: 8px; background: var(--bg-3); border-radius: 4px; overflow: hidden; }
+.gt-bar-fill { height: 100%; border-radius: 4px; transition: width 0.3s; }
+.gt-pct { font-size: 12px; font-weight: 700; min-width: 80px; text-align: right; flex-shrink: 0; }
+
+.gt-docs-title { font-size: 10px; color: var(--text-2); font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; margin: 8px 0 4px; }
+.gt-doc-row { display: flex; align-items: center; gap: 10px; font-size: 11px; padding: 3px 0; color: var(--text-1); }
+.gt-doc-name { font-weight: 600; color: var(--text-0); min-width: 120px; }
+.gt-doc-stat { color: var(--text-2); font-size: 10px; }
+.gt-ungrounded { font-size: 11px; color: var(--orange); margin-top: 8px; }
+.gt-ungrounded-ids { color: var(--text-2); }
+.gt-empty { font-size: 12px; color: var(--text-2); padding: 8px 0; }
+
+/* Grounding badge (CommandCenter project list) */
+.grounding-badge { font-size: 10px; }
+.grounding-badge.grounded { color: var(--green); background: rgba(74, 222, 128, 0.1); }
+.grounding-badge.partial { color: var(--yellow); background: rgba(250, 204, 21, 0.1); }
+.grounding-badge.ungrounded { color: var(--red); background: rgba(248, 113, 113, 0.1); }
+
+/* CatalogueTree ungrounded + REF */
+.catalogue-filter { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+.catalogue-filter-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-2); background: var(--bg-3); border: 1px solid var(--border); border-radius: var(--radius); padding: 4px 10px; cursor: pointer; transition: all 0.15s; }
+.catalogue-filter-toggle:hover { color: var(--text-1); border-color: rgba(255, 255, 255, 0.15); }
+.catalogue-filter-toggle.active { color: var(--orange); border-color: rgba(251, 146, 60, 0.4); background: rgba(251, 146, 60, 0.08); }
+.catalogue-filter-toggle .filter-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-2); }
+.catalogue-filter-toggle.active .filter-dot { background: var(--orange); }
+.catalogue-filter-toggle .filter-count { color: var(--text-2); font-weight: 700; }
+.catalogue-filter-toggle.active .filter-count { color: var(--orange); }
+.catalogue-entry.entry-ungrounded { border-left: 2px solid var(--orange); padding-left: 6px; }
+.entry-ref-line { margin-top: 4px; }
+.ref-value { color: var(--cyan); font-size: 11px; }
+.ref-missing { color: var(--orange); font-size: 11px; font-style: italic; }
+
+/* BrainView opaque boundary */
+.boundary-card.opaque { border-style: dashed; border-color: rgba(255, 255, 255, 0.1); }
+.opaque-tag { font-size: 8px; font-weight: 700; color: var(--orange); letter-spacing: 0.5px; vertical-align: middle; }

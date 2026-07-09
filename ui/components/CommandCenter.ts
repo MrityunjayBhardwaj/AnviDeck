@@ -20,6 +20,10 @@ export function CommandCenter(
   const totalFatality = projects.reduce((s, p) => s + p.fatalitySignals, 0);
   const totalMisaligned = projects.reduce((s, p) => s + p.misalignedInvariants, 0);
   const totalMemories = projects.reduce((s, p) => s + p.memoryCount, 0);
+  const totalGTDocs = projects.reduce((s, p) => s + (p.groundTruthDocCount ?? 0), 0);
+  const avgGrounding = totalEntries > 0
+    ? Math.round(projects.filter((p) => Object.values(p.catalogueCounts).reduce((a, b) => a + b, 0) > 0).reduce((s, p) => s + (p.groundingPercent ?? 0), 0) / Math.max(withCatalogues.length, 1))
+    : 0;
 
   // Quick actions banner
   const actions = document.createElement("div");
@@ -83,6 +87,14 @@ export function CommandCenter(
           <span class="value accent">${projects.length}</span>
           <span class="label">Total Projects</span>
         </div>
+        <div class="stat">
+          <span class="value ${avgGrounding > 80 ? "green" : avgGrounding > 50 ? "yellow" : "red"}">${avgGrounding}%</span>
+          <span class="label">Avg Grounding</span>
+        </div>
+        <div class="stat">
+          <span class="value accent">${totalGTDocs}</span>
+          <span class="label">Ground Truth Docs</span>
+        </div>
       </div>
     </div>
   `;
@@ -112,6 +124,7 @@ export function CommandCenter(
         ${p.memoryCount > 0 ? `<span class="badge">${p.memoryCount} mem</span>` : ""}
         ${p.fatalitySignals > 0 ? `<span class="badge fatality">FATALITY</span>` : ""}
         ${p.misalignedInvariants > 0 ? `<span class="badge warn">MISALIGNED</span>` : ""}
+        ${catTotal > 0 ? `<span class="badge grounding-badge ${p.groundingPercent > 80 ? "grounded" : p.groundingPercent > 50 ? "partial" : "ungrounded"}">${p.groundingPercent}% grounded</span>` : ""}
       </span>
     `;
     row.addEventListener("click", () => nav.toProject(p.name));
