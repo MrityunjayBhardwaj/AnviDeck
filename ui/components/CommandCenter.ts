@@ -21,8 +21,14 @@ export function CommandCenter(
   const totalMisaligned = projects.reduce((s, p) => s + p.misalignedInvariants, 0);
   const totalMemories = projects.reduce((s, p) => s + p.memoryCount, 0);
   const totalGTDocs = projects.reduce((s, p) => s + (p.groundTruthDocCount ?? 0), 0);
-  const avgGrounding = totalEntries > 0
-    ? Math.round(projects.filter((p) => Object.values(p.catalogueCounts).reduce((a, b) => a + b, 0) > 0).reduce((s, p) => s + (p.groundingPercent ?? 0), 0) / Math.max(withCatalogues.length, 1))
+  // Average grounding over projects that actually have catalogue entries — the
+  // numerator and denominator must use the same set, or projects with a
+  // catalogue file but zero entries would skew the average low.
+  const groundedProjects = projects.filter(
+    (p) => Object.values(p.catalogueCounts).reduce((a, b) => a + b, 0) > 0
+  );
+  const avgGrounding = groundedProjects.length > 0
+    ? Math.round(groundedProjects.reduce((s, p) => s + (p.groundingPercent ?? 0), 0) / groundedProjects.length)
     : 0;
 
   // Quick actions banner
