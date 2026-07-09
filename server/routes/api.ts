@@ -949,7 +949,7 @@ api.get("/project/:name/github-trace", async (c) => {
   return c.json(result);
 });
 
-// Need to import EntryTrace and GitHubTrace for type annotation above
-import type { EntryTrace, GitHubTrace } from "../../shared/types";
+// Need to import EntryTrace, GitHubTrace and GitHubArtifact for type annotations above
+import type { EntryTrace, GitHubTrace, GitHubArtifact } from "../../shared/types";
 
 export default api;
