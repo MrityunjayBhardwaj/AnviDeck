@@ -8,7 +8,7 @@
 
 <br>
 
-![License](https://img.shields.io/badge/license-AGPL--3.0-22c55e?style=for-the-badge)
+![License](https://img.shields.io/badge/license-GPL--3.0-22c55e?style=for-the-badge)
 ![Runtime](https://img.shields.io/badge/runtime-Bun-black?style=for-the-badge)
 ![Server](https://img.shields.io/badge/server-Hono-e36002?style=for-the-badge)
 ![Offline first](https://img.shields.io/badge/offline--first-no_telemetry-0ea5e9?style=for-the-badge)
@@ -84,7 +84,7 @@ Early but real. The data layer, REST API, Command Center, Project View, timeline
 
 ## 📄 License
 
-[AGPL-3.0](LICENSE) © Mrityunjay Bhardwaj
+[GPL-3.0](LICENSE) © Mrityunjay Bhardwaj
 
 ---
 
