@@ -4,7 +4,9 @@ import { readCatalogues, GROUNDING_CATALOGUES } from "./catalogue";
 import { resolveDir } from "../../shared/anvi-paths";
 import type { GroundingStatus, GroundTruthDoc } from "../../shared/types";
 
-const CODE_CITATION_RE = /[a-z_]+\.[a-z]{1,4}:\d+/g;
+// file:line citations — allow paths, dotted names, and any-case filenames
+// (e.g. src/core/OpfsStorage.ts:52, vite.config.ts:18, GLTFLoader.js:5).
+const CODE_CITATION_RE = /[\w./-]+\.[a-z]{1,5}:\d+/gi;
 const STAGE_RE = /^##\s+(?:STAGE|Stage)\s/gm;
 
 /**
