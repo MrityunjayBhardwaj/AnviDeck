@@ -7,6 +7,13 @@ import type { Catalogue, BoundaryInfo } from "../../shared/types";
 const CATALOGUE_NAMES = ["hetvabhasa", "vyapti", "krama", "dharana"];
 
 /**
+ * The knowledge catalogues that count toward grounding. Matches anvi's
+ * session-start hook and anvi-tools, which measure grounding over these three
+ * only — dharana is the meta/focus catalogue and is excluded from the denominator.
+ */
+export const GROUNDING_CATALOGUES = ["hetvabhasa", "vyapti", "krama"];
+
+/**
  * Find the .anvi/ directory for a project.
  * Resolves through the shared resolver, which also checks the centralized
  * `~/.anvideck/projects/{name}/.anvi` location (where anvi now keeps catalogues).

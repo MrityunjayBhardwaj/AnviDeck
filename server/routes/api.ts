@@ -6,6 +6,7 @@ import {
   extractBoundaries,
   countSignals,
   findAnviDir,
+  GROUNDING_CATALOGUES,
 } from "../readers/catalogue";
 import { readProjectMemory, readGlobalMemory } from "../readers/memory";
 import {
@@ -13,6 +14,8 @@ import {
   showAtCommit,
   diffCommits,
 } from "../readers/git-history";
+import { readGroundingStatus } from "../readers/ground-truth";
+import { resolveDir } from "../../shared/anvi-paths";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { execSync } from "node:child_process";
 import type { ProjectSummary, ProjectState, HookLogEntry } from "../../shared/types";
@@ -77,12 +80,35 @@ api.get("/projects", async (c) => {
       catalogueCounts[cat.name] = cat.entries.length;
     }
 
+    // Grounding stats — over the knowledge catalogues only (dharana excluded,
+    // matching anvi's grounding metric).
+    let totalEntries = 0;
+    let groundedEntries = 0;
+    for (const cat of catalogues) {
+      if (!GROUNDING_CATALOGUES.includes(cat.name)) continue;
+      for (const entry of cat.entries) {
+        totalEntries++;
+        if (entry.grounded) groundedEntries++;
+      }
+    }
+    const groundingPercent = totalEntries > 0 ? Math.round((groundedEntries / totalEntries) * 100) : 0;
+
+    // Count Ground Truth docs
+    let groundTruthDocCount = 0;
+    try {
+      const refDir = resolveDir(proj.decoded, "ref");
+      const refFiles = refDir ? readdirSync(refDir) : [];
+      groundTruthDocCount = refFiles.filter((f: string) => f.startsWith("GROUND_TRUTH_") && f.endsWith(".md")).length;
+    } catch {}
+
     summaries.push({
       name: proj.name,
       path: proj.decoded,
       catalogueCounts,
       memoryCount: memory.length,
       ...signals,
+      groundingPercent,
+      groundTruthDocCount,
     });
   }
 
@@ -102,6 +128,8 @@ api.get("/project/:name", async (c) => {
   const signals = countSignals(catalogues);
   const boundaries = extractBoundaries(catalogues);
 
+  const grounding = await readGroundingStatus(proj.decoded);
+
   const state: ProjectState = {
     name: proj.name,
     path: proj.decoded,
@@ -109,6 +137,7 @@ api.get("/project/:name", async (c) => {
     memory,
     boundaries,
     ...signals,
+    grounding,
   };
 
   return c.json(state);
