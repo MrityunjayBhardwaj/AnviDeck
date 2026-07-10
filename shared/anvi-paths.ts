@@ -25,16 +25,47 @@ export function candidates(projectPath: string, kind: string): string[] {
   ];
 }
 
-/** First existing candidate directory for `kind`, or null if none exist. */
-export function resolveDir(projectPath: string, kind: string): string | null {
-  for (const candidate of candidates(projectPath, kind)) {
+/**
+ * All candidate directories that actually exist, in resolution order (first =
+ * the one `resolveDir` serves). A candidate counts only if it is a directory.
+ */
+export function existingDirs(projectPath: string, kind: string): string[] {
+  return candidates(projectPath, kind).filter((candidate) => {
     try {
-      if (existsSync(candidate) && statSync(candidate).isDirectory()) {
-        return candidate;
-      }
+      return existsSync(candidate) && statSync(candidate).isDirectory();
     } catch {
       // ignore unreadable candidate
+      return false;
     }
-  }
-  return null;
+  });
+}
+
+/**
+ * Split-brain detection. When more than one candidate exists for a kind, the
+ * resolver silently serves the first and shadows the rest — and the copies
+ * diverge. Warn ONCE per process to stderr (never stdout), naming the served
+ * winner and the shadowed copies. Detection only: never changes resolution or
+ * output. Silence with ANVI_SILENCE_SPLITBRAIN=1.
+ */
+const warned = new Set<string>();
+export function warnIfSplitBrain(kind: string, existing: string[]): void {
+  if (process.env.ANVI_SILENCE_SPLITBRAIN) return;
+  if (existing.length < 2) return;
+  const key = kind + "\0" + existing.join("\0");
+  if (warned.has(key)) return;
+  warned.add(key);
+  const [winner, ...shadowed] = existing;
+  process.stderr.write(
+    `⚠ anvi: ${existing.length} copies of '${kind}' resolve for this project — ` +
+      `serving ${winner}, shadowing ${shadowed.join(", ")}. ` +
+      `Copies diverge (split-brain); consolidate to one. ` +
+      `(silence: ANVI_SILENCE_SPLITBRAIN=1)\n`,
+  );
+}
+
+/** First existing candidate directory for `kind`, or null if none exist. */
+export function resolveDir(projectPath: string, kind: string): string | null {
+  const existing = existingDirs(projectPath, kind);
+  warnIfSplitBrain(kind, existing);
+  return existing.length ? existing[0]! : null;
 }
