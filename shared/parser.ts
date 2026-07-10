@@ -21,6 +21,7 @@ const KNOWN_TAGS = [
  */
 export function parseCatalogueEntries(markdown: string): CatalogueEntry[] {
   const entries: CatalogueEntry[] = [];
+  const seenIds = new Set<string>();
   // Split into entry blocks by h2 or h3 headers
   const entryPattern = /^(#{2,3})\s+(.+)$/gm;
   const headerMatches: { level: string; text: string; index: number }[] = [];
@@ -46,7 +47,20 @@ export function parseCatalogueEntries(markdown: string): CatalogueEntry[] {
     );
 
     const entry = parseEntryBlock(header.text.trim(), body);
-    if (entry) entries.push(entry);
+    // Fold an h3 sub-section that repeats an entry's ID back into that entry —
+    // e.g. an h3 "### SP107 — ORIGINAL FRAMING (SUPERSEDED)" audit block beneath
+    // the "## SP107:" entry is not a separate entry. Only h3 repeats are folded:
+    // two h2 headers sharing an ID are BOTH kept — that's a duplicate-ID data
+    // error the framework counts too, and the tree should surface it, not
+    // silently merge it away.
+    if (entry) {
+      const isRepeatedSubSection =
+        header.level.length === 3 && seenIds.has(entry.id);
+      if (!isRepeatedSubSection) {
+        seenIds.add(entry.id);
+        entries.push(entry);
+      }
+    }
   }
 
   return entries;
@@ -56,12 +70,24 @@ function parseEntryBlock(
   headerText: string,
   body: string
 ): CatalogueEntry | null {
-  // Parse header: "SP9: Parameter Name Mismatch at Layer Boundary"
-  // or: "B2: AudioInterpreter ↔ SuperSonicBridge (FATALITY — 5 patterns cluster here)"
-  const headerMatch = headerText.match(/^([A-Z][A-Za-z]*\d+):\s*(.+)$/);
+  // Recognize an entry whenever the header STARTS with an ID token, mirroring
+  // the framework's canonical counter (`^## ([A-Z]+\d+)`, colon-optional). The
+  // colon and title are optional, so all of these count as one entry:
+  //   "SP9: Parameter Name Mismatch at Layer Boundary"   (canonical)
+  //   "SP47 (Meta-Pattern): SP36 corrupts isolation…"    (annotation before colon)
+  //   "SV56"                                             (bare ID, no title)
+  // Prose section headers ("Compaction Log", "Ground Truth Inventory") have no
+  // leading ID and are still skipped.
+  const headerMatch = headerText.match(/^([A-Z][A-Za-z]*\d+)\s*:?\s*(.*)$/);
   if (!headerMatch) return null;
 
   const id = headerMatch[1];
+
+  // Skip template example entries (U1, UV1, UK1, UH1, …) — placeholders shipped
+  // in the catalogue templates, not real project knowledge. The framework's
+  // canonical counter excludes them the same way (`!/^U[A-Z]?\d+$/`).
+  if (/^U[A-Z]?\d+$/.test(id)) return null;
+
   let titleRaw = headerMatch[2];
 
   // Extract tags from title (in parentheses)
