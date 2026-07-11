@@ -2549,3 +2549,46 @@ button:focus-visible {
 /* BrainView opaque boundary */
 .boundary-card.opaque { border-style: dashed; border-color: rgba(255, 255, 255, 0.1); }
 .opaque-tag { font-size: 8px; font-weight: 700; color: var(--orange); letter-spacing: 0.5px; vertical-align: middle; }
+
+/* --- Live Sessions --- */
+.live-sessions-header { display: flex; align-items: baseline; gap: 12px; }
+.live-sessions-count { font-size: 12px; color: var(--text-2); }
+.session-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+  padding: 4px 0 20px;
+}
+.session-card {
+  border: 1px solid var(--border, rgba(255,255,255,0.1));
+  border-left: 3px solid var(--text-2);
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: var(--surface-1, rgba(255,255,255,0.02));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.session-card.busy { border-left-color: var(--green); }
+.session-card.waiting { border-left-color: var(--yellow); }
+.session-card.idle { border-left-color: var(--cyan); }
+.session-card.unknown { border-left-color: var(--text-2); }
+.session-card-top { display: flex; align-items: center; gap: 8px; }
+.session-status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-2); flex-shrink: 0; }
+.session-status-dot.busy { background: var(--green); box-shadow: 0 0 6px var(--green); animation: session-pulse 1.6s ease-in-out infinite; }
+.session-status-dot.waiting { background: var(--yellow); box-shadow: 0 0 6px var(--yellow); animation: session-pulse 1.6s ease-in-out infinite; }
+.session-status-dot.idle { background: var(--cyan); }
+@keyframes session-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+.session-name { font-weight: 600; font-size: 14px; color: var(--text-1); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-status-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-2); }
+.session-status-label.busy { color: var(--green); }
+.session-status-label.waiting { color: var(--yellow); }
+.session-status-label.idle { color: var(--cyan); }
+.session-project { display: flex; align-items: center; gap: 10px; }
+.session-project-name { font-size: 12px; color: var(--accent, var(--cyan)); font-weight: 500; }
+.session-branch { font-size: 11px; color: var(--text-2); }
+.session-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; }
+.session-meta-row { display: flex; justify-content: space-between; font-size: 11px; }
+.session-meta-row .k { color: var(--text-2); }
+.session-meta-row .v { color: var(--text-1); }
+.session-cwd { font-size: 10px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.7; }
