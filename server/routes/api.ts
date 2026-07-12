@@ -15,6 +15,7 @@ import {
   diffCommits,
 } from "../readers/git-history";
 import { readGroundingStatus } from "../readers/ground-truth";
+import { readLiveSessions } from "../readers/sessions";
 import { resolveDir } from "../../shared/anvi-paths";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { execSync } from "node:child_process";
@@ -27,6 +28,9 @@ const CLAUDE_DIR = join(
   ".claude"
 );
 const PROJECTS_DIR = join(CLAUDE_DIR, "projects");
+
+// GET /api/sessions — live (currently-running) Claude Code sessions
+api.get("/sessions", (c) => c.json(readLiveSessions()));
 
 /**
  * Decode a Claude projects directory name to an absolute path.

@@ -272,3 +272,26 @@ export interface ProjectSummary {
   /** Number of Ground Truth docs found */
   groundTruthDocCount: number;
 }
+
+/** A live (currently-running) Claude Code session. */
+export interface LiveSession {
+  sessionId: string;
+  pid: number;
+  /** Derived session name, e.g. "anvi-8e". */
+  name: string;
+  /** Project = basename of the session's cwd. */
+  project: string;
+  cwd: string;
+  /** Reported session status, e.g. "busy" | "idle". */
+  status: string;
+  /** Session start (epoch ms). */
+  startedAt: number;
+  /** Last status/activity update (epoch ms). */
+  updatedAt: number;
+  /** Claude Code version. */
+  version: string;
+  /** e.g. "interactive". */
+  kind: string;
+  /** Current git branch at cwd, or null. */
+  branch: string | null;
+}

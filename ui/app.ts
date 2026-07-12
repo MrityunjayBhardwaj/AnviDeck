@@ -20,6 +20,7 @@ import {
 } from "./components/ContextBudget";
 import { BrainView, addBrainHookEvent, addBrainRouteEvent } from "./components/BrainView";
 import { GitHubTrace } from "./components/GitHubTrace";
+import { LiveSessions } from "./components/LiveSessions";
 import type {
   ProjectSummary,
   ProjectState,
@@ -43,7 +44,7 @@ export interface Nav {
 }
 
 // State
-type ViewName = "home" | "project" | "trace" | "system-lens" | "cross-project" | "routing" | "brain" | "github-trace";
+type ViewName = "home" | "project" | "trace" | "system-lens" | "cross-project" | "routing" | "brain" | "github-trace" | "sessions";
 let currentBrainProject: string | null = null;
 let currentView: ViewName = "home";
 let projects: ProjectSummary[] = [];
@@ -156,6 +157,7 @@ function renderSidebar() {
 
   const views: { id: ViewName; label: string; extra?: string }[] = [
     { id: "home", label: "Command Center" },
+    { id: "sessions", label: "Live Sessions" },
     { id: "trace", label: "Live Trace", extra: wsConnected ? '<span class="ws-indicator connected"></span>' : '<span class="ws-indicator"></span>' },
     { id: "brain", label: "Brain" },
     { id: "system-lens", label: "System Lens" },
@@ -224,6 +226,8 @@ function renderMain() {
     mainEl!.appendChild(SystemLens(projects, nav));
   } else if (currentView === "cross-project") {
     mainEl!.appendChild(CrossProject(nav));
+  } else if (currentView === "sessions") {
+    mainEl!.appendChild(LiveSessions(nav));
   } else if (currentView === "routing") {
     mainEl!.appendChild(RoutingView(nav));
   } else if (currentView === "github-trace") {
