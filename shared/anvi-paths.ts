@@ -1,4 +1,4 @@
-import { existsSync, statSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { homedir } from "node:os";
 
@@ -27,17 +27,39 @@ export function candidates(projectPath: string, kind: string): string[] {
 
 /**
  * All candidate directories that actually exist, in resolution order (first =
- * the one `resolveDir` serves). A candidate counts only if it is a directory.
+ * the one `resolveDir` serves), deduped by physical directory. A candidate
+ * counts only if it is a directory.
+ *
+ * A symlink and its target are two path strings but ONE directory — the
+ * local-symlink-to-central layout `/anvi:init` creates and the fleet
+ * standardizes on. Counting both as separate copies would falsely trip
+ * split-brain detection (a symlink is an alias, not a divergent copy); identity
+ * is by realpath, not by path string. The first path to reach a given realpath
+ * is kept, so local-first ordering is preserved. Two genuinely distinct
+ * directories still survive as two entries → real split-brain still detected.
+ * Mirrors anvi's `hooks/anvi-paths.js` fix (anvi #37).
  */
 export function existingDirs(projectPath: string, kind: string): string[] {
-  return candidates(projectPath, kind).filter((candidate) => {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const candidate of candidates(projectPath, kind)) {
     try {
-      return existsSync(candidate) && statSync(candidate).isDirectory();
+      if (!existsSync(candidate) || !statSync(candidate).isDirectory()) continue;
     } catch {
       // ignore unreadable candidate
-      return false;
+      continue;
     }
-  });
+    let real: string;
+    try {
+      real = realpathSync(candidate);
+    } catch {
+      real = candidate;
+    }
+    if (seen.has(real)) continue; // same physical dir as an earlier candidate (symlink → target)
+    seen.add(real);
+    out.push(candidate);
+  }
+  return out;
 }
 
 /**
