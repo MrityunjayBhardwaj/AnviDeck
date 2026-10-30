@@ -23,6 +23,7 @@ import { GitHubTrace } from "./components/GitHubTrace";
 import { LiveSessions } from "./components/LiveSessions";
 import { needsCount, badgeText, stripText, type NeedsCount } from "./home-count";
 import type { HomeResponse } from "../shared/home-types";
+import { AgentsView, parseAgentsHash, type AgentsRoute } from "./components/AgentsView";
 import type {
   ProjectSummary,
   ProjectState,
@@ -47,7 +48,8 @@ export interface Nav {
 }
 
 // State
-type ViewName = "home" | "project" | "trace" | "system-lens" | "cross-project" | "routing" | "brain" | "github-trace" | "sessions";
+type ViewName = "home" | "project" | "trace" | "system-lens" | "cross-project" | "routing" | "brain" | "github-trace" | "sessions" | "agents";
+let agentsRoute: AgentsRoute | null = null; // seeded from #agents?… (#17)
 let currentBrainProject: string | null = null;
 let currentView: ViewName = "home";
 let projects: ProjectSummary[] = [];
@@ -166,6 +168,7 @@ function renderSidebar() {
   const views: { id: ViewName; label: string; extra?: string }[] = [
     { id: "home", label: "Home", extra: `<span class="badge home-badge${count.state === "ok" && count.n === 0 ? " zero" : ""}" title="things that need you (same count as the Home headline)">${badgeText(count)}</span>` },
     { id: "sessions", label: "Live Sessions" },
+    { id: "agents", label: "Agents" },
     { id: "trace", label: "Live Trace", extra: wsConnected ? '<span class="ws-indicator connected"></span>' : '<span class="ws-indicator"></span>' },
     { id: "brain", label: "Brain" },
     { id: "system-lens", label: "System Lens" },
@@ -237,6 +240,9 @@ function renderMain() {
     mainEl!.appendChild(CrossProject(nav));
   } else if (currentView === "sessions") {
     mainEl!.appendChild(LiveSessions(nav));
+  } else if (currentView === "agents") {
+    mainEl!.appendChild(AgentsView(projects.map((p) => p.name), agentsRoute));
+    agentsRoute = null;
   } else if (currentView === "routing") {
     mainEl!.appendChild(RoutingView(nav));
   } else if (currentView === "github-trace") {
@@ -293,6 +299,7 @@ async function onTimelineChange(state: TimelineState) {
 }
 
 function navigateTo(view: ViewName) {
+  if (view !== "agents" && location.hash.startsWith("#agents")) history.replaceState(null, "", location.pathname);
   currentView = view;
   currentProject = null;
   diffContent = null;
@@ -302,6 +309,7 @@ function navigateTo(view: ViewName) {
 }
 
 async function navigateToProject(name: string) {
+  if (location.hash.startsWith("#agents")) history.replaceState(null, "", location.pathname);
   currentView = "project";
   loading = true;
   diffContent = null;
@@ -389,6 +397,8 @@ async function init() {
     ]);
     projects = projectsData;
     timelinePoints = timeline;
+    agentsRoute = parseAgentsHash(location.hash);
+    if (agentsRoute) currentView = "agents";
     render();
   } catch (err) {
     mainEl!.innerHTML = `<div class="error-state">Failed to connect to AnviDeck server. Is it running on port 3000?</div>`;
