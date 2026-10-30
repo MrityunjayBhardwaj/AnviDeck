@@ -21,6 +21,8 @@ import {
 import { BrainView, addBrainHookEvent, addBrainRouteEvent } from "./components/BrainView";
 import { GitHubTrace } from "./components/GitHubTrace";
 import { LiveSessions } from "./components/LiveSessions";
+import { needsCount, badgeText, stripText, type NeedsCount } from "./home-count";
+import type { HomeResponse } from "../shared/home-types";
 import type {
   ProjectSummary,
   ProjectState,
@@ -40,6 +42,7 @@ export interface Nav {
   toRouting: () => void;
   toBrain: (project: string) => void;
   toGitHubTrace: (project?: string) => void;
+  toSessions: () => void;
   render: () => void;
 }
 
@@ -55,6 +58,9 @@ let diffContent: string | null = null;
 let wsConnected = false;
 let loading = false;
 let firstVisit = true;
+// Home (#18): the queue and its ONE count, set together in setHome() only.
+let home: HomeResponse | null = null;
+let count: NeedsCount = needsCount(null);
 
 const nav: Nav = {
   toHome: () => navigateTo("home"),
@@ -77,6 +83,7 @@ const nav: Nav = {
     if (project) currentBrainProject = project;
     navigateTo("github-trace");
   },
+  toSessions: () => navigateTo("sessions"),
   render,
 };
 
@@ -143,6 +150,7 @@ function render() {
 function renderHeader() {
   headerEl!.innerHTML = `
     <h1 class="header-title">ANVI DECK</h1>
+    <span class="live-strip" title="from /api/home: live sessions and the Home queue">${stripText(count)}</span>
     <span class="status ${wsConnected ? "live" : "disconnected"}" role="status" aria-label="WebSocket ${wsConnected ? "connected" : "disconnected"}">${wsConnected ? "live" : "disconnected"}</span>
   `;
 }
@@ -156,7 +164,7 @@ function renderSidebar() {
   navSection.innerHTML = `<h3>Views</h3>`;
 
   const views: { id: ViewName; label: string; extra?: string }[] = [
-    { id: "home", label: "Command Center" },
+    { id: "home", label: "Home", extra: `<span class="badge home-badge${count.state === "ok" && count.n === 0 ? " zero" : ""}" title="things that need you (same count as the Home headline)">${badgeText(count)}</span>` },
     { id: "sessions", label: "Live Sessions" },
     { id: "trace", label: "Live Trace", extra: wsConnected ? '<span class="ws-indicator connected"></span>' : '<span class="ws-indicator"></span>' },
     { id: "brain", label: "Brain" },
@@ -217,7 +225,7 @@ function renderMain() {
   }
 
   if (currentView === "home") {
-    mainEl!.appendChild(CommandCenter(projects, nav));
+    mainEl!.appendChild(CommandCenter(projects, nav, home, count));
   } else if (currentView === "project" && currentProject) {
     mainEl!.appendChild(ProjectView(currentProject, nav));
   } else if (currentView === "trace") {
@@ -353,6 +361,24 @@ function connectWebSocket(): void {
   }
 }
 
+// Home (#18): the queue loads after the page, so a slow source never holds up the first paint.
+function setHome(next: HomeResponse | null, failed = false) {
+  home = next;
+  count = needsCount(home, failed);
+  renderHeader();
+  renderSidebar();
+  if (currentView === "home" && !loading) renderMain();
+}
+
+async function loadHome() {
+  try {
+    setHome(await api.home());
+  } catch (err) {
+    console.error("Failed to load /api/home:", err);
+    setHome(null, true);
+  }
+}
+
 async function init() {
   ensureStructure();
   mainEl!.innerHTML = `<div class="loading-state"><div class="loading-spinner"></div><span>Loading projects...</span></div>`;
@@ -369,6 +395,8 @@ async function init() {
     console.error(err);
   }
   connectWebSocket();
+  loadHome();
+  setInterval(loadHome, 60_000);
 }
 
 init();

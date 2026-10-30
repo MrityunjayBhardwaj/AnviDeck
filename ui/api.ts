@@ -1,5 +1,7 @@
 import type { ProjectSummary, ProjectState, MemoryEntry, TimelinePoint, HookLogSession, CrossProjectData, RoutingArchitecture, BrainFlowEvent, GitHubTrace, LiveSession, EntryDate } from "../shared/types";
 
+import type { HomeResponse } from "../shared/home-types";
+
 const BASE = "/api";
 
 async function get<T>(path: string): Promise<T> {
@@ -20,6 +22,7 @@ export const api = {
   hookLogs: () => get<{ sessions: HookLogSession[] }>("/hook-logs"),
   crossProject: () => get<CrossProjectData>("/cross-project"),
   sessions: () => get<LiveSession[]>("/sessions"),
+  home: () => get<HomeResponse>("/home"),
   routingArchitecture: () => get<RoutingArchitecture>("/routing-architecture"),
   entryDates: (name: string) => get<Record<string, EntryDate>>(`/project/${encodeURIComponent(name)}/entry-dates`),
   githubTrace: (name: string, refresh = false) =>
