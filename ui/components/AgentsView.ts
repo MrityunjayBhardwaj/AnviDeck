@@ -315,10 +315,10 @@ function issueFromBranch(b: string): number | null {
 function derive(r: ReplayResponse | null, live?: LiveSession): Derived {
   const d: Derived = { branches: [], worktrees: [], issues: [] };
   const repo = r?.prs[0]?.repo;
-  const addBranch = (name: string, from: string) => {
+  const addBranch = (name: string, from: string, guessIssue = true) => {
     if (d.branches.some((b) => b.name === name)) return;
     d.branches.push({ name, from });
-    const n = issueFromBranch(name);
+    const n = guessIssue ? issueFromBranch(name) : null;
     if (n && !d.issues.some((i) => i.n === n)) d.issues.push({ n, from: `guessed from branch name ${name}`, repo });
   };
   for (const st of r?.steps ?? []) {
@@ -330,7 +330,9 @@ function derive(r: ReplayResponse | null, live?: LiveSession): Derived {
     const p = worktreeAddPath(st.command);
     if (p && !d.worktrees.some((w) => w.path === p)) d.worktrees.push({ path: p, from: `transcript, git worktree add at ${utc(st.ts)}` });
   }
-  if (live?.branch) addBranch(live.branch, "live session: current branch at its folder");
+  // The folder's branch now may be other work: guess an issue from it only
+  // when the transcript itself created no branch.
+  if (live?.branch) addBranch(live.branch, "live session: branch of its folder now", d.branches.length === 0);
   return d;
 }
 
