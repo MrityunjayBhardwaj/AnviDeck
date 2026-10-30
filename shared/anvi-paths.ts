@@ -1,4 +1,4 @@
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { homedir } from "node:os";
 
@@ -39,10 +39,26 @@ export function candidates(projectPath: string, kind: string): string[] {
  * directories still survive as two entries → real split-brain still detected.
  * Mirrors anvi's `hooks/anvi-paths.js` fix (anvi #37).
  */
+/**
+ * True when ~/.anvideck/projects holds a folder with EXACTLY this name. On a case-insensitive
+ * filesystem (macOS) `~/.anvideck/projects/Stave` opens `…/stave`, so existsSync alone would hand
+ * one project another's notes (#32). The directory listing keeps the on-disk case.
+ */
+function storeNamedExactly(name: string): boolean {
+  try {
+    return readdirSync(join(homedir(), ".anvideck", "projects")).includes(name);
+  } catch {
+    return false;
+  }
+}
+
 export function existingDirs(projectPath: string, kind: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const candidate of candidates(projectPath, kind)) {
+  const all = candidates(projectPath, kind);
+  for (const candidate of all) {
+    // The centralized candidate counts only under the project's exact name (#32).
+    if (candidate === all[2] && !storeNamedExactly(basename(projectPath))) continue;
     try {
       if (!existsSync(candidate) || !statSync(candidate).isDirectory()) continue;
     } catch {

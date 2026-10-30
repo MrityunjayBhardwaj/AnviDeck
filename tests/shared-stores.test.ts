@@ -51,3 +51,19 @@ describe("one notes store, one owner", () => {
     expect(s.map((x) => x.sharesNotesWith)).toEqual([undefined, undefined]);
   });
 });
+
+// #32: the centralized store counts only under the project's exact folder name. Uses the real
+// ~/.anvideck/projects/stave store and a parent folder that does not exist, so only the
+// centralized candidate can match.
+import { existingDirs } from "../shared/anvi-paths";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+const STAVE_STORE = `${homedir()}/.anvideck/projects/stave/.anvi`;
+describe.skipIf(!existsSync(STAVE_STORE))("central store name must match exactly (#32)", () => {
+  test("must-resolve: a project named exactly 'stave' gets the store", () => {
+    expect(existingDirs("/nonexistent-parent-for-test/stave", ".anvi")).toEqual([STAVE_STORE]);
+  });
+  test("must-not-resolve: 'Stave' (case only) does not", () => {
+    expect(existingDirs("/nonexistent-parent-for-test/Stave", ".anvi")).toEqual([]);
+  });
+});
