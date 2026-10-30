@@ -21,6 +21,9 @@ import {
 import { BrainView, addBrainHookEvent, addBrainRouteEvent } from "./components/BrainView";
 import { GitHubTrace } from "./components/GitHubTrace";
 import { LiveSessions } from "./components/LiveSessions";
+import { AgentsView, parseAgentsHash, type AgentsRoute } from "./components/AgentsView";
+import { needsCount, badgeText, stripText, type NeedsCount } from "./home-count";
+import type { HomeResponse } from "../shared/home-types";
 import { MapView } from "./components/MapView";
 import type {
   ProjectSummary,
@@ -41,11 +44,13 @@ export interface Nav {
   toRouting: () => void;
   toBrain: (project: string) => void;
   toGitHubTrace: (project?: string) => void;
+  toSessions: () => void;
   render: () => void;
 }
 
 // State
-type ViewName = "home" | "project" | "trace" | "system-lens" | "cross-project" | "routing" | "brain" | "github-trace" | "sessions" | "map";
+type ViewName = "home" | "project" | "trace" | "system-lens" | "cross-project" | "routing" | "brain" | "github-trace" | "sessions" | "agents" | "map";
+let agentsRoute: AgentsRoute | null = null; // seeded from #agents?… (#17)
 let currentBrainProject: string | null = null;
 let currentView: ViewName = "home";
 let projects: ProjectSummary[] = [];
@@ -56,6 +61,9 @@ let diffContent: string | null = null;
 let wsConnected = false;
 let loading = false;
 let firstVisit = true;
+// Home (#18): the queue and its ONE count, set together in setHome() only.
+let home: HomeResponse | null = null;
+let count: NeedsCount = needsCount(null);
 
 const nav: Nav = {
   toHome: () => navigateTo("home"),
@@ -78,6 +86,7 @@ const nav: Nav = {
     if (project) currentBrainProject = project;
     navigateTo("github-trace");
   },
+  toSessions: () => navigateTo("sessions"),
   render,
 };
 
@@ -144,6 +153,7 @@ function render() {
 function renderHeader() {
   headerEl!.innerHTML = `
     <h1 class="header-title">ANVI DECK</h1>
+    <span class="live-strip" title="from /api/home: live sessions and the Home queue">${stripText(count)}</span>
     <span class="status ${wsConnected ? "live" : "disconnected"}" role="status" aria-label="WebSocket ${wsConnected ? "connected" : "disconnected"}">${wsConnected ? "live" : "disconnected"}</span>
   `;
 }
@@ -157,8 +167,9 @@ function renderSidebar() {
   navSection.innerHTML = `<h3>Views</h3>`;
 
   const views: { id: ViewName; label: string; extra?: string }[] = [
-    { id: "home", label: "Command Center" },
+    { id: "home", label: "Home", extra: `<span class="badge home-badge${count.state === "ok" && count.n === 0 ? " zero" : ""}" title="things that need you (same count as the Home headline)">${badgeText(count)}</span>` },
     { id: "sessions", label: "Live Sessions" },
+    { id: "agents", label: "Agents" },
     { id: "map", label: "Map" },
     { id: "trace", label: "Live Trace", extra: wsConnected ? '<span class="ws-indicator connected"></span>' : '<span class="ws-indicator"></span>' },
     { id: "brain", label: "Brain" },
@@ -219,7 +230,7 @@ function renderMain() {
   }
 
   if (currentView === "home") {
-    mainEl!.appendChild(CommandCenter(projects, nav));
+    mainEl!.appendChild(CommandCenter(projects, nav, home, count));
   } else if (currentView === "project" && currentProject) {
     mainEl!.appendChild(ProjectView(currentProject, nav));
   } else if (currentView === "trace") {
@@ -231,6 +242,9 @@ function renderMain() {
     mainEl!.appendChild(CrossProject(nav));
   } else if (currentView === "sessions") {
     mainEl!.appendChild(LiveSessions(nav));
+  } else if (currentView === "agents") {
+    mainEl!.appendChild(AgentsView(projects.map((p) => p.name), agentsRoute));
+    agentsRoute = null;
   } else if (currentView === "map") {
     mainEl!.appendChild(MapView(nav));
   } else if (currentView === "routing") {
@@ -289,6 +303,7 @@ async function onTimelineChange(state: TimelineState) {
 }
 
 function navigateTo(view: ViewName) {
+  if (view !== "agents" && location.hash.startsWith("#agents")) history.replaceState(null, "", location.pathname);
   if (view !== "map" && location.hash.startsWith("#map")) history.replaceState(null, "", location.pathname);
   currentView = view;
   currentProject = null;
@@ -299,6 +314,7 @@ function navigateTo(view: ViewName) {
 }
 
 async function navigateToProject(name: string) {
+  if (location.hash.startsWith("#agents")) history.replaceState(null, "", location.pathname);
   currentView = "project";
   loading = true;
   diffContent = null;
@@ -358,6 +374,24 @@ function connectWebSocket(): void {
   }
 }
 
+// Home (#18): the queue loads after the page, so a slow source never holds up the first paint.
+function setHome(next: HomeResponse | null, failed = false) {
+  home = next;
+  count = needsCount(home, failed);
+  renderHeader();
+  renderSidebar();
+  if (currentView === "home" && !loading) renderMain();
+}
+
+async function loadHome() {
+  try {
+    setHome(await api.home());
+  } catch (err) {
+    console.error("Failed to load /api/home:", err);
+    setHome(null, true);
+  }
+}
+
 async function init() {
   ensureStructure();
   mainEl!.innerHTML = `<div class="loading-state"><div class="loading-spinner"></div><span>Loading projects...</span></div>`;
@@ -368,6 +402,8 @@ async function init() {
     ]);
     projects = projectsData;
     timelinePoints = timeline;
+    agentsRoute = parseAgentsHash(location.hash);
+    if (agentsRoute) currentView = "agents";
     if (location.hash.startsWith("#map")) currentView = "map"; // e.g. #map?project=stave&zoom=files
     render();
   } catch (err) {
@@ -375,6 +411,8 @@ async function init() {
     console.error(err);
   }
   connectWebSocket();
+  loadHome();
+  setInterval(loadHome, 60_000);
 }
 
 init();

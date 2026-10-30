@@ -372,7 +372,7 @@ async function runAsync(cmd: string[], timeoutMs = 10000): Promise<{ ok: boolean
  */
 const PR_OPEN_TTL_MS = 60_000;
 const prViewCache = new Map<string, { at: number; out: string }>();
-async function ghPrView(number: number, repo: string): Promise<{ ok: boolean; out: string; err: string; cached: boolean }> {
+export async function ghPrView(number: number, repo: string): Promise<{ ok: boolean; out: string; err: string; cached: boolean }> {
   const key = `${repo}#${number}`;
   const hit = prViewCache.get(key);
   if (hit) {
@@ -384,7 +384,7 @@ async function ghPrView(number: number, repo: string): Promise<{ ok: boolean; ou
     }
     if (state === "MERGED" || state === "CLOSED" || Date.now() - hit.at < PR_OPEN_TTL_MS) return { ok: true, out: hit.out, err: "", cached: true };
   }
-  const r = await runAsync(["gh", "pr", "view", String(number), "--repo", repo, "--json", "headRefOid,state,mergedAt,changedFiles,files"], 20000);
+  const r = await runAsync(["gh", "pr", "view", String(number), "--repo", repo, "--json", "headRefOid,state,mergedAt,changedFiles,files,title,isDraft,url"], 20000);
   if (r.ok) prViewCache.set(key, { at: Date.now(), out: r.out });
   return { ...r, cached: false };
 }
@@ -1193,7 +1193,7 @@ export function mergeEvidence(pr: number, repo: string, mergedAt: string | null)
             sessionId: sid,
             hookRunAt: hookTs,
             commandAt: r.timestamp,
-            judgementRow: judgementRowFor(pr),
+            judgementRow: judgementRowFor(pr, sid),
           };
         }
       }
@@ -1207,21 +1207,36 @@ export function mergeEvidence(pr: number, repo: string, mergedAt: string | null)
   };
 }
 
-function judgementRowFor(pr: number): MergeEvidence["judgementRow"] {
+/**
+ * Did the merge hook, run in the merging session, write a judgement row for
+ * this PR? A row only counts when both its `pr` AND its `session` match: rows
+ * for the same PR written by another run (a later probe or a re-check, e.g.
+ * session "probe-702-control") say nothing about the merge itself.
+ */
+export function judgementRowFor(
+  pr: number,
+  sessionId: string,
+  logText?: string
+): MergeEvidence["judgementRow"] {
+  let text: string;
   try {
-    const rows = readFileSync(MERGE_LOG, "utf8").split("\n").filter(Boolean);
-    return rows.some((l) => {
+    text = logText ?? readFileSync(MERGE_LOG, "utf8");
+  } catch {
+    return "could-not-read";
+  }
+  return text
+    .split("\n")
+    .filter(Boolean)
+    .some((l) => {
       try {
-        return JSON.parse(l).pr === pr;
+        const row = JSON.parse(l);
+        return row.pr === pr && row.session === sessionId;
       } catch {
         return false;
       }
     })
-      ? "found"
-      : "none";
-  } catch {
-    return "could-not-read";
-  }
+    ? "found"
+    : "none";
 }
 
 export type { StepSource, SourceStatus, ReplaySessionSummary };

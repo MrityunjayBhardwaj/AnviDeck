@@ -99,6 +99,7 @@ export function readLiveSessionsReport(): { sessions: LiveSession[]; report: Rea
       version: typeof raw.version === "string" ? raw.version : "",
       kind: typeof raw.kind === "string" ? raw.kind : "",
       branch: gitBranch(cwd),
+      ...(typeof raw.waitingFor === "string" && raw.waitingFor ? { waitingFor: raw.waitingFor } : {}),
     });
   }
 

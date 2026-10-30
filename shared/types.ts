@@ -330,6 +330,8 @@ export interface LiveSession {
   kind: string;
   /** Current git branch at cwd, or null. */
   branch: string | null;
+  /** What a "waiting" session waits for, as the registry words it (e.g. "dialog open"). */
+  waitingFor?: string;
 }
 
 /**

@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll } from "bun:test";
-import { findTranscript, readReplay, shellWriteReason, shellWriteScope, listReplaySessions, mergeEvidence, repoFileKey, joinMeter } from "../server/readers/replay";
+import { findTranscript, readReplay, shellWriteReason, shellWriteScope, listReplaySessions, mergeEvidence, repoFileKey, joinMeter, judgementRowFor } from "../server/readers/replay";
 import { join } from "node:path";
 import replayRoutes from "../server/routes/replay";
 import type { ReplayResponse } from "../shared/replay-types";
@@ -193,6 +193,29 @@ describe.skipIf(!findTranscript(MERGER_SID))("merge evidence is confirmed by a t
   test("another repo's PR with the same number is not confirmed", () => {
     const m = mergeEvidence(2271, "someone/other-repo", "2026-10-30T17:44:30Z");
     expect(m.how).not.toBe("claude-session");
+  });
+  test("a judgement row written later by a probe is not the merge's own row", () => {
+    // merges.jsonl holds a row for #2271 from session "probe-702-control"
+    // (18:40Z), not from the merging session: the merge check is not confirmed.
+    const m = mergeEvidence(2271, "MrityunjayBhardwaj/Stave", "2026-10-30T17:44:30Z");
+    expect(m.judgementRow).toBe("none");
+  });
+});
+
+describe("judgement row matching", () => {
+  const log = [
+    JSON.stringify({ session: "probe-702-control", pr: 2271, outcome: "clean" }),
+    JSON.stringify({ session: "abfc9da5", pr: 2083, outcome: "clean" }),
+    "not json",
+  ].join("\n");
+  test("must match: the merging session's own row for the PR", () => {
+    expect(judgementRowFor(2083, "abfc9da5", log)).toBe("found");
+  });
+  test("must not match: a row for the same PR from another session", () => {
+    expect(judgementRowFor(2271, "a65698cb", log)).toBe("none");
+  });
+  test("must not match: the same session's row for another PR", () => {
+    expect(judgementRowFor(2271, "abfc9da5", log)).toBe("none");
   });
 });
 
