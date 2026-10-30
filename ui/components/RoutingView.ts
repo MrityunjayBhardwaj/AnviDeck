@@ -105,6 +105,17 @@ function renderRoutingTable(): HTMLElement {
   desc.textContent = "Click an activity to see which files get loaded. Total = Tier 1 (always) + Tier 3 (activity-specific).";
   container.appendChild(desc);
 
+  const src = state.arch.source;
+  const srcLine = document.createElement("div");
+  srcLine.className = "cp-desc";
+  srcLine.textContent = !src
+    ? "Routing table source: unknown"
+    : src.status === "ok"
+      ? `Read from ${src.path} (${state.arch.routingTable.length} rows)`
+      : `Could not ${src.status === "unreadable" ? "read" : "parse"} the routing table in ${src.path}: ${src.error ?? "unknown error"}`;
+  if (src && src.status !== "ok") srcLine.style.color = "var(--danger, #e5534b)";
+  container.appendChild(srcLine);
+
   for (const route of state.arch.routingTable) {
     const isSelected = state.selectedActivity === route.activity;
     const card = document.createElement("div");

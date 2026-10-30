@@ -3,6 +3,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { readCatalogues, GROUNDING_CATALOGUES } from "./catalogue";
 import { resolveDir } from "../../shared/anvi-paths";
 import type { GroundingStatus, GroundTruthDoc } from "../../shared/types";
+import { errText, isAbsent, report } from "./read-status";
 
 // file:line citations — allow paths, dotted names, and any-case filenames
 // (e.g. src/core/OpfsStorage.ts:52, vite.config.ts:18, GLTFLoader.js:5).
@@ -28,8 +29,10 @@ export async function readGroundingStatus(
     }
   }
 
-  const groundTruthDocs = await scanGroundTruthDocs(projectPath);
-  const sourceDirectories = await scanSourceDirs(projectPath);
+  const errors: string[] = [];
+  const refDir = resolveDir(projectPath, "ref");
+  const groundTruthDocs = await scanGroundTruthDocs(refDir, errors);
+  const sourceDirectories = await scanSourceDirs(refDir, errors);
 
   return {
     totalEntries,
@@ -37,16 +40,18 @@ export async function readGroundingStatus(
     ungroundedEntries: totalEntries - groundedEntries,
     groundTruthDocs,
     sourceDirectories,
+    // Ground Truth docs read vs. failed; no ref/ dir or no docs is "none".
+    readStatus: report(groundTruthDocs.length, errors, refDir ?? undefined),
   };
 }
 
-async function scanGroundTruthDocs(projectPath: string): Promise<GroundTruthDoc[]> {
-  const refDir = resolveDir(projectPath, "ref");
+async function scanGroundTruthDocs(refDir: string | null, errors: string[]): Promise<GroundTruthDoc[]> {
   if (!refDir) return [];
   let files: string[];
   try {
     files = await readdir(refDir);
-  } catch {
+  } catch (e) {
+    if (!isAbsent(e)) errors.push(errText(refDir, e));
     return [];
   }
 
@@ -71,22 +76,22 @@ async function scanGroundTruthDocs(projectPath: string): Promise<GroundTruthDoc[
         stages,
         lastModified: fileStat.mtime,
       });
-    } catch {
-      // skip unreadable
+    } catch (e) {
+      errors.push(errText(filePath, e));
     }
   }
 
   return docs;
 }
 
-async function scanSourceDirs(projectPath: string): Promise<string[]> {
-  const refDir = resolveDir(projectPath, "ref");
+async function scanSourceDirs(refDir: string | null, errors: string[]): Promise<string[]> {
   if (!refDir) return [];
   const sourcesDir = join(refDir, "sources");
   try {
     const entries = await readdir(sourcesDir, { withFileTypes: true });
     return entries.filter((e) => e.isDirectory()).map((e) => e.name);
-  } catch {
+  } catch (e) {
+    if (!isAbsent(e)) errors.push(errText(sourcesDir, e));
     return [];
   }
 }

@@ -19,7 +19,14 @@ const KNOWN_TAGS = [
  * Sections within entries: **Key:** value  (bold key followed by colon)
  * Provenance fields: ORIGIN:, WHY:, HOW: (line-level, no bold)
  */
-export function parseCatalogueEntries(markdown: string): CatalogueEntry[] {
+export function parseCatalogueEntries(
+  markdown: string,
+  catalogueName?: string
+): CatalogueEntry[] {
+  // Status in a HEADER is a convention of the status-bearing catalogues only
+  // (see extractTags). Error-pattern and lifecycle headers are lesson titles,
+  // where a tag word is prose ("…IS A BLIND SPOT THE DAY…").
+  const headerTags = !catalogueName || HEADER_STATUS_CATALOGUES.includes(catalogueName);
   const entries: CatalogueEntry[] = [];
   const seenIds = new Set<string>();
   // Split into entry blocks by h2 or h3 headers
@@ -46,7 +53,7 @@ export function parseCatalogueEntries(markdown: string): CatalogueEntry[] {
       nextIndex
     );
 
-    const entry = parseEntryBlock(header.text.trim(), body);
+    const entry = parseEntryBlock(header.text.trim(), body, headerTags);
     // Fold an h3 sub-section that repeats an entry's ID back into that entry —
     // e.g. an h3 "### SP107 — ORIGINAL FRAMING (SUPERSEDED)" audit block beneath
     // the "## SP107:" entry is not a separate entry. Only h3 repeats are folded:
@@ -66,46 +73,122 @@ export function parseCatalogueEntries(markdown: string): CatalogueEntry[] {
   return entries;
 }
 
+/**
+ * The entry-ID rule, shared by every reader that needs to know which header
+ * starts an entry (the parser itself, per-entry history dates, ...).
+ *
+ * Recognize an entry whenever the header STARTS with an ID token, mirroring
+ * the framework's canonical counter (`^## ([A-Z]+\d+)`, colon-optional). The
+ * colon and title are optional, so all of these count as one entry:
+ *   "SP9: Parameter Name Mismatch at Layer Boundary"   (canonical)
+ *   "SP47 (Meta-Pattern): SP36 corrupts isolation..."  (annotation before colon)
+ *   "SV56"                                             (bare ID, no title)
+ * Prose section headers ("Compaction Log", "Ground Truth Inventory") have no
+ * leading ID and are skipped. Template example entries (U1, UV1, UK1, UH1, ...)
+ * are placeholders shipped in the catalogue templates, not real project
+ * knowledge; the framework's canonical counter excludes them the same way
+ * (`!/^U[A-Z]?\d+$/`).
+ *
+ * `headerText` is the header without its leading `## ` / `### `.
+ */
+export function entryIdFromHeader(
+  headerText: string
+): { id: string; rest: string } | null {
+  const m = headerText.match(/^([A-Z][A-Za-z]*\d+)\s*:?\s*(.*)$/);
+  if (!m) return null;
+  if (/^U[A-Z]?\d+$/.test(m[1])) return null;
+  return { id: m[1], rest: m[2] };
+}
+
+/**
+ * Status tags an entry CARRIES, as opposed to words its prose mentions.
+ *
+ * A tag counts only where catalogues state status:
+ *   1. the entry's header line, in the status-bearing catalogues (vyapti,
+ *      dharana) — anvi's own scans read MISALIGNED from vyapti headers
+ *      (hooks/debug-grounding-gate.js, hooks/ground-truth-session-start.js:
+ *      `^## <ID>:…MISALIGNED`) and FATALITY from dharana
+ *      (hooks/catalogue-context-injector.js), or
+ *   2. the value of a status field — a line labelled `Status:`,
+ *      `**Status:**`, `**Current status:**`, `STATUS:`, `**Fatality status:**`
+ *      (dharana-spec's "Status: ALIGNED / MISALIGNED / CONSOLIDATION PLANNED").
+ * Anywhere else (narrative, amendments, cross-references, tables about other
+ * entries) the word is a mention and does not tag the entry. Within those two
+ * places a tag is still skipped when it is struck through (~~X~~), negated or
+ * historical ("was X", "not X", "no longer X", "NOT YET A FATALITY"), or part
+ * of a template list of options ("ALIGNED / MISALIGNED / …").
+ * Matching is whole-word, so ALIGNED does not fire inside MISALIGNED.
+ */
+export function extractTags(headerRest: string, body: string): string[] {
+  const places: string[] = [headerRest];
+  const fatalityTestPlaces: string[] = [headerRest];
+  // Cheap prefilter: only lines naming "status" or "fatality test" can matter.
+  if (/status|fatality test/i.test(body)) {
+    for (const line of body.split("\n")) {
+      if (!/status|fatality test/i.test(line)) continue;
+      const m = line.match(STATUS_LINE);
+      if (m) places.push(m[1]!);
+      if (FATALITY_TEST_LINE.test(line)) fatalityTestPlaces.push(line);
+    }
+  }
+  const tags: string[] = [];
+  // The fatality test's own result line ("FATALITY TEST: … TRIPPED",
+  // "(…; fatality test TRIPPED: 3 patterns…)") — dharana-spec §4 records
+  // "fatality test results"; a "NOT re-tripped" / "not tripped" reading is not one.
+  if (fatalityTestPlaces.some((p) => FATALITY_TRIPPED.test(p.replace(/~~[^~]*~~/g, " ")))) {
+    tags.push("FATALITY");
+  }
+  for (const raw of places) {
+    const text = raw.replace(/~~[^~]*~~/g, " ");
+    if (TEMPLATE_OPTIONS.test(text)) continue;
+    for (const tag of KNOWN_TAGS) {
+      if (tags.includes(tag)) continue;
+      if (!text.includes(tag)) continue;
+      for (const hit of text.matchAll(TAG_RE[tag]!)) {
+        const before = text.slice(Math.max(0, hit.index! - 24), hit.index!);
+        if (tag !== "NOT YET IMPLEMENTED" && NEGATED_BEFORE.test(before)) continue;
+        tags.push(tag);
+        break;
+      }
+    }
+  }
+  return tags;
+}
+
+/** Whole-word matcher per tag (ALIGNED must not fire inside MISALIGNED). */
+const TAG_RE: Record<string, RegExp> = Object.fromEntries(
+  KNOWN_TAGS.map((t) => [t, new RegExp(`(?<![A-Za-z])${t}(?![A-Za-z])`, "g")])
+);
+/** Catalogues whose entry headers may carry a status tag. */
+const HEADER_STATUS_CATALOGUES = ["vyapti", "dharana"];
+/** `<label containing "status">: <value>` with optional markdown around the label. */
+const STATUS_LINE = /^[\s>#*_|\-]*[^:\n]{0,40}?\bstatus\b[^:\n]{0,40}?(?:\*\*)?\s*:\s*(?:\*\*)?(.*)$/i;
+/** A body line that starts (ignoring markdown/symbols) with "fatality test". */
+const FATALITY_TEST_LINE = /^[^A-Za-z]*fatality test\b/i;
+/** "fatality test … tripped" with no "not" in between. */
+const FATALITY_TRIPPED = /\bfatality test\b(?:(?!\bnot\b)[^.\n]){0,80}?\btripped\b/i;
+/** Words right before a tag that make it historical or negated. */
+const NEGATED_BEFORE = /\b(?:was|were|not|no longer|formerly|never|not yet an?|previously)\s+(?:an?\s+|the\s+)?(?:[A-Za-z-]+\s+)?$/i;
+/** "ALIGNED / MISALIGNED / CONSOLIDATION PLANNED" — a list of options, not a status. */
+const TEMPLATE_OPTIONS = /\b[A-Z][A-Z ]+ \/ [A-Z][A-Z ]+\b/;
+
+/** A catalogue header line: `## text` or `### text`. */
+export const ENTRY_HEADER_LINE = /^(#{2,3})\s+(.+)$/;
+
 function parseEntryBlock(
   headerText: string,
-  body: string
+  body: string,
+  headerTags = true
 ): CatalogueEntry | null {
-  // Recognize an entry whenever the header STARTS with an ID token, mirroring
-  // the framework's canonical counter (`^## ([A-Z]+\d+)`, colon-optional). The
-  // colon and title are optional, so all of these count as one entry:
-  //   "SP9: Parameter Name Mismatch at Layer Boundary"   (canonical)
-  //   "SP47 (Meta-Pattern): SP36 corrupts isolation…"    (annotation before colon)
-  //   "SV56"                                             (bare ID, no title)
-  // Prose section headers ("Compaction Log", "Ground Truth Inventory") have no
-  // leading ID and are still skipped.
-  const headerMatch = headerText.match(/^([A-Z][A-Za-z]*\d+)\s*:?\s*(.*)$/);
+  const headerMatch = entryIdFromHeader(headerText);
   if (!headerMatch) return null;
 
-  const id = headerMatch[1];
+  const id = headerMatch.id;
 
-  // Skip template example entries (U1, UV1, UK1, UH1, …) — placeholders shipped
-  // in the catalogue templates, not real project knowledge. The framework's
-  // canonical counter excludes them the same way (`!/^U[A-Z]?\d+$/`).
-  if (/^U[A-Z]?\d+$/.test(id)) return null;
-
-  let titleRaw = headerMatch[2];
-
-  // Extract tags from title (in parentheses)
-  const tags: string[] = [];
-  const parenMatch = titleRaw.match(/\(([^)]+)\)/);
-  if (parenMatch) {
-    const parenContent = parenMatch[1];
-    for (const tag of KNOWN_TAGS) {
-      if (parenContent.includes(tag)) tags.push(tag);
-    }
+  let titleRaw = headerMatch.rest;
+  const tags = extractTags(headerTags ? titleRaw : "", body);
+  if (/\([^)]+\)/.test(titleRaw)) {
     titleRaw = titleRaw.replace(/\s*\([^)]+\)/, "").trim();
-  }
-
-  // Extract tags from body
-  for (const tag of KNOWN_TAGS) {
-    if (!tags.includes(tag) && body.includes(tag)) {
-      tags.push(tag);
-    }
   }
 
   // Parse sections: **Key:** value

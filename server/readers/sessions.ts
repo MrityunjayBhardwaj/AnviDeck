@@ -2,7 +2,8 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { execSync } from "node:child_process";
-import type { LiveSession } from "../../shared/types";
+import type { LiveSession, ReadReport } from "../../shared/types";
+import { errText, isAbsent, report } from "./read-status";
 
 /**
  * Live Claude Code sessions.
@@ -46,21 +47,36 @@ function gitBranch(cwd: string): string | null {
 }
 
 export function readLiveSessions(): LiveSession[] {
+  return readLiveSessionsReport().sessions;
+}
+
+/**
+ * Live sessions plus a report. No registry directory, or no running session,
+ * is "none". A registry directory or file that can't be read or parsed is
+ * listed in errors (status unreadable/partial) instead of being skipped
+ * silently.
+ */
+export function readLiveSessionsReport(): { sessions: LiveSession[]; report: ReadReport } {
+  const errors: string[] = [];
   let files: string[];
   try {
     files = readdirSync(SESSIONS_DIR).filter((f) => f.endsWith(".json"));
-  } catch {
-    return [];
+  } catch (e) {
+    return { sessions: [], report: report(0, isAbsent(e) ? [] : [errText(SESSIONS_DIR, e)], SESSIONS_DIR) };
   }
 
   const sessions: LiveSession[] = [];
+  let filesRead = 0;
   for (const file of files) {
     let raw: any;
     try {
       raw = JSON.parse(readFileSync(join(SESSIONS_DIR, file), "utf8"));
-    } catch {
-      continue; // skip malformed registry file
+    } catch (e) {
+      // A file removed between readdir and read is a session that just ended.
+      if (!isAbsent(e)) errors.push(errText(join(SESSIONS_DIR, file), e));
+      continue;
     }
+    filesRead++;
     if (typeof raw?.pid !== "number" || !pidAlive(raw.pid)) continue; // running only
 
     const cwd: string = typeof raw.cwd === "string" ? raw.cwd : "";
@@ -92,5 +108,8 @@ export function readLiveSessions(): LiveSession[] {
       (a.status === "busy" ? 0 : 1) - (b.status === "busy" ? 0 : 1) ||
       b.updatedAt - a.updatedAt
   );
-  return sessions;
+  // "partial" vs "unreadable" is decided by registry files read, not by how
+  // many of them are still alive: dead sessions were read fine.
+  const r = report(filesRead, errors, SESSIONS_DIR);
+  return { sessions, report: filesRead > 0 && !sessions.length && !errors.length ? { ...r, status: "none" } : r };
 }

@@ -1,82 +1,96 @@
 import { Hono } from "hono";
-import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import {
   readCatalogues,
+  readCataloguesReport,
   extractBoundaries,
   countSignals,
   findAnviDir,
   GROUNDING_CATALOGUES,
 } from "../readers/catalogue";
-import { readProjectMemory, readGlobalMemory } from "../readers/memory";
+import { readMemoryDirReport, projectMemoryDir, GLOBAL_MEMORY_DIR } from "../readers/memory";
 import {
   getTimeline,
   showAtCommit,
   diffCommits,
+  readEntryDatesForFile,
 } from "../readers/git-history";
 import { readGroundingStatus } from "../readers/ground-truth";
-import { readLiveSessions } from "../readers/sessions";
+import { readLiveSessionsReport } from "../readers/sessions";
+import { readRoutingTable, alwaysLoadedFiles } from "../readers/routing";
+import { discoverProjects, type DiscoveredProject } from "../readers/projects";
 import { resolveDir } from "../../shared/anvi-paths";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { execSync } from "node:child_process";
-import type { ProjectSummary, ProjectState, HookLogEntry } from "../../shared/types";
+import type { ProjectSummary, ProjectState, HookLogEntry, EntryDate, ReadReport } from "../../shared/types";
+import type { Context } from "hono";
+import { errText, isAbsent, report } from "../readers/read-status";
 
 const api = new Hono();
 
-const CLAUDE_DIR = join(
-  process.env.HOME ?? "/Users/mrityunjaybhardwaj",
-  ".claude"
-);
-const PROJECTS_DIR = join(CLAUDE_DIR, "projects");
+/**
+ * Answer an array endpoint so "could not read" never looks like "nothing
+ * found": the body stays the plain array (what the UI expects) with the read
+ * status in X-Read-Status; when nothing could be read the answer is 503 with
+ * the report instead of an empty 200.
+ */
+function arrayWithStatus<T>(c: Context, items: T[], r: ReadReport) {
+  c.header("X-Read-Status", r.status);
+  if (r.status === "unreadable") {
+    return c.json({ error: "could not read", status: r.status, path: r.path, errors: r.errors }, 503);
+  }
+  if (r.errors.length) c.header("X-Read-Errors", String(r.errors.length));
+  return c.json(items);
+}
+
+const EMPTY_REPORT: ReadReport = { status: "none", errors: [] };
 
 // GET /api/sessions — live (currently-running) Claude Code sessions
-api.get("/sessions", (c) => c.json(readLiveSessions()));
+api.get("/sessions", (c) => {
+  const { sessions, report } = readLiveSessionsReport();
+  return arrayWithStatus(c, sessions, report);
+});
 
 /**
- * Decode a Claude projects directory name to an absolute path.
- * "-Users-mrityunjaybhardwaj-Documents-projects-sonicPiWeb"
- * → "/Users/mrityunjaybhardwaj/Documents/projects/sonicPiWeb"
+ * Discovered projects, plus a lookup by short name. Path decoding lives in
+ * ../readers/projects (transcript cwd → filesystem walk → unresolved); a
+ * project whose path cannot be determined has decoded === null and is never
+ * read from a guessed path.
  */
-function decodeProjectPath(dirName: string): string {
-  return dirName.replace(/^-/, "/").replace(/-/g, "/");
+function listProjects(): DiscoveredProject[] {
+  return discoverProjects().projects;
 }
 
-/**
- * Extract a short project name from the decoded path.
- */
-function projectName(decodedPath: string): string {
-  return decodedPath.split("/").pop() ?? decodedPath;
+/** Body for a project whose path could not be determined (never guessed). */
+function unresolvedBody(proj: DiscoveredProject) {
+  return {
+    error: "Project path could not be determined",
+    status: "unresolved",
+    encoded: proj.encoded,
+    candidates: proj.candidates ?? [],
+  };
 }
 
-/**
- * Discover all projects from ~/.claude/projects/
- */
-async function discoverProjects(): Promise<
-  { encoded: string; decoded: string; name: string }[]
-> {
-  let dirs: string[];
-  try {
-    dirs = await readdir(PROJECTS_DIR);
-  } catch {
-    return [];
-  }
-
-  return dirs
-    .filter((d) => d.startsWith("-"))
-    .map((encoded) => {
-      const decoded = decodeProjectPath(encoded);
-      return { encoded, decoded, name: projectName(decoded) };
-    });
+function findProject(name: string): DiscoveredProject | undefined {
+  const all = listProjects();
+  // A resolved project wins over an unresolved one that happens to share the name.
+  return all.find((p) => p.name === name && p.decoded) ?? all.find((p) => p.name === name);
 }
 
 // GET /api/projects — all projects with catalogue counts
 api.get("/projects", async (c) => {
-  const projects = await discoverProjects();
+  const discovery = discoverProjects();
+  if (discovery.status === "unreadable") {
+    return c.json({ error: "could not read the projects directory", status: "unreadable", errors: [discovery.error] }, 503);
+  }
+  const projects = discovery.projects;
   const summaries: ProjectSummary[] = [];
 
   for (const proj of projects) {
-    const catalogues = await readCatalogues(proj.decoded);
-    const memory = await readProjectMemory(proj.encoded);
+    const cat = proj.decoded ? await readCataloguesReport(proj.decoded) : { catalogues: [], report: EMPTY_REPORT };
+    const catalogues = cat.catalogues;
+    const mem = await readMemoryDirReport(projectMemoryDir(proj.encoded));
+    const memory = mem.entries;
     const signals = countSignals(catalogues);
 
     const catalogueCounts: Record<string, number> = {};
@@ -97,38 +111,87 @@ api.get("/projects", async (c) => {
     }
     const groundingPercent = totalEntries > 0 ? Math.round((groundedEntries / totalEntries) * 100) : 0;
 
-    // Count Ground Truth docs
+    // Count Ground Truth docs. An unreadable ref/ dir is reported, not shown as 0 docs.
     let groundTruthDocCount = 0;
-    try {
-      const refDir = resolveDir(proj.decoded, "ref");
-      const refFiles = refDir ? readdirSync(refDir) : [];
-      groundTruthDocCount = refFiles.filter((f: string) => f.startsWith("GROUND_TRUTH_") && f.endsWith(".md")).length;
-    } catch {}
+    const refDir = proj.decoded ? resolveDir(proj.decoded, "ref") : null;
+    let gtReport: ReadReport = report(0, [], refDir ?? undefined);
+    if (refDir) {
+      try {
+        groundTruthDocCount = readdirSync(refDir).filter((f: string) => f.startsWith("GROUND_TRUTH_") && f.endsWith(".md")).length;
+        gtReport = report(groundTruthDocCount, [], refDir);
+      } catch (e) {
+        if (!isAbsent(e)) gtReport = report(0, [errText(refDir, e)], refDir);
+      }
+    }
 
     summaries.push({
       name: proj.name,
-      path: proj.decoded,
+      path: proj.decoded ?? "",
+      pathSource: proj.pathSource,
       catalogueCounts,
       memoryCount: memory.length,
       ...signals,
       groundingPercent,
       groundTruthDocCount,
+      readStatus: { catalogues: cat.report, memory: mem.report, groundTruth: gtReport },
     });
   }
 
+  markSharedStores(summaries, projects.map((p) => (p.decoded ? findAnviDir(p.decoded) : null)));
   return c.json(summaries);
 });
+
+/**
+ * One notes store, one owner (#36, #32). A worktree whose .anvi is a symlink to its parent's
+ * store, or a folder whose name differs only in letter case from the store's (macOS file names
+ * are case-insensitive), serves the SAME store as another project. Counting it per project
+ * counted the notes twice. Identity is the directory's device + inode, which holds under any
+ * runtime: Node's realpathSync keeps the case it was asked with ("Stave/.anvi"), Bun's returns
+ * the on-disk case ("stave/.anvi"), so a path comparison would depend on which one runs this.
+ * The owner is the project whose path contains the store, else the one named exactly like the
+ * store's folder, else the shortest path. The others are marked `sharesNotesWith`, and totals
+ * skip them.
+ */
+export function markSharedStores(summaries: ProjectSummary[], anviDirs: (string | null)[]): void {
+  const groups = new Map<string, number[]>();
+  anviDirs.forEach((dir, i) => {
+    if (!dir) return;
+    try {
+      const st = statSync(dir);
+      const id = `${st.dev}:${st.ino}`;
+      groups.set(id, [...(groups.get(id) ?? []), i]);
+    } catch {
+      /* unreadable store: reported by readStatus, not grouped */
+    }
+  });
+  for (const idx of groups.values()) {
+    if (idx.length < 2) continue;
+    const store = realpathSync.native(anviDirs[idx[0]]!);
+    const storeName = store.split("/").slice(-2, -1)[0];
+    const inside = idx.find((i) => store.startsWith(summaries[i].path + "/"));
+    const named = idx.find((i) => summaries[i].path.split("/").pop() === storeName);
+    const shortest = [...idx].sort((a, b) => summaries[a].path.length - summaries[b].path.length)[0];
+    const owner = inside ?? named ?? shortest;
+    for (const i of idx) if (i !== owner) {
+      summaries[i].sharesNotesWith = summaries[owner].name;
+      summaries[i].notesStore = store;
+    }
+    summaries[owner].notesStore = store;
+  }
+}
 
 // GET /api/project/:name — full project state
 api.get("/project/:name", async (c) => {
   const name = c.req.param("name");
-  const projects = await discoverProjects();
-  const proj = projects.find((p) => p.name === name);
+  const proj = findProject(name);
 
   if (!proj) return c.json({ error: "Project not found" }, 404);
+  if (!proj.decoded) return c.json(unresolvedBody(proj), 404);
 
-  const catalogues = await readCatalogues(proj.decoded);
-  const memory = await readProjectMemory(proj.encoded);
+  const cat = await readCataloguesReport(proj.decoded);
+  const catalogues = cat.catalogues;
+  const mem = await readMemoryDirReport(projectMemoryDir(proj.encoded));
+  const memory = mem.entries;
   const signals = countSignals(catalogues);
   const boundaries = extractBoundaries(catalogues);
 
@@ -137,11 +200,13 @@ api.get("/project/:name", async (c) => {
   const state: ProjectState = {
     name: proj.name,
     path: proj.decoded,
+    pathSource: proj.pathSource,
     catalogues,
     memory,
     boundaries,
     ...signals,
     grounding,
+    readStatus: { catalogues: cat.report, memory: mem.report },
   };
 
   return c.json(state);
@@ -150,31 +215,30 @@ api.get("/project/:name", async (c) => {
 // GET /api/project/:name/catalogues — just catalogues
 api.get("/project/:name/catalogues", async (c) => {
   const name = c.req.param("name");
-  const projects = await discoverProjects();
-  const proj = projects.find((p) => p.name === name);
+  const proj = findProject(name);
 
   if (!proj) return c.json({ error: "Project not found" }, 404);
+  if (!proj.decoded) return c.json(unresolvedBody(proj), 404);
 
-  const catalogues = await readCatalogues(proj.decoded);
-  return c.json(catalogues);
+  const { catalogues, report } = await readCataloguesReport(proj.decoded);
+  return arrayWithStatus(c, catalogues, report);
 });
 
 // GET /api/project/:name/memory — project memory
 api.get("/project/:name/memory", async (c) => {
   const name = c.req.param("name");
-  const projects = await discoverProjects();
-  const proj = projects.find((p) => p.name === name);
+  const proj = findProject(name);
 
   if (!proj) return c.json({ error: "Project not found" }, 404);
 
-  const memory = await readProjectMemory(proj.encoded);
-  return c.json(memory);
+  const { entries, report } = await readMemoryDirReport(projectMemoryDir(proj.encoded));
+  return arrayWithStatus(c, entries, report);
 });
 
 // GET /api/memory — global memory
 api.get("/memory", async (c) => {
-  const memory = await readGlobalMemory();
-  return c.json(memory);
+  const { entries, report } = await readMemoryDirReport(GLOBAL_MEMORY_DIR);
+  return arrayWithStatus(c, entries, report);
 });
 
 // GET /api/timeline — git commit history
@@ -204,38 +268,27 @@ api.get("/diff/:from/:to", async (c) => {
   return c.json({ from, to, diff });
 });
 
-// GET /api/routing-architecture — three-tier context architecture with file sizes
+// GET /api/routing-architecture — three-tier context architecture with file sizes.
+// Tier 1 and the routing table are derived from ~/.claude/CLAUDE.md at request
+// time (see readers/routing). `source` reports whether that parse succeeded;
+// when it did not, routingTable is empty and source.error says why.
 api.get("/routing-architecture", async (c) => {
   const home = process.env.HOME ?? "/Users/mrityunjaybhardwaj";
-  const anviDir = join(home, ".claude", "anvi", "cognitive-os");
-  const claudeMdPath = join(home, ".claude", "CLAUDE.md");
 
   function fileInfo(filePath: string, displayName?: string) {
+    const name = displayName ?? filePath.split("/").pop() ?? filePath;
     try {
-      const stat = statSync(filePath);
-      const sizeBytes = stat.size;
-      const estimatedTokens = Math.round(sizeBytes / 4);
-      return {
-        path: filePath,
-        name: displayName ?? filePath.split("/").pop() ?? filePath,
-        sizeBytes,
-        estimatedTokens,
-      };
+      const sizeBytes = statSync(filePath).size;
+      return { path: filePath, name, sizeBytes, estimatedTokens: Math.round(sizeBytes / 4), readable: true };
     } catch {
-      return {
-        path: filePath,
-        name: displayName ?? filePath.split("/").pop() ?? filePath,
-        sizeBytes: 0,
-        estimatedTokens: 0,
-      };
+      return { path: filePath, name, sizeBytes: 0, estimatedTokens: 0, readable: false };
     }
   }
 
-  // Tier 1: Always loaded
-  const tier1Files = [
-    fileInfo(claudeMdPath, "CLAUDE.md (global)"),
-    fileInfo(join(anviDir, "base-layer.md"), "base-layer.md"),
-  ];
+  // Tier 1: always loaded — CLAUDE.md and everything it @-imports.
+  const tier1Files = alwaysLoadedFiles().map((f, i) =>
+    fileInfo(f.path, i === 0 ? "CLAUDE.md (global)" : undefined)
+  );
 
   // Tier 2: Hook injection (dynamic, no static files)
   const tier2Files = [
@@ -247,76 +300,29 @@ api.get("/routing-architecture", async (c) => {
     },
   ];
 
-  // Tier 3: Per-activity routing
-  const routingTable = [
-    {
-      activity: "Debugging",
-      files: ["adaptive-observation.md", "diagnose.md"],
-      catalogues: ["hetvabhasa.md"],
-    },
-    {
-      activity: "Planning",
-      files: ["dharana-spec.md", "design.md"],
-      catalogues: ["dharana.md"],
-    },
-    {
-      activity: "Implementing",
-      files: ["dhyana-spec.md"],
-      catalogues: ["dharana.md", "vyapti.md", "krama.md"],
-    },
-    {
-      activity: "Verifying",
-      files: ["adaptive-observation.md", "review.md"],
-      catalogues: ["dharana.md"],
-    },
-    {
-      activity: "Resuming",
-      files: ["dhyana-spec.md", "dharana-spec.md"],
-      catalogues: ["dharana.md"],
-    },
-  ];
+  // Tier 3: per-activity routing, parsed from CLAUDE.md.
+  const { routes, source } = readRoutingTable();
 
-  // Build tier 3 file list (unique)
-  const tier3FileNames = new Set<string>();
-  for (const route of routingTable) {
-    for (const f of route.files) tier3FileNames.add(f);
+  const tier3ByPath = new Map<string, ReturnType<typeof fileInfo>>();
+  for (const route of routes) {
+    route.filePaths.forEach((fp, i) => {
+      if (!tier3ByPath.has(fp)) tier3ByPath.set(fp, fileInfo(fp, route.files[i]));
+    });
   }
-
-  const tier3Files = [...tier3FileNames].map((f) => {
-    // Try modes/ subdirectory first, then root
-    const modesPath = join(anviDir, "modes", f);
-    const rootPath = join(anviDir, f);
-    try {
-      statSync(modesPath);
-      return fileInfo(modesPath, f);
-    } catch {
-      return fileInfo(rootPath, f);
-    }
-  });
+  const tier3Files = [...tier3ByPath.values()];
 
   const tier1Total = tier1Files.reduce((s, f) => s + f.estimatedTokens, 0);
   const tier2Total = tier2Files.reduce((s, f) => s + f.estimatedTokens, 0);
   const tier3Total = tier3Files.reduce((s, f) => s + f.estimatedTokens, 0);
 
-  // Build routing table with token costs
-  const routingTableWithCosts = routingTable.map((route) => {
-    const files = route.files.map((f) => {
-      const modesPath = join(anviDir, "modes", f);
-      const rootPath = join(anviDir, f);
-      try {
-        statSync(modesPath);
-        return fileInfo(modesPath, f);
-      } catch {
-        return fileInfo(rootPath, f);
-      }
-    });
-    const totalTokens =
-      tier1Total + files.reduce((s, f) => s + f.estimatedTokens, 0);
+  const routingTableWithCosts = routes.map((route) => {
+    const files = route.filePaths.map((fp) => tier3ByPath.get(fp)!);
     return {
       activity: route.activity,
       files: route.files,
       catalogues: route.catalogues,
-      totalTokens,
+      other: route.other,
+      totalTokens: tier1Total + files.reduce((s, f) => s + f.estimatedTokens, 0),
       fileDetails: files,
     };
   });
@@ -326,7 +332,7 @@ api.get("/routing-architecture", async (c) => {
       {
         tier: 1,
         name: "Always Loaded",
-        description: "Loaded every prompt. Global instructions + base cognitive checks.",
+        description: "Loaded every prompt. Global instructions and every file they @-import.",
         files: tier1Files,
         totalTokens: tier1Total,
       },
@@ -346,13 +352,21 @@ api.get("/routing-architecture", async (c) => {
       },
     ],
     routingTable: routingTableWithCosts,
+    source,
     totalCapacity: 200_000,
   });
 });
 
+/** Last cross-project keyword analysis, keyed by the catalogue files it read. */
+let patternCache: {
+  sig: string;
+  recurringPatterns: ReturnType<typeof findRecurringPatterns>;
+  sharedInvariants: ReturnType<typeof findRecurringPatterns>;
+} | null = null;
+
 // GET /api/cross-project — cross-project pattern analysis
 api.get("/cross-project", async (c) => {
-  const projects = await discoverProjects();
+  const projects = listProjects();
   const allEntries: {
     project: string;
     catalogue: string;
@@ -368,10 +382,17 @@ api.get("/cross-project", async (c) => {
     type: string;
   }[] = [];
 
-  // Load all projects with catalogues
+  // Load all projects with catalogues. `sig` identifies the exact catalogue
+  // files read (project, path, mtime, entry count); the keyword analysis below
+  // is reused while it is unchanged.
+  const sigParts: string[] = [];
+  const readErrors: string[] = []; // files that exist but could not be read
   for (const proj of projects) {
-    const catalogues = await readCatalogues(proj.decoded);
+    const catRead = proj.decoded ? await readCataloguesReport(proj.decoded) : { catalogues: [], report: EMPTY_REPORT };
+    const catalogues = catRead.catalogues;
+    readErrors.push(...catRead.report.errors);
     for (const cat of catalogues) {
+      sigParts.push(`${proj.name}|${cat.path}|${cat.lastModified.getTime()}|${cat.entries.length}`);
       for (const entry of cat.entries) {
         allEntries.push({
           project: proj.name,
@@ -384,8 +405,9 @@ api.get("/cross-project", async (c) => {
       }
     }
 
-    const memory = await readProjectMemory(proj.encoded);
-    for (const mem of memory) {
+    const memRead = await readMemoryDirReport(projectMemoryDir(proj.encoded));
+    readErrors.push(...memRead.report.errors);
+    for (const mem of memRead.entries) {
       allMemory.push({
         project: proj.name,
         name: mem.name,
@@ -395,13 +417,16 @@ api.get("/cross-project", async (c) => {
     }
   }
 
-  // Find recurring hetvabhasa patterns across projects
-  const hetvabhasaEntries = allEntries.filter((e) => e.catalogue === "hetvabhasa");
-  const recurringPatterns = findRecurringPatterns(hetvabhasaEntries);
-
-  // Find shared vyapti invariants across projects
-  const vyaptiEntries = allEntries.filter((e) => e.catalogue === "vyapti");
-  const sharedInvariants = findRecurringPatterns(vyaptiEntries);
+  const sig = sigParts.join("\n");
+  if (!patternCache || patternCache.sig !== sig) {
+    patternCache = {
+      sig,
+      // Recurring hetvabhasa patterns / shared vyapti invariants across projects
+      recurringPatterns: findRecurringPatterns(allEntries.filter((e) => e.catalogue === "hetvabhasa")),
+      sharedInvariants: findRecurringPatterns(allEntries.filter((e) => e.catalogue === "vyapti")),
+    };
+  }
+  const { recurringPatterns, sharedInvariants } = patternCache;
 
   // Group memory by type
   const memoryByType: Record<
@@ -422,6 +447,7 @@ api.get("/cross-project", async (c) => {
     sharedInvariants,
     memoryNetwork: { byType: memoryByType, totalCount: allMemory.length },
     projectCount: projects.length,
+    readErrors,
   });
 });
 
@@ -477,6 +503,10 @@ function findRecurringPatterns(
     { project: string; entryId: string; title: string; content: string }[]
   >();
 
+  // keyword → "project\0entryId" already listed (a Set: the linear scan this
+  // replaces made the loop quadratic in the number of entries per keyword).
+  const keywordSeen = new Map<string, Set<string>>();
+
   for (const entry of entries) {
     const text = [
       entry.title,
@@ -484,15 +514,19 @@ function findRecurringPatterns(
       ...entry.tags,
     ].join(" ");
     const keywords = extractKeywords(text);
+    const entryKey = `${entry.project}\0${entry.id}`;
 
     for (const kw of new Set(keywords)) {
       if (!keywordMap.has(kw)) keywordMap.set(kw, new Set());
       keywordMap.get(kw)!.add(entry.project);
 
       if (!keywordEntries.has(kw)) keywordEntries.set(kw, []);
+      if (!keywordSeen.has(kw)) keywordSeen.set(kw, new Set());
       // Avoid duplicating same entry for same keyword
       const existing = keywordEntries.get(kw)!;
-      if (!existing.some((e) => e.entryId === entry.id && e.project === entry.project)) {
+      const seen = keywordSeen.get(kw)!;
+      if (!seen.has(entryKey)) {
+        seen.add(entryKey);
         existing.push({
           project: entry.project,
           entryId: entry.id,
@@ -540,7 +574,11 @@ function findRecurringPatterns(
   return deduped.slice(0, 50); // top 50
 }
 
-// GET /api/hook-logs — aggregated hook log data from /tmp/
+// GET /api/hook-logs — aggregated hook log data from /tmp/.
+// The injector writes one JSON line per firing to /tmp/anvi-hook-<sid>.log
+// (anvi hooks/catalogue-context-injector.js). Besides `sessions` the body
+// carries status/errors (ReadReport) and how many lines were not JSON, so an
+// unreadable /tmp or log file never reads as "no hook activity".
 api.get("/hook-logs", (c) => {
   const sessions: Record<
     string,
@@ -553,6 +591,9 @@ api.get("/hook-logs", (c) => {
     }
   > = {};
 
+  const errors: string[] = [];
+  let filesRead = 0;
+  let malformedLines = 0;
   try {
     const files = readdirSync("/tmp").filter(
       (f) => f.startsWith("anvi-hook-") && f.endsWith(".log")
@@ -563,9 +604,11 @@ api.get("/hook-logs", (c) => {
       let content: string;
       try {
         content = readFileSync(filePath, "utf8");
-      } catch {
+      } catch (e) {
+        if (!isAbsent(e)) errors.push(errText(filePath, e));
         continue;
       }
+      filesRead++;
 
       for (const line of content.split("\n")) {
         const trimmed = line.trim();
@@ -590,80 +633,45 @@ api.get("/hook-logs", (c) => {
             if (!s.boundaries.includes(b)) s.boundaries.push(b);
           }
         } catch {
-          // skip malformed
+          malformedLines++;
         }
       }
     }
-  } catch {
-    // /tmp read failed
+  } catch (e) {
+    errors.push(errText("/tmp", e));
   }
 
-  return c.json({ sessions: Object.values(sessions) });
+  const r = report(filesRead, errors, "/tmp/anvi-hook-<sid>.log");
+  return c.json({ sessions: Object.values(sessions), ...r, filesRead, malformedLines });
 });
 
-// GET /api/project/:name/entry-dates — creation dates for catalogue entries
+// GET /api/project/:name/entry-dates — per-entry dates for catalogue entries.
+// Body: { [entryId]: { created, lastModified, dateSource } } where dateSource
+// says how each date was obtained ("entry" | "file" | "none", see
+// readEntryDatesForFile). A catalogue file that exists but cannot be read
+// answers 503 rather than an empty map.
 api.get("/project/:name/entry-dates", async (c) => {
   const name = c.req.param("name");
-  const projects = await discoverProjects();
-  const proj = projects.find((p) => p.name === name);
+  const proj = findProject(name);
   if (!proj) return c.json({ error: "Project not found" }, 404);
+  if (!proj.decoded) return c.json(unresolvedBody(proj), 404);
 
-  const dates: Record<string, { created: string; lastModified: string }> = {};
-
-  // Find .anvi directory
-  const { findAnviDir: findDir } = await import("../readers/catalogue");
-  const anviDir = findDir(proj.decoded);
+  const dates: Record<string, EntryDate> = {};
+  const anviDir = findAnviDir(proj.decoded);
   if (!anviDir) return c.json(dates);
 
-  // Get file-level dates from git, then parse entry IDs per file
-  const anviFiles = ["hetvabhasa.md", "vyapti.md", "krama.md", "dharana.md"];
-
-  for (const file of anviFiles) {
+  for (const file of ["hetvabhasa.md", "vyapti.md", "krama.md", "dharana.md"]) {
     const filePath = join(anviDir, file);
     try {
       statSync(filePath);
     } catch {
-      continue;
+      continue; // this catalogue does not exist: nothing to date
     }
-
-    // Get file modification date from filesystem as fallback
-    let fileCreated: string;
-    let fileModified: string;
     try {
-      const stat = statSync(filePath);
-      fileCreated = stat.birthtime.toISOString();
-      fileModified = stat.mtime.toISOString();
-    } catch {
-      continue;
-    }
-
-    // Try git for more accurate dates
-    try {
-      const gitCreated = execSync(
-        `git log --diff-filter=A --format="%aI" -- "${filePath}" | tail -1`,
-        { cwd: proj.decoded, encoding: "utf8", timeout: 5000 }
-      ).trim();
-      if (gitCreated) fileCreated = gitCreated;
-
-      const gitModified = execSync(
-        `git log -1 --format="%aI" -- "${filePath}"`,
-        { cwd: proj.decoded, encoding: "utf8", timeout: 5000 }
-      ).trim();
-      if (gitModified) fileModified = gitModified;
-    } catch {
-      // git failed — use filesystem dates
-    }
-
-    // Parse entry IDs from the file
-    try {
-      const content = readFileSync(filePath, "utf8");
-      const entryPattern = /^##\s+(SP\d+|SV\d+|SK\d+|SD\d+|B\d+|H\d+|V\d+|K\d+|D\d+)[:\s]/gm;
-      let match;
-      while ((match = entryPattern.exec(content)) !== null) {
-        dates[match[1]] = { created: fileCreated, lastModified: fileModified };
-      }
-    } catch {
-      // parse failed
+      const perEntry = await readEntryDatesForFile(filePath);
+      for (const [id, d] of Object.entries(perEntry)) dates[id] ??= d;
+    } catch (e) {
+      return c.json({ error: `could not read ${filePath}: ${(e as Error).message}`, status: "unreadable" }, 503);
     }
   }
 
@@ -742,27 +750,17 @@ function scoreArtifact(
   return { confidence, matchedKeywords: allMatched.slice(0, 8) };
 }
 
+// GitHub trace results, kept in memory only: AnviDeck is read-only and does
+// not write cache files (this used to write /tmp/anvi-github-trace-<name>.json).
+const traceCache = new Map<string, { data: unknown; at: number }>();
+
 function readCache(name: string): { data: unknown; age: number } | null {
-  const path = join("/tmp", `anvi-github-trace-${name}.json`);
-  try {
-    const { statSync, readFileSync } = require("node:fs");
-    const st = statSync(path);
-    const age = (Date.now() - st.mtimeMs) / 1000;
-    const data = JSON.parse(readFileSync(path, "utf8"));
-    return { data, age };
-  } catch {
-    return null;
-  }
+  const hit = traceCache.get(name);
+  return hit ? { data: hit.data, age: (Date.now() - hit.at) / 1000 } : null;
 }
 
 function writeCache(name: string, data: unknown): void {
-  const path = join("/tmp", `anvi-github-trace-${name}.json`);
-  try {
-    const { writeFileSync } = require("node:fs");
-    writeFileSync(path, JSON.stringify(data));
-  } catch {
-    // cache write failure is non-fatal
-  }
+  traceCache.set(name, { data, at: Date.now() });
 }
 
 // GET /api/project/:name/github-trace
@@ -770,9 +768,10 @@ api.get("/project/:name/github-trace", async (c) => {
   const name = c.req.param("name");
   const forceRefresh = c.req.query("refresh") === "1";
 
-  const projects = await discoverProjects();
-  const proj = projects.find((p) => p.name === name);
+  const proj = findProject(name);
   if (!proj) return c.json({ error: "Project not found" }, 404);
+  if (!proj.decoded) return c.json(unresolvedBody(proj), 404);
+  const projectPath = proj.decoded;
 
   // Return cached if fresh enough
   if (!forceRefresh) {
@@ -782,14 +781,14 @@ api.get("/project/:name/github-trace", async (c) => {
     }
   }
 
-  const catalogues = await readCatalogues(proj.decoded);
+  const catalogues = await readCatalogues(projectPath);
 
   // Fetch commits (always available)
   let commits: { hash: string; date: string; subject: string }[] = [];
   try {
     const raw = execSync(
       `git log --format="%H|||%aI|||%s" -n 100`,
-      { cwd: proj.decoded, encoding: "utf8", timeout: 8000 }
+      { cwd: projectPath, encoding: "utf8", timeout: 8000 }
     ).trim();
     commits = raw.split("\n")
       .filter(Boolean)
@@ -810,7 +809,7 @@ api.get("/project/:name/github-trace", async (c) => {
   try {
     const issueRaw = execSync(
       `gh issue list --json number,title,body,createdAt,url --limit 100`,
-      { cwd: proj.decoded, encoding: "utf8", timeout: 12000 }
+      { cwd: projectPath, encoding: "utf8", timeout: 12000 }
     );
     issues = JSON.parse(issueRaw);
   } catch (e: unknown) {
@@ -820,7 +819,7 @@ api.get("/project/:name/github-trace", async (c) => {
   try {
     const prRaw = execSync(
       `gh pr list --json number,title,body,createdAt,url --limit 50 --state all`,
-      { cwd: proj.decoded, encoding: "utf8", timeout: 12000 }
+      { cwd: projectPath, encoding: "utf8", timeout: 12000 }
     );
     prs = JSON.parse(prRaw);
   } catch (e: unknown) {
@@ -830,29 +829,25 @@ api.get("/project/:name/github-trace", async (c) => {
   try {
     const repoRaw = execSync(
       `gh repo view --json url`,
-      { cwd: proj.decoded, encoding: "utf8", timeout: 8000 }
+      { cwd: projectPath, encoding: "utf8", timeout: 8000 }
     );
     repoUrl = JSON.parse(repoRaw)?.url ?? null;
   } catch {
     // repo url non-critical
   }
 
-  // Fetch entry creation dates for temporal proximity
+  // Entry creation dates for temporal proximity. Only a real per-entry date
+  // ("entry") earns the bonus: a file-level date would credit every entry in
+  // the file with the same moment.
   const entryDatesMap: Record<string, string> = {};
-  const anviDirPath = findAnviDir(proj.decoded);
-  if (anviDirPath) {
-    for (const cat of catalogues) {
-      try {
-        const gitDate = execSync(
-          `git log --diff-filter=A --format="%aI" -- "${cat.path}" | tail -1`,
-          { cwd: proj.decoded, encoding: "utf8", timeout: 5000 }
-        ).trim();
-        for (const entry of cat.entries) {
-          if (!entryDatesMap[entry.id]) entryDatesMap[entry.id] = gitDate;
-        }
-      } catch {
-        // use empty string — no temporal bonus
+  for (const cat of catalogues) {
+    try {
+      const perEntry = await readEntryDatesForFile(cat.path);
+      for (const [id, d] of Object.entries(perEntry)) {
+        if (d.dateSource === "entry" && d.created && !entryDatesMap[id]) entryDatesMap[id] = d.created;
       }
+    } catch {
+      // unreadable catalogue: no temporal bonus for its entries
     }
   }
 

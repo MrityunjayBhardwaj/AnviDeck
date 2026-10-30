@@ -181,19 +181,20 @@ function renderSidebar() {
   section.innerHTML = `<h3>Projects</h3>`;
 
   const sorted = [...projects].sort((a, b) => {
-    const aCount = Object.values(a.catalogueCounts).reduce((s, n) => s + n, 0);
-    const bCount = Object.values(b.catalogueCounts).reduce((s, n) => s + n, 0);
+    const aCount = a.sharesNotesWith ? 0 : Object.values(a.catalogueCounts).reduce((s, n) => s + n, 0);
+    const bCount = b.sharesNotesWith ? 0 : Object.values(b.catalogueCounts).reduce((s, n) => s + n, 0);
     return bCount - aCount;
   });
 
   for (const p of sorted) {
-    const catCount = Object.values(p.catalogueCounts).reduce((s, n) => s + n, 0);
+    const catCount = p.sharesNotesWith ? 0 : Object.values(p.catalogueCounts).reduce((s, n) => s + n, 0);
     const item = document.createElement("button");
     item.className = `project-item${currentView === "project" && currentProject?.name === p.name ? " active" : ""}`;
     item.innerHTML = `
       <span class="name">${p.name}</span>
+      ${p.sharesNotesWith ? `<span class="badge dim" title="same notes store as ${p.sharesNotesWith}">↪ ${p.sharesNotesWith}</span>` : ""}
       ${catCount > 0 ? `<span class="badge has-catalogues">${catCount}</span>` : ""}
-      ${p.fatalitySignals > 0 ? `<span class="badge fatality">!</span>` : ""}
+      ${!p.sharesNotesWith && p.fatalitySignals > 0 ? `<span class="badge fatality">!</span>` : ""}
     `;
     item.addEventListener("click", () => navigateToProject(p.name));
     section.appendChild(item);

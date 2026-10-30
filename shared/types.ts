@@ -56,11 +56,20 @@ export interface GroundingStatus {
   ungroundedEntries: number;
   groundTruthDocs: GroundTruthDoc[];
   sourceDirectories: string[];
+  /** Whether the ref/ directory and its docs could be read (see ReadReport). */
+  readStatus?: ReadReport;
 }
 
 export interface ProjectState {
   name: string;
   path: string;
+  /**
+   * How the project path was determined from ~/.claude/projects/<encoded>:
+   * the cwd in its transcripts, a unique filesystem match, a unique
+   * central-store name under an existing parent (directory itself gone), or
+   * not at all (path is then "" and nothing is read from a guessed location).
+   */
+  pathSource?: "transcript" | "filesystem" | "store" | "unresolved";
   catalogues: Catalogue[];
   memory: MemoryEntry[];
   fatalitySignals: number;
@@ -68,6 +77,8 @@ export interface ProjectState {
   blindSpots: number;
   boundaries: BoundaryInfo[];
   grounding: GroundingStatus;
+  /** Per source: could it be read, or was there genuinely nothing? */
+  readStatus?: { catalogues: ReadReport; memory: ReadReport };
 }
 
 // -- Timeline types --
@@ -135,6 +146,8 @@ export interface RoutingFileInfo {
   name: string;
   sizeBytes: number;
   estimatedTokens: number;
+  /** False when the file could not be read (size then shows 0). */
+  readable?: boolean;
 }
 
 export interface RoutingTier {
@@ -149,6 +162,8 @@ export interface RoutingTableEntry {
   activity: string;
   files: string[];
   catalogues: string[];
+  /** Other things the row names (e.g. "GROUND_TRUTH_*.md"). */
+  other?: string[];
   totalTokens: number;
   fileDetails: RoutingFileInfo[];
 }
@@ -156,6 +171,8 @@ export interface RoutingTableEntry {
 export interface RoutingArchitecture {
   tiers: RoutingTier[];
   routingTable: RoutingTableEntry[];
+  /** Where the routing table was read from and whether it parsed. */
+  source?: { path: string; status: "ok" | "unreadable" | "unparsed"; error?: string };
   totalCapacity: number;
 }
 
@@ -174,6 +191,8 @@ export interface CrossProjectData {
     totalCount: number;
   };
   projectCount: number;
+  /** Catalogue/memory files that exist but could not be read. */
+  readErrors?: string[];
 }
 
 // -- System Lens types --
@@ -262,6 +281,13 @@ export interface GitHubTrace {
 export interface ProjectSummary {
   name: string;
   path: string;
+  /**
+   * How the project path was determined from ~/.claude/projects/<encoded>:
+   * the cwd in its transcripts, a unique filesystem match, a unique
+   * central-store name under an existing parent (directory itself gone), or
+   * not at all (path is then "" and nothing is read from a guessed location).
+   */
+  pathSource?: "transcript" | "filesystem" | "store" | "unresolved";
   catalogueCounts: Record<string, number>;
   memoryCount: number;
   fatalitySignals: number;
@@ -271,6 +297,16 @@ export interface ProjectSummary {
   groundingPercent: number;
   /** Number of Ground Truth docs found */
   groundTruthDocCount: number;
+  /** Per source: could it be read, or was there genuinely nothing? */
+  readStatus?: { catalogues: ReadReport; memory: ReadReport; groundTruth?: ReadReport };
+  /**
+   * Set when this project's notes store is the same directory as another project's (a worktree
+   * with a symlinked .anvi, or a case-twin folder). Names the owner. Its catalogue counts are the
+   * owner's notes, so totals must not add them again (#36).
+   */
+  sharesNotesWith?: string;
+  /** The store's real path, set only when a store is shared. */
+  notesStore?: string;
 }
 
 /** A live (currently-running) Claude Code session. */
@@ -294,4 +330,41 @@ export interface LiveSession {
   kind: string;
   /** Current git branch at cwd, or null. */
   branch: string | null;
+}
+
+/**
+ * Where an entry's dates came from:
+ *   "entry" — created = the commit that first added this entry's header line;
+ *             lastModified = the newest commit touching any line of the entry.
+ *   "file"  — only a file-level creation date is known: the file is not in a
+ *             git repo, or the entry was already present in the commit that
+ *             first added the file (an import/migration, so the entry's own
+ *             creation date is unknown). lastModified is still per entry when
+ *             git blame can tell.
+ *   "none"  — no creation date (e.g. the header is not committed yet).
+ */
+export type DateSource = "entry" | "file" | "none";
+
+export interface EntryDate {
+  created: string | null;
+  lastModified: string | null;
+  dateSource: DateSource;
+}
+
+/**
+ * What a reader could tell about its source, so "could not read" never looks
+ * like "nothing found":
+ *   ok         — items were read, nothing failed
+ *   none       — the source is absent or empty (genuinely nothing found)
+ *   partial    — some items read, some failed (see errors)
+ *   unreadable — reading failed and nothing was read
+ */
+export type ReadStatus = "ok" | "none" | "partial" | "unreadable";
+
+export interface ReadReport {
+  status: ReadStatus;
+  /** The location that was read, when there is one. */
+  path?: string;
+  /** One line per failure: "<path>: <code> <message>". */
+  errors: string[];
 }

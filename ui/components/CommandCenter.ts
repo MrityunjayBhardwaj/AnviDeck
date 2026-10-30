@@ -9,7 +9,10 @@ export function CommandCenter(
   const el = document.createElement("div");
   el.className = "command-center";
 
-  // Aggregate stats
+  // Aggregate stats. A project that shares another's notes store (a worktree, a case-twin
+  // folder) carries the owner's notes: count each store once (#36). Memory is per project.
+  const allProjects = projects;
+  projects = projects.filter((p) => !p.sharesNotesWith);
   const withCatalogues = projects.filter(
     (p) => Object.values(p.catalogueCounts).length > 0
   );
@@ -19,7 +22,7 @@ export function CommandCenter(
   );
   const totalFatality = projects.reduce((s, p) => s + p.fatalitySignals, 0);
   const totalMisaligned = projects.reduce((s, p) => s + p.misalignedInvariants, 0);
-  const totalMemories = projects.reduce((s, p) => s + p.memoryCount, 0);
+  const totalMemories = allProjects.reduce((s, p) => s + p.memoryCount, 0);
   const totalGTDocs = projects.reduce((s, p) => s + (p.groundTruthDocCount ?? 0), 0);
   // Average grounding over projects that actually have catalogue entries — the
   // numerator and denominator must use the same set, or projects with a
@@ -90,7 +93,7 @@ export function CommandCenter(
           <span class="label">Monitored Projects</span>
         </div>
         <div class="stat">
-          <span class="value accent">${projects.length}</span>
+          <span class="value accent">${allProjects.length}</span>
           <span class="label">Total Projects</span>
         </div>
         <div class="stat">
@@ -113,20 +116,20 @@ export function CommandCenter(
   const topBody = document.createElement("div");
   topBody.className = "card-body";
 
-  const sorted = [...projects].sort((a, b) => {
-    const aCount = Object.values(a.catalogueCounts).reduce((s, n) => s + n, 0);
-    const bCount = Object.values(b.catalogueCounts).reduce((s, n) => s + n, 0);
+  const sorted = [...allProjects].sort((a, b) => {
+    const aCount = a.sharesNotesWith ? 0 : Object.values(a.catalogueCounts).reduce((s, n) => s + n, 0);
+    const bCount = b.sharesNotesWith ? 0 : Object.values(b.catalogueCounts).reduce((s, n) => s + n, 0);
     return bCount - aCount;
   });
 
   for (const p of sorted) {
-    const catTotal = Object.values(p.catalogueCounts).reduce((s, n) => s + n, 0);
+    const catTotal = p.sharesNotesWith ? 0 : Object.values(p.catalogueCounts).reduce((s, n) => s + n, 0);
     const row = document.createElement("button");
     row.className = "project-row";
     row.innerHTML = `
       <span class="project-row-name">${p.name}</span>
       <span class="project-row-stats">
-        ${catTotal > 0 ? `<span class="badge has-catalogues">${catTotal} entries</span>` : '<span class="badge dim">no catalogues</span>'}
+        ${p.sharesNotesWith ? `<span class="badge dim" title="${p.notesStore ?? ""}">notes of ${p.sharesNotesWith}</span>` : catTotal > 0 ? `<span class="badge has-catalogues">${catTotal} entries</span>` : '<span class="badge dim">no catalogues</span>'}
         ${p.memoryCount > 0 ? `<span class="badge">${p.memoryCount} mem</span>` : ""}
         ${p.fatalitySignals > 0 ? `<span class="badge fatality">FATALITY</span>` : ""}
         ${p.misalignedInvariants > 0 ? `<span class="badge warn">MISALIGNED</span>` : ""}
