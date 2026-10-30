@@ -1,4 +1,7 @@
-import type { TimelinePoint } from "../../shared/types";
+import { readFileSync, realpathSync, statSync } from "node:fs";
+import { dirname, relative } from "node:path";
+import { entryIdFromHeader, ENTRY_HEADER_LINE } from "../../shared/parser";
+import type { TimelinePoint, EntryDate } from "../../shared/types";
 
 const CLAUDE_GIT_DIR = `${process.env.HOME ?? "/Users/mrityunjaybhardwaj"}/.claude`;
 
@@ -111,4 +114,134 @@ export async function listAtCommit(
   } catch {
     return [];
   }
+}
+
+// ---- Per-entry dates ----------------------------------------------------
+
+/** Run git with an explicit -C; never throws. */
+async function gitIn(
+  dir: string,
+  args: string[]
+): Promise<{ ok: boolean; out: string; err: string }> {
+  try {
+    const proc = Bun.spawn(["git", "-C", dir, ...args], { stdout: "pipe", stderr: "pipe" });
+    const [out, err] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    const code = await proc.exited;
+    return { ok: code === 0, out, err: err.trim() };
+  } catch (e) {
+    return { ok: false, out: "", err: (e as Error).message };
+  }
+}
+
+const dateCache = new Map<string, { key: string; value: Record<string, EntryDate> }>();
+
+/**
+ * Per-entry created / lastModified dates for one catalogue file.
+ *
+ * Reads the history of the file's REAL location (symlinks resolved), so a
+ * project's `.anvi -> ~/.anvideck/projects/<p>/.anvi` link is dated from the
+ * central store's own repo rather than the project's. Read-only: only
+ * `git rev-parse`, `ls-files`, `log` and `blame`. Throws only if the file
+ * itself cannot be read (the caller reports that as unreadable).
+ */
+export async function readEntryDatesForFile(
+  filePath: string
+): Promise<Record<string, EntryDate>> {
+  const real = realpathSync(filePath);
+  const st = statSync(real);
+  const lines = readFileSync(real, "utf8").split("\n");
+
+  // Current entries and the line span of each.
+  const spans: { id: string; start: number; end: number }[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const h = lines[i]!.match(ENTRY_HEADER_LINE);
+    if (!h) continue;
+    if (spans.length) spans[spans.length - 1]!.end = i;
+    const parsed = entryIdFromHeader(h[2]!.trim());
+    spans.push({ id: parsed ? parsed.id : "", start: i, end: lines.length });
+  }
+  const entrySpans = spans.filter((s) => s.id);
+
+  const fileDates = (): Record<string, EntryDate> => {
+    const out: Record<string, EntryDate> = {};
+    for (const s of entrySpans) {
+      out[s.id] ??= {
+        created: st.birthtime.toISOString(),
+        lastModified: st.mtime.toISOString(),
+        dateSource: "file",
+      };
+    }
+    return out;
+  };
+
+  const top = await gitIn(dirname(real), ["rev-parse", "--show-toplevel"]);
+  if (!top.ok) return fileDates(); // not inside a git repo
+  const root = top.out.trim();
+  const rel = relative(root, real);
+  const head = await gitIn(root, ["rev-parse", "HEAD"]);
+  const cacheKey = `${head.out.trim()}|${st.mtimeMs}|${st.size}`;
+  const cached = dateCache.get(real);
+  if (cached && cached.key === cacheKey) return cached.value;
+
+  const tracked = await gitIn(root, ["ls-files", "--error-unmatch", "--", rel]);
+  if (!tracked.ok) return fileDates(); // in a repo but never committed
+
+  // created: the first commit whose diff adds the entry's header line.
+  const log = await gitIn(root, [
+    "log", "--reverse", "--no-color", "-U0", "--format=@@COMMIT@@ %H %aI", "-p", "--", rel,
+  ]);
+  const firstSeen = new Map<string, { commit: string; date: string }>();
+  let firstCommit = "";
+  let cur = { commit: "", date: "" };
+  for (const line of log.out.split("\n")) {
+    if (line.startsWith("@@COMMIT@@ ")) {
+      const [, commit = "", date = ""] = line.split(" ");
+      cur = { commit, date };
+      if (!firstCommit) firstCommit = commit;
+      continue;
+    }
+    if (!line.startsWith("+#")) continue;
+    const h = line.slice(1).match(ENTRY_HEADER_LINE);
+    if (!h) continue;
+    const parsed = entryIdFromHeader(h[2]!.trim());
+    if (parsed && !firstSeen.has(parsed.id)) firstSeen.set(parsed.id, cur);
+  }
+
+  // lastModified: newest author-time over the entry's current lines.
+  const blame = await gitIn(root, ["blame", "--line-porcelain", "--", rel]);
+  const lineTime: (number | null)[] = [];
+  if (blame.ok) {
+    let t: number | null = null;
+    let uncommitted = false;
+    for (const line of blame.out.split("\n")) {
+      if (/^[0-9a-f]{40} /.test(line)) {
+        uncommitted = /^0{40} /.test(line);
+        t = null;
+      } else if (line.startsWith("author-time ")) {
+        t = uncommitted ? null : Number(line.slice(12)) * 1000;
+      } else if (line.startsWith("\t")) {
+        lineTime.push(t);
+      }
+    }
+  }
+
+  const out: Record<string, EntryDate> = {};
+  for (const s of entrySpans) {
+    if (out[s.id]) continue; // repeated header (e.g. an UPDATE sub-section): first wins
+    let newest: number | null = null;
+    for (let i = s.start; i < s.end && i < lineTime.length; i++) {
+      const t = lineTime[i];
+      if (t != null && (newest == null || t > newest)) newest = t;
+    }
+    const lastModified = newest != null ? new Date(newest).toISOString() : null;
+    const seen = firstSeen.get(s.id);
+    if (!seen) out[s.id] = { created: null, lastModified, dateSource: "none" };
+    else if (seen.commit === firstCommit) out[s.id] = { created: seen.date, lastModified, dateSource: "file" };
+    else out[s.id] = { created: seen.date, lastModified, dateSource: "entry" };
+  }
+  dateCache.set(real, { key: cacheKey, value: out });
+  return out;
 }

@@ -309,3 +309,22 @@ export interface LiveSession {
   /** Current git branch at cwd, or null. */
   branch: string | null;
 }
+
+/**
+ * Where an entry's dates came from:
+ *   "entry" — created = the commit that first added this entry's header line;
+ *             lastModified = the newest commit touching any line of the entry.
+ *   "file"  — only a file-level creation date is known: the file is not in a
+ *             git repo, or the entry was already present in the commit that
+ *             first added the file (an import/migration, so the entry's own
+ *             creation date is unknown). lastModified is still per entry when
+ *             git blame can tell.
+ *   "none"  — no creation date (e.g. the header is not committed yet).
+ */
+export type DateSource = "entry" | "file" | "none";
+
+export interface EntryDate {
+  created: string | null;
+  lastModified: string | null;
+  dateSource: DateSource;
+}

@@ -12,6 +12,7 @@ import {
   getTimeline,
   showAtCommit,
   diffCommits,
+  readEntryDatesForFile,
 } from "../readers/git-history";
 import { readGroundingStatus } from "../readers/ground-truth";
 import { readLiveSessions } from "../readers/sessions";
@@ -19,7 +20,7 @@ import { discoverProjects, type DiscoveredProject } from "../readers/projects";
 import { resolveDir } from "../../shared/anvi-paths";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { execSync } from "node:child_process";
-import type { ProjectSummary, ProjectState, HookLogEntry } from "../../shared/types";
+import type { ProjectSummary, ProjectState, HookLogEntry, EntryDate } from "../../shared/types";
 
 const api = new Hono();
 
@@ -585,70 +586,33 @@ api.get("/hook-logs", (c) => {
   return c.json({ sessions: Object.values(sessions) });
 });
 
-// GET /api/project/:name/entry-dates — creation dates for catalogue entries
+// GET /api/project/:name/entry-dates — per-entry dates for catalogue entries.
+// Body: { [entryId]: { created, lastModified, dateSource } } where dateSource
+// says how each date was obtained ("entry" | "file" | "none", see
+// readEntryDatesForFile). A catalogue file that exists but cannot be read
+// answers 503 rather than an empty map.
 api.get("/project/:name/entry-dates", async (c) => {
   const name = c.req.param("name");
   const proj = findProject(name);
   if (!proj) return c.json({ error: "Project not found" }, 404);
   if (!proj.decoded) return c.json(unresolvedBody(proj), 404);
-  const projectPath = proj.decoded;
 
-  const dates: Record<string, { created: string; lastModified: string }> = {};
-
-  // Find .anvi directory
-  const { findAnviDir: findDir } = await import("../readers/catalogue");
-  const anviDir = findDir(projectPath);
+  const dates: Record<string, EntryDate> = {};
+  const anviDir = findAnviDir(proj.decoded);
   if (!anviDir) return c.json(dates);
 
-  // Get file-level dates from git, then parse entry IDs per file
-  const anviFiles = ["hetvabhasa.md", "vyapti.md", "krama.md", "dharana.md"];
-
-  for (const file of anviFiles) {
+  for (const file of ["hetvabhasa.md", "vyapti.md", "krama.md", "dharana.md"]) {
     const filePath = join(anviDir, file);
     try {
       statSync(filePath);
     } catch {
-      continue;
+      continue; // this catalogue does not exist: nothing to date
     }
-
-    // Get file modification date from filesystem as fallback
-    let fileCreated: string;
-    let fileModified: string;
     try {
-      const stat = statSync(filePath);
-      fileCreated = stat.birthtime.toISOString();
-      fileModified = stat.mtime.toISOString();
-    } catch {
-      continue;
-    }
-
-    // Try git for more accurate dates
-    try {
-      const gitCreated = execSync(
-        `git log --diff-filter=A --format="%aI" -- "${filePath}" | tail -1`,
-        { cwd: projectPath, encoding: "utf8", timeout: 5000 }
-      ).trim();
-      if (gitCreated) fileCreated = gitCreated;
-
-      const gitModified = execSync(
-        `git log -1 --format="%aI" -- "${filePath}"`,
-        { cwd: projectPath, encoding: "utf8", timeout: 5000 }
-      ).trim();
-      if (gitModified) fileModified = gitModified;
-    } catch {
-      // git failed — use filesystem dates
-    }
-
-    // Parse entry IDs from the file
-    try {
-      const content = readFileSync(filePath, "utf8");
-      const entryPattern = /^##\s+(SP\d+|SV\d+|SK\d+|SD\d+|B\d+|H\d+|V\d+|K\d+|D\d+)[:\s]/gm;
-      let match;
-      while ((match = entryPattern.exec(content)) !== null) {
-        dates[match[1]] = { created: fileCreated, lastModified: fileModified };
-      }
-    } catch {
-      // parse failed
+      const perEntry = await readEntryDatesForFile(filePath);
+      for (const [id, d] of Object.entries(perEntry)) dates[id] ??= d;
+    } catch (e) {
+      return c.json({ error: `could not read ${filePath}: ${(e as Error).message}`, status: "unreadable" }, 503);
     }
   }
 
@@ -823,22 +787,18 @@ api.get("/project/:name/github-trace", async (c) => {
     // repo url non-critical
   }
 
-  // Fetch entry creation dates for temporal proximity
+  // Entry creation dates for temporal proximity. Only a real per-entry date
+  // ("entry") earns the bonus: a file-level date would credit every entry in
+  // the file with the same moment.
   const entryDatesMap: Record<string, string> = {};
-  const anviDirPath = findAnviDir(projectPath);
-  if (anviDirPath) {
-    for (const cat of catalogues) {
-      try {
-        const gitDate = execSync(
-          `git log --diff-filter=A --format="%aI" -- "${cat.path}" | tail -1`,
-          { cwd: projectPath, encoding: "utf8", timeout: 5000 }
-        ).trim();
-        for (const entry of cat.entries) {
-          if (!entryDatesMap[entry.id]) entryDatesMap[entry.id] = gitDate;
-        }
-      } catch {
-        // use empty string — no temporal bonus
+  for (const cat of catalogues) {
+    try {
+      const perEntry = await readEntryDatesForFile(cat.path);
+      for (const [id, d] of Object.entries(perEntry)) {
+        if (d.dateSource === "entry" && d.created && !entryDatesMap[id]) entryDatesMap[id] = d.created;
       }
+    } catch {
+      // unreadable catalogue: no temporal bonus for its entries
     }
   }
 

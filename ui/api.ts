@@ -1,4 +1,4 @@
-import type { ProjectSummary, ProjectState, MemoryEntry, TimelinePoint, HookLogSession, CrossProjectData, RoutingArchitecture, BrainFlowEvent, GitHubTrace, LiveSession } from "../shared/types";
+import type { ProjectSummary, ProjectState, MemoryEntry, TimelinePoint, HookLogSession, CrossProjectData, RoutingArchitecture, BrainFlowEvent, GitHubTrace, LiveSession, EntryDate } from "../shared/types";
 
 const BASE = "/api";
 
@@ -21,13 +21,13 @@ export const api = {
   crossProject: () => get<CrossProjectData>("/cross-project"),
   sessions: () => get<LiveSession[]>("/sessions"),
   routingArchitecture: () => get<RoutingArchitecture>("/routing-architecture"),
-  entryDates: (name: string) => get<Record<string, { created: string; lastModified: string }>>(`/project/${encodeURIComponent(name)}/entry-dates`),
+  entryDates: (name: string) => get<Record<string, EntryDate>>(`/project/${encodeURIComponent(name)}/entry-dates`),
   githubTrace: (name: string, refresh = false) =>
     get<GitHubTrace>(`/project/${encodeURIComponent(name)}/github-trace${refresh ? "?refresh=1" : ""}`),
   brainData: async (name: string) => {
     const [project, dates, hookLogs] = await Promise.all([
       get<ProjectState>(`/project/${encodeURIComponent(name)}`),
-      get<Record<string, { created: string; lastModified: string }>>(`/project/${encodeURIComponent(name)}/entry-dates`),
+      get<Record<string, EntryDate>>(`/project/${encodeURIComponent(name)}/entry-dates`),
       get<{ sessions: HookLogSession[] }>("/hook-logs"),
     ]);
     return { project, dates, hookLogs };

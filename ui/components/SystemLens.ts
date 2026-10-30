@@ -7,6 +7,7 @@ import type {
   HookLogSession,
   ContributionRow,
   ContributionCell,
+  EntryDate,
 } from "../../shared/types";
 
 interface LensState {
@@ -14,7 +15,7 @@ interface LensState {
   selectedProject: string | null;
   projectState: ProjectState | null;
   hookSessions: HookLogSession[];
-  entryDates: Record<string, { created: string; lastModified: string }>;
+  entryDates: Record<string, EntryDate>;
   rows: ContributionRow[];
   collapsedGroups: Set<string>;
   loading: boolean;
