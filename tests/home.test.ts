@@ -79,7 +79,7 @@ describe("one count drives the headline, the badge and the live strip", () => {
       ...readdirSync("ui").filter((f) => f.endsWith(".ts")).map((f) => join("ui", f)),
       ...readdirSync("ui/components").filter((f) => f.endsWith(".ts")).map((f) => join("ui/components", f)),
     ];
-    const offenders = files.filter((f) => f !== join("ui", "home-count.ts") && /queue\.(length|filter|reduce)/.test(readFileSync(f, "utf8").replace(/home\.queue\.length === 0/g, "")));
+    const offenders = files.filter((f) => f !== join("ui", "home-count.ts") && /queue\.(length|filter|reduce)/.test(readFileSync(f, "utf8")));
     expect(offenders).toEqual([]);
     const app = readFileSync("ui/app.ts", "utf8");
     expect(app).toContain("count = needsCount(home, failed)");

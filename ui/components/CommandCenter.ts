@@ -68,7 +68,7 @@ function queueEl(home: HomeResponse | null, count: NeedsCount): HTMLElement {
     q.innerHTML = `<div class="hq-note"><span class="hq-dot" style="background:var(--text-2)"></span>Loading: live sessions, their PRs on GitHub, the structure guard, the notes snapshot…</div>`;
     return q;
   }
-  if (home.queue.length === 0) {
+  if (count.n === 0) {
     const row = document.createElement("div");
     row.className = "hq-note";
     row.innerHTML =
