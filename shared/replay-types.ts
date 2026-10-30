@@ -184,6 +184,13 @@ export interface ReplaySessionSummary {
   modifiedAt: string; // UTC
   firstTs: string | null;
   lastTs: string | null;
+  /**
+   * Present when the session started in a worktree (its transcript dir is the
+   * project's name plus a worktree suffix). `check` says how it was tied to the
+   * project: its cwd is the project itself, its cwd shares the project's git
+   * store, or the worktree is gone and only its path marks it ("unverified-gone").
+   */
+  worktree?: { transcriptDir: string; check: "cwd-is-project" | "same-repository" | "unverified-gone" };
 }
 
 export interface ReplaySessionsResponse {
@@ -194,6 +201,8 @@ export interface ReplaySessionsResponse {
   /** Transcript directories searched (encoded cwd dirs matching the project). */
   searched: string[];
   sessions: ReplaySessionSummary[];
+  /** Worktree-looking transcripts NOT counted as this project's, with the reason. */
+  skipped?: { transcriptPath: string; cwd: string | null; reason: string }[];
 }
 
 export interface ReplayResponse {

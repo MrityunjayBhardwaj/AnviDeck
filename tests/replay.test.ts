@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll } from "bun:test";
-import { findTranscript, readReplay, shellWriteReason, shellWriteScope, listReplaySessions, mergeEvidence, repoFileKey } from "../server/readers/replay";
+import { findTranscript, readReplay, shellWriteReason, shellWriteScope, listReplaySessions, mergeEvidence, repoFileKey, joinMeter } from "../server/readers/replay";
 import { join } from "node:path";
 import replayRoutes from "../server/routes/replay";
 import type { ReplayResponse } from "../shared/replay-types";
@@ -254,5 +254,40 @@ describe("repoFileKey: one file, one key, whatever path names it (#29)", () => {
   test("different files differ, and a path outside any repository has no key", () => {
     expect(repoFileKey(join(worktree, "server/index.ts"))).not.toBe(repoFileKey(join(worktree, "server/routes/replay.ts")));
     expect(repoFileKey("/private/tmp/not-a-repo-xyz/a.ts")).toBeNull();
+  });
+});
+
+describe("hook-meter rows go to the nearest injection (#30)", () => {
+  const T = (sec: number) => new Date(Date.UTC(2026, 9, 30, 12, 0, 0) + sec * 1000).toISOString();
+  const row = (sec: number, hook: string) => ({ ts: T(sec), ms: Date.parse(T(sec)), hook, event: "PreToolUse", bytes: 300, dur: 50 });
+  test("two same-event injections 0.5 s apart each get their own row", () => {
+    const notes: any[] = [{ ts: T(10), hookName: "PreToolUse:Bash" }, { ts: T(10.5), hookName: "PreToolUse:Bash" }];
+    const claimed = joinMeter(notes, [row(9.9, "a.js"), row(10.4, "b.js")]);
+    expect(notes.map((n) => (n.meter ?? []).map((m: any) => m.hook))).toEqual([["a.js"], ["b.js"]]);
+    expect(claimed.size).toBe(2);
+  });
+  test("a row of another event, or one too early, is not joined", () => {
+    const notes: any[] = [{ ts: T(10), hookName: "PreToolUse:Bash" }];
+    joinMeter(notes, [{ ...row(9.9, "x.js"), event: "PostToolUse" }, row(2, "early.js")]);
+    expect(notes[0].meter).toBeUndefined();
+  });
+});
+
+// Worktree sessions (#30). On this machine anvi had 6 worktree transcripts and
+// MoGraph-DSL 3, none listed before. The sibling project basher/ai shares the
+// basher repository but is its own project, so it must NOT be listed as basher's.
+describe("session list includes sessions started in a worktree (#30)", () => {
+  test("anvi lists its -wt- sessions, each saying how it was tied to the project", () => {
+    const r = listReplaySessions("anvi");
+    const wt = r.sessions.filter((s) => s.worktree);
+    if (!r.searched.some((d) => d.includes("-anvi-wt-"))) return console.warn("SKIP: no anvi worktree transcripts on this machine");
+    expect(wt.length).toBeGreaterThan(0);
+    for (const s of wt) expect(["cwd-is-project", "same-repository", "unverified-gone"]).toContain(s.worktree!.check);
+  });
+  test("must-not-match: a sibling project or a scratchpad dir is not a worktree", () => {
+    const r = listReplaySessions("basher");
+    expect(r.searched.some((d) => d.endsWith("-basher-ai"))).toBe(false);
+    const a = listReplaySessions("anvi");
+    expect(a.searched.some((d) => d.includes("scratchpad"))).toBe(false);
   });
 });

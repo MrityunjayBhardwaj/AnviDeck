@@ -111,22 +111,38 @@ function readChunk(path: string, n: number, fromEnd: boolean): string {
   }
 }
 
+/**
+ * The first timestamp and cwd near the start of a transcript. Large records
+ * (api-request blobs) can push the first cwd well past 64 KB, so the read grows
+ * (64 KB → 1 MB → 8 MB) until a cwd is seen (#30).
+ */
+function scanHead(path: string): { ts: string | null; cwd: string | null } {
+  let head = { ts: null as string | null, cwd: null as string | null };
+  for (const n of [65536, 1 << 20, 8 << 20]) {
+    head = scanTs(readChunk(path, n, false).split("\n"));
+    if (head.cwd || statSync(path).size <= n) break;
+  }
+  return head;
+}
+
 function scanTs(lines: string[]): { ts: string | null; cwd: string | null } {
   let cwd: string | null = null;
+  let ts: string | null = null;
   for (const l of lines) {
     try {
       const r = JSON.parse(l);
       if (!cwd && typeof r?.cwd === "string") cwd = r.cwd;
-      if (typeof r?.timestamp === "string") return { ts: r.timestamp, cwd };
+      if (!ts && typeof r?.timestamp === "string") ts = r.timestamp;
+      if (ts && cwd) break;
     } catch {
       /* partial line at a chunk edge */
     }
   }
-  return { ts: null, cwd };
+  return { ts, cwd };
 }
 
 export function listReplaySessions(project: string): ReplaySessionsResponse {
-  const out: ReplaySessionsResponse = { timezone: "UTC", project, status: "none", searched: [], sessions: [] };
+  const out: ReplaySessionsResponse = { timezone: "UTC", project, status: "none", searched: [], sessions: [], skipped: [] };
   let dirs: string[];
   try {
     dirs = readdirSync(PROJECTS_DIR);
@@ -136,35 +152,94 @@ export function listReplaySessions(project: string): ReplaySessionsResponse {
     return out;
   }
   const suffix = "-" + encodeCwd(project);
-  for (const d of dirs.filter((x) => x.endsWith(suffix))) {
+  // Sessions started in a worktree live under a longer dir name: the project's
+  // own dir name plus "-wt-…" (a sibling worktree) or "--claude-worktrees-…"
+  // (<project>/.claude/worktrees/…) (#30). A plain prefix match would also take
+  // sibling projects ("basher-ai") and scratchpads, so only these two forms count. They are candidates
+  // only; each is checked against the project's repository below.
+  const mainDirs = dirs.filter((x) => x.endsWith(suffix));
+  const wtDirs = dirs.filter((x) => mainDirs.some((m) => x.startsWith(m + "-wt-") || x.startsWith(m + "--claude-worktrees-")));
+  const projectPaths = new Set<string>();
+  const summarize = (p: string, f: string, head: { ts: string | null; cwd: string | null }) => {
+    const st = statSync(p);
+    const tail = scanTs(readChunk(p, 65536, true).split("\n").reverse());
+    return {
+      sessionId: f.slice(0, -".jsonl".length),
+      project,
+      cwd: head.cwd,
+      transcriptPath: p,
+      sizeBytes: st.size,
+      modifiedAt: iso(st.mtimeMs),
+      firstTs: head.ts,
+      lastTs: tail.ts,
+    } as ReplaySessionSummary;
+  };
+  const jsonl = (full: string) => {
+    try {
+      return readdirSync(full).filter((f) => f.endsWith(".jsonl"));
+    } catch {
+      return [];
+    }
+  };
+  for (const d of mainDirs) {
     const full = join(PROJECTS_DIR, d);
     out.searched.push(full);
-    let files: string[];
-    try {
-      files = readdirSync(full).filter((f) => f.endsWith(".jsonl"));
-    } catch {
-      continue;
-    }
-    for (const f of files) {
+    for (const f of jsonl(full)) {
       const p = join(full, f);
       try {
-        const st = statSync(p);
-        const head = scanTs(readChunk(p, 65536, false).split("\n"));
+        const head = scanHead(p);
         // The encoded dir name is lossy; the record's own cwd decides the project.
         if (head.cwd && basename(head.cwd) !== project) continue;
-        const tail = scanTs(readChunk(p, 65536, true).split("\n").reverse());
-        out.sessions.push({
-          sessionId: f.slice(0, -".jsonl".length),
-          project,
-          cwd: head.cwd,
-          transcriptPath: p,
-          sizeBytes: st.size,
-          modifiedAt: iso(st.mtimeMs),
-          firstTs: head.ts,
-          lastTs: tail.ts,
-        });
+        if (head.cwd) projectPaths.add(head.cwd);
+        out.sessions.push(summarize(p, f, head));
       } catch {
         /* unreadable transcript: listed in neither */
+      }
+    }
+  }
+  const storeOf = (dir: string): string | null => {
+    const r = run(["git", "-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir"], undefined, 3000);
+    return r.ok && r.out.trim() ? realOr(r.out.trim()) : null;
+  };
+  const projectPath = [...projectPaths].find((x) => existsSync(x)) ?? [...projectPaths][0] ?? null;
+  const projectStore = projectPath && existsSync(projectPath) ? storeOf(projectPath) : null;
+  for (const d of wtDirs) {
+    const full = join(PROJECTS_DIR, d);
+    out.searched.push(full);
+    for (const f of jsonl(full)) {
+      const p = join(full, f);
+      let head: { ts: string | null; cwd: string | null };
+      try {
+        head = scanHead(p);
+      } catch {
+        continue;
+      }
+      const cwd = head.cwd;
+      let check: "cwd-is-project" | "same-repository" | "unverified-gone" | null = null;
+      let why = "";
+      if (!cwd) why = "no cwd recorded";
+      else if (basename(cwd) === project) check = "cwd-is-project";
+      else if (existsSync(cwd)) {
+        const st = storeOf(cwd);
+        if (st && projectStore && st === projectStore) check = "same-repository";
+        else why = !projectStore ? "the project's own repository could not be resolved" : "a different repository";
+      } else if (
+        projectPath &&
+        (cwd.startsWith(projectPath + "/.claude/worktrees/") ||
+          (dirname(cwd) === dirname(projectPath) && basename(cwd).startsWith(project + "-wt-")))
+      )
+        check = "unverified-gone";
+      else why = "directory gone and its name does not mark it as this project's worktree";
+      if (!check) {
+        out.skipped!.push({ transcriptPath: p, cwd, reason: why });
+        continue;
+      }
+      try {
+        const s = summarize(p, f, head);
+        s.worktree = { transcriptDir: d, check };
+        out.sessions.push(s);
+      } catch {
+        /* unreadable transcript */
       }
     }
   }
@@ -582,19 +657,7 @@ export function readReplay(sessionId: string, opts: ReplayOptions = {}): ReplayR
     }
   }
   // Join: a meter row's ts is the hook's START; the transcript record lands after it.
-  const claimed = new Set<number>();
-  for (const n of notes) {
-    if (!n.ts) continue;
-    const nm = Date.parse(n.ts);
-    const event = n.hookName.split(":")[0];
-    meterRows.forEach((m, idx) => {
-      if (claimed.has(idx) || m.event !== event || m.bytes === 0) return;
-      if (m.ms <= nm + 1000 && m.ms >= nm - (m.dur + 5000)) {
-        claimed.add(idx);
-        (n.meter ??= []).push({ hook: m.hook, bytes: m.bytes, ts: m.ts });
-      }
-    });
-  }
+  const claimed = joinMeter(notes, meterRows);
   meterRows.forEach((m, idx) => {
     if (claimed.has(idx) || m.outcome === "silent") return;
     raw.push({
@@ -911,6 +974,39 @@ export function readReplay(sessionId: string, opts: ReplayOptions = {}): ReplayR
 
   timings.total = Math.round(performance.now() - t0);
   return res;
+}
+
+/**
+ * Give each hook-meter row to the injection it most likely produced: same event,
+ * row started within [note − (row ms + 5 s), note + 1 s], and among eligible
+ * notes the NEAREST one in time (#30). Rows are taken nearest-pair first, so two
+ * same-event injections a few seconds apart cannot swap rows. A note may get
+ * several rows (several hooks feed one injection). Returns the claimed row indexes.
+ */
+export function joinMeter(
+  notes: { ts: string | null; hookName: string; meter?: { hook: string; bytes: number; ts: string }[] }[],
+  rows: { ts: string; ms: number; hook: string; event: string; bytes: number; dur: number }[]
+): Set<number> {
+  const pairs: { n: number; r: number; d: number }[] = [];
+  notes.forEach((n, ni) => {
+    if (!n.ts) return;
+    const nm = Date.parse(n.ts);
+    const event = n.hookName.split(":")[0];
+    rows.forEach((m, ri) => {
+      if (m.event !== event || m.bytes === 0) return;
+      if (m.ms <= nm + 1000 && m.ms >= nm - (m.dur + 5000)) pairs.push({ n: ni, r: ri, d: Math.abs(nm - m.ms) });
+    });
+  });
+  pairs.sort((a, b) => a.d - b.d);
+  const claimed = new Set<number>();
+  for (const p of pairs) {
+    if (claimed.has(p.r)) continue;
+    claimed.add(p.r);
+    const m = rows[p.r];
+    (notes[p.n].meter ??= []).push({ hook: m.hook, bytes: m.bytes, ts: m.ts });
+  }
+  for (const n of notes) n.meter?.sort((a, b) => a.ts.localeCompare(b.ts));
+  return claimed;
 }
 
 function realOr(p: string): string {
