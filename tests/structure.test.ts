@@ -90,6 +90,9 @@ describe("structure map controls (stave/packages/editor)", () => {
     console.log(`  origin/main ${r.measuredAt.sha.slice(0, 8)}: reader ${r.counts.modules} modules / ${r.counts.edges} edges; ` +
       `guard ${cli.modules} / ${cli.edges} (issue claimed 364 / 935 on an earlier commit)`);
     expect(r.measuredAt.sha.startsWith(cli.sha8!)).toBe(true);
+    // The reader hands the guard a hash; that plumbing is not the user's choice of ref.
+    expect(r.measuredAt.why).not.toContain("--ref");
+    expect(r.measuredAt.why.startsWith(r.refChosenBy)).toBe(true);
     expect([r.counts.modules, r.counts.edges, r.designId]).toEqual([cli.modules, cli.edges, cli.designId]);
     expect([r.counts.divergence.total, r.counts.examinedBetweenComponents, r.counts.divergence.grandfathered, r.counts.divergence.new, r.counts.divergence.fixed])
       .toEqual([cli.total, cli.examined, cli.grandfathered, cli.fresh, cli.fixed]);

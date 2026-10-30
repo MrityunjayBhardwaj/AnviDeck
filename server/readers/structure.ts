@@ -380,7 +380,13 @@ async function measure(
     { dir: entry.dir, design: entry.design, baseline: entry.baseline, designId: entry.designId, extractor: entry.extractor, ref: sha },
     guardPath,
   );
-  const measuredAt = json.measuredAt ? { ...json.measuredAt, ref: chosen.ref, why: `${chosen.why}; ${json.measuredAt.why}` } : undefined;
+  // The guard's reason starts with how IT chose the ref — "--ref", since it was handed the hash
+  // (structure-guard.js checkoutAtRef: `chosen.why + borrowed…`). That is this reader's plumbing;
+  // the choice the user made is `chosen.why`. What follows (whose node_modules) is kept.
+  const guardWhy = json.measuredAt ? String(json.measuredAt.why).replace(/^--ref(;\s*)?/, "") : "";
+  const measuredAt = json.measuredAt
+    ? { ...json.measuredAt, ref: chosen.ref, why: guardWhy ? `${chosen.why}; ${guardWhy}` : chosen.why }
+    : undefined;
   if (json.status !== "measured") {
     const r: StructureNotMeasured = { status: "not-measured", project, package: entry, refAsked, reason: json.reason, source: src,
       timing: { cache: "miss", ms, guardMs: ms } };
