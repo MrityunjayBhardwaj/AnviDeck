@@ -291,6 +291,7 @@ async function onTimelineChange(state: TimelineState) {
 }
 
 function navigateTo(view: ViewName) {
+  if (view !== "agents" && location.hash.startsWith("#agents")) history.replaceState(null, "", location.pathname);
   currentView = view;
   currentProject = null;
   diffContent = null;
@@ -300,6 +301,7 @@ function navigateTo(view: ViewName) {
 }
 
 async function navigateToProject(name: string) {
+  if (location.hash.startsWith("#agents")) history.replaceState(null, "", location.pathname);
   currentView = "project";
   loading = true;
   diffContent = null;
