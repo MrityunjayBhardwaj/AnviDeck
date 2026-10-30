@@ -463,15 +463,21 @@ const SRC_LABEL: Record<string, string> = {
 
 function sourcesLine(r: ReplayResponse): string {
   const t = r.transcript;
-  const part = (name: string, st: ReadStatus, ok: string, detail?: string) =>
-    `<span class="ag-srcline ${isCouldNotRead(st) ? "ag-cnr-t" : st === "none" ? "ag-none-t" : ""}" title="${esc(detail ?? "")}">${esc(name)}: ${
-      isCouldNotRead(st) ? "could not read" : st === "none" ? "nothing in window" : st === "skipped" ? "not checked" : ok
+  // For the hook log and the hook meter, "not-found" means the file is simply not there (/tmp is
+  // cleared on reboot; a session may predate the meter): absence, not a failure to read (#51).
+  // For git it means no repository could be resolved, i.e. we could not look, so it stays red.
+  const part = (name: string, st: ReadStatus, ok: string, detail?: string, absentMeansNone = false) => {
+    const absent = absentMeansNone && st === "not-found";
+    const cnr = isCouldNotRead(st) && !absent;
+    return `<span class="ag-srcline ${cnr ? "ag-cnr-t" : st === "none" || absent ? "ag-none-t" : ""}" title="${esc(detail ?? "")}">${esc(name)}: ${
+      cnr ? "could not read" : absent ? "not present" : st === "none" ? "nothing in window" : st === "skipped" ? "not checked" : ok
     }</span>`;
+  };
   return `<div class="ag-srcs">
     ${part("Transcript", t.status, `${t.count ?? 0} records in window`, t.detail ?? t.path)}
-    ${part("Hook meter", r.sources.hookMeter.status, `${r.sources.hookMeter.count ?? 0} rows`, r.sources.hookMeter.detail ?? r.sources.hookMeter.path)}
-    ${part("Hook log", r.sources.hookLog.status, `${r.sources.hookLog.count ?? 0} rows`, r.sources.hookLog.detail ?? r.sources.hookLog.path)}
-    ${part("Git", r.sources.git.status, `${r.sources.git.count ?? 0} commits`, r.sources.git.detail)}
+    ${part("Hook meter", r.sources.hookMeter.status, `${r.sources.hookMeter.count ?? 0} rows`, r.sources.hookMeter.detail ?? r.sources.hookMeter.path, true)}
+    ${part("Hook log", r.sources.hookLog.status, `${r.sources.hookLog.count ?? 0} rows`, r.sources.hookLog.detail ?? r.sources.hookLog.path, true)}
+    ${part("Git", r.sources.git.status, `${r.sources.git.count ?? 0} commit${r.sources.git.count === 1 ? "" : "s"}`, r.sources.git.detail)}
     ${part("GitHub", r.sources.github.status, `${r.sources.github.count ?? 0} PRs`, r.sources.github.detail)}
   </div>`;
 }
