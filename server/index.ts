@@ -14,6 +14,7 @@ app.use("/*", cors());
 
 // Mount API routes
 app.route("/api", api);
+app.route("/api/replay", (await import("./routes/replay")).default);
 
 // Mount WebSocket route
 app.route("/", ws);
