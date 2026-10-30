@@ -710,27 +710,17 @@ function scoreArtifact(
   return { confidence, matchedKeywords: allMatched.slice(0, 8) };
 }
 
+// GitHub trace results, kept in memory only: AnviDeck is read-only and does
+// not write cache files (this used to write /tmp/anvi-github-trace-<name>.json).
+const traceCache = new Map<string, { data: unknown; at: number }>();
+
 function readCache(name: string): { data: unknown; age: number } | null {
-  const path = join("/tmp", `anvi-github-trace-${name}.json`);
-  try {
-    const { statSync, readFileSync } = require("node:fs");
-    const st = statSync(path);
-    const age = (Date.now() - st.mtimeMs) / 1000;
-    const data = JSON.parse(readFileSync(path, "utf8"));
-    return { data, age };
-  } catch {
-    return null;
-  }
+  const hit = traceCache.get(name);
+  return hit ? { data: hit.data, age: (Date.now() - hit.at) / 1000 } : null;
 }
 
 function writeCache(name: string, data: unknown): void {
-  const path = join("/tmp", `anvi-github-trace-${name}.json`);
-  try {
-    const { writeFileSync } = require("node:fs");
-    writeFileSync(path, JSON.stringify(data));
-  } catch {
-    // cache write failure is non-fatal
-  }
+  traceCache.set(name, { data, at: Date.now() });
 }
 
 // GET /api/project/:name/github-trace
