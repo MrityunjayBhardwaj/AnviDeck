@@ -79,7 +79,10 @@ describe("one count drives the headline, the badge and the live strip", () => {
       ...readdirSync("ui").filter((f) => f.endsWith(".ts")).map((f) => join("ui", f)),
       ...readdirSync("ui/components").filter((f) => f.endsWith(".ts")).map((f) => join("ui/components", f)),
     ];
-    const offenders = files.filter((f) => f !== join("ui", "home-count.ts") && /queue\.(length|filter|reduce)/.test(readFileSync(f, "utf8")));
+    // `.queue.` — a property access like home.queue — not any local variable named queue (the
+    // Agents view's own work queue counts fetch jobs, not decisions).
+    const QUEUE_COUNT = /\.queue\.(length|filter|reduce)/;
+    const offenders = files.filter((f) => f !== join("ui", "home-count.ts") && QUEUE_COUNT.test(readFileSync(f, "utf8")));
     expect(offenders).toEqual([]);
     const app = readFileSync("ui/app.ts", "utf8");
     expect(app).toContain("count = needsCount(home, failed)");
@@ -88,7 +91,8 @@ describe("one count drives the headline, the badge and the live strip", () => {
     expect(app).toContain("CommandCenter(projects, nav, home, count)");
     expect(readFileSync("ui/components/CommandCenter.ts", "utf8")).toContain("headlineText(count)");
     // And the check can fail: a second derivation is caught.
-    expect(/queue\.(length|filter|reduce)/.test("const n = home.queue.filter(x => x).length")).toBe(true);
+    expect(QUEUE_COUNT.test("const n = home.queue.filter(x => x).length")).toBe(true);
+    expect(QUEUE_COUNT.test("while (running < 2 && queue.length) {")).toBe(false);
   });
 });
 
