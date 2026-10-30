@@ -372,7 +372,7 @@ async function runAsync(cmd: string[], timeoutMs = 10000): Promise<{ ok: boolean
  */
 const PR_OPEN_TTL_MS = 60_000;
 const prViewCache = new Map<string, { at: number; out: string }>();
-async function ghPrView(number: number, repo: string): Promise<{ ok: boolean; out: string; err: string; cached: boolean }> {
+export async function ghPrView(number: number, repo: string): Promise<{ ok: boolean; out: string; err: string; cached: boolean }> {
   const key = `${repo}#${number}`;
   const hit = prViewCache.get(key);
   if (hit) {
@@ -384,7 +384,7 @@ async function ghPrView(number: number, repo: string): Promise<{ ok: boolean; ou
     }
     if (state === "MERGED" || state === "CLOSED" || Date.now() - hit.at < PR_OPEN_TTL_MS) return { ok: true, out: hit.out, err: "", cached: true };
   }
-  const r = await runAsync(["gh", "pr", "view", String(number), "--repo", repo, "--json", "headRefOid,state,mergedAt,changedFiles,files"], 20000);
+  const r = await runAsync(["gh", "pr", "view", String(number), "--repo", repo, "--json", "headRefOid,state,mergedAt,changedFiles,files,title,isDraft,url"], 20000);
   if (r.ok) prViewCache.set(key, { at: Date.now(), out: r.out });
   return { ...r, cached: false };
 }
