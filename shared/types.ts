@@ -61,6 +61,12 @@ export interface GroundingStatus {
 export interface ProjectState {
   name: string;
   path: string;
+  /**
+   * How the project path was determined from ~/.claude/projects/<encoded>:
+   * the cwd in its transcripts, a unique filesystem match, or not at all
+   * (path is then "" and nothing is read from a guessed location).
+   */
+  pathSource?: "transcript" | "filesystem" | "unresolved";
   catalogues: Catalogue[];
   memory: MemoryEntry[];
   fatalitySignals: number;
@@ -262,6 +268,12 @@ export interface GitHubTrace {
 export interface ProjectSummary {
   name: string;
   path: string;
+  /**
+   * How the project path was determined from ~/.claude/projects/<encoded>:
+   * the cwd in its transcripts, a unique filesystem match, or not at all
+   * (path is then "" and nothing is read from a guessed location).
+   */
+  pathSource?: "transcript" | "filesystem" | "unresolved";
   catalogueCounts: Record<string, number>;
   memoryCount: number;
   fatalitySignals: number;

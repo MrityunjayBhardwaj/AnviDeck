@@ -1,5 +1,4 @@
 import { Hono } from "hono";
-import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import {
   readCatalogues,
@@ -16,6 +15,7 @@ import {
 } from "../readers/git-history";
 import { readGroundingStatus } from "../readers/ground-truth";
 import { readLiveSessions } from "../readers/sessions";
+import { discoverProjects, type DiscoveredProject } from "../readers/projects";
 import { resolveDir } from "../../shared/anvi-paths";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { execSync } from "node:child_process";
@@ -23,59 +23,42 @@ import type { ProjectSummary, ProjectState, HookLogEntry } from "../../shared/ty
 
 const api = new Hono();
 
-const CLAUDE_DIR = join(
-  process.env.HOME ?? "/Users/mrityunjaybhardwaj",
-  ".claude"
-);
-const PROJECTS_DIR = join(CLAUDE_DIR, "projects");
-
 // GET /api/sessions — live (currently-running) Claude Code sessions
 api.get("/sessions", (c) => c.json(readLiveSessions()));
 
 /**
- * Decode a Claude projects directory name to an absolute path.
- * "-Users-mrityunjaybhardwaj-Documents-projects-sonicPiWeb"
- * → "/Users/mrityunjaybhardwaj/Documents/projects/sonicPiWeb"
+ * Discovered projects, plus a lookup by short name. Path decoding lives in
+ * ../readers/projects (transcript cwd → filesystem walk → unresolved); a
+ * project whose path cannot be determined has decoded === null and is never
+ * read from a guessed path.
  */
-function decodeProjectPath(dirName: string): string {
-  return dirName.replace(/^-/, "/").replace(/-/g, "/");
+function listProjects(): DiscoveredProject[] {
+  return discoverProjects().projects;
 }
 
-/**
- * Extract a short project name from the decoded path.
- */
-function projectName(decodedPath: string): string {
-  return decodedPath.split("/").pop() ?? decodedPath;
+/** Body for a project whose path could not be determined (never guessed). */
+function unresolvedBody(proj: DiscoveredProject) {
+  return {
+    error: "Project path could not be determined",
+    status: "unresolved",
+    encoded: proj.encoded,
+    candidates: proj.candidates ?? [],
+  };
 }
 
-/**
- * Discover all projects from ~/.claude/projects/
- */
-async function discoverProjects(): Promise<
-  { encoded: string; decoded: string; name: string }[]
-> {
-  let dirs: string[];
-  try {
-    dirs = await readdir(PROJECTS_DIR);
-  } catch {
-    return [];
-  }
-
-  return dirs
-    .filter((d) => d.startsWith("-"))
-    .map((encoded) => {
-      const decoded = decodeProjectPath(encoded);
-      return { encoded, decoded, name: projectName(decoded) };
-    });
+function findProject(name: string): DiscoveredProject | undefined {
+  const all = listProjects();
+  // A resolved project wins over an unresolved one that happens to share the name.
+  return all.find((p) => p.name === name && p.decoded) ?? all.find((p) => p.name === name);
 }
 
 // GET /api/projects — all projects with catalogue counts
 api.get("/projects", async (c) => {
-  const projects = await discoverProjects();
+  const projects = listProjects();
   const summaries: ProjectSummary[] = [];
 
   for (const proj of projects) {
-    const catalogues = await readCatalogues(proj.decoded);
+    const catalogues = proj.decoded ? await readCatalogues(proj.decoded) : [];
     const memory = await readProjectMemory(proj.encoded);
     const signals = countSignals(catalogues);
 
@@ -100,14 +83,15 @@ api.get("/projects", async (c) => {
     // Count Ground Truth docs
     let groundTruthDocCount = 0;
     try {
-      const refDir = resolveDir(proj.decoded, "ref");
+      const refDir = proj.decoded ? resolveDir(proj.decoded, "ref") : null;
       const refFiles = refDir ? readdirSync(refDir) : [];
       groundTruthDocCount = refFiles.filter((f: string) => f.startsWith("GROUND_TRUTH_") && f.endsWith(".md")).length;
     } catch {}
 
     summaries.push({
       name: proj.name,
-      path: proj.decoded,
+      path: proj.decoded ?? "",
+      pathSource: proj.pathSource,
       catalogueCounts,
       memoryCount: memory.length,
       ...signals,
@@ -122,10 +106,10 @@ api.get("/projects", async (c) => {
 // GET /api/project/:name — full project state
 api.get("/project/:name", async (c) => {
   const name = c.req.param("name");
-  const projects = await discoverProjects();
-  const proj = projects.find((p) => p.name === name);
+  const proj = findProject(name);
 
   if (!proj) return c.json({ error: "Project not found" }, 404);
+  if (!proj.decoded) return c.json(unresolvedBody(proj), 404);
 
   const catalogues = await readCatalogues(proj.decoded);
   const memory = await readProjectMemory(proj.encoded);
@@ -137,6 +121,7 @@ api.get("/project/:name", async (c) => {
   const state: ProjectState = {
     name: proj.name,
     path: proj.decoded,
+    pathSource: proj.pathSource,
     catalogues,
     memory,
     boundaries,
@@ -150,10 +135,10 @@ api.get("/project/:name", async (c) => {
 // GET /api/project/:name/catalogues — just catalogues
 api.get("/project/:name/catalogues", async (c) => {
   const name = c.req.param("name");
-  const projects = await discoverProjects();
-  const proj = projects.find((p) => p.name === name);
+  const proj = findProject(name);
 
   if (!proj) return c.json({ error: "Project not found" }, 404);
+  if (!proj.decoded) return c.json(unresolvedBody(proj), 404);
 
   const catalogues = await readCatalogues(proj.decoded);
   return c.json(catalogues);
@@ -162,8 +147,7 @@ api.get("/project/:name/catalogues", async (c) => {
 // GET /api/project/:name/memory — project memory
 api.get("/project/:name/memory", async (c) => {
   const name = c.req.param("name");
-  const projects = await discoverProjects();
-  const proj = projects.find((p) => p.name === name);
+  const proj = findProject(name);
 
   if (!proj) return c.json({ error: "Project not found" }, 404);
 
@@ -352,7 +336,7 @@ api.get("/routing-architecture", async (c) => {
 
 // GET /api/cross-project — cross-project pattern analysis
 api.get("/cross-project", async (c) => {
-  const projects = await discoverProjects();
+  const projects = listProjects();
   const allEntries: {
     project: string;
     catalogue: string;
@@ -370,7 +354,7 @@ api.get("/cross-project", async (c) => {
 
   // Load all projects with catalogues
   for (const proj of projects) {
-    const catalogues = await readCatalogues(proj.decoded);
+    const catalogues = proj.decoded ? await readCatalogues(proj.decoded) : [];
     for (const cat of catalogues) {
       for (const entry of cat.entries) {
         allEntries.push({
@@ -604,15 +588,16 @@ api.get("/hook-logs", (c) => {
 // GET /api/project/:name/entry-dates — creation dates for catalogue entries
 api.get("/project/:name/entry-dates", async (c) => {
   const name = c.req.param("name");
-  const projects = await discoverProjects();
-  const proj = projects.find((p) => p.name === name);
+  const proj = findProject(name);
   if (!proj) return c.json({ error: "Project not found" }, 404);
+  if (!proj.decoded) return c.json(unresolvedBody(proj), 404);
+  const projectPath = proj.decoded;
 
   const dates: Record<string, { created: string; lastModified: string }> = {};
 
   // Find .anvi directory
   const { findAnviDir: findDir } = await import("../readers/catalogue");
-  const anviDir = findDir(proj.decoded);
+  const anviDir = findDir(projectPath);
   if (!anviDir) return c.json(dates);
 
   // Get file-level dates from git, then parse entry IDs per file
@@ -641,13 +626,13 @@ api.get("/project/:name/entry-dates", async (c) => {
     try {
       const gitCreated = execSync(
         `git log --diff-filter=A --format="%aI" -- "${filePath}" | tail -1`,
-        { cwd: proj.decoded, encoding: "utf8", timeout: 5000 }
+        { cwd: projectPath, encoding: "utf8", timeout: 5000 }
       ).trim();
       if (gitCreated) fileCreated = gitCreated;
 
       const gitModified = execSync(
         `git log -1 --format="%aI" -- "${filePath}"`,
-        { cwd: proj.decoded, encoding: "utf8", timeout: 5000 }
+        { cwd: projectPath, encoding: "utf8", timeout: 5000 }
       ).trim();
       if (gitModified) fileModified = gitModified;
     } catch {
@@ -770,9 +755,10 @@ api.get("/project/:name/github-trace", async (c) => {
   const name = c.req.param("name");
   const forceRefresh = c.req.query("refresh") === "1";
 
-  const projects = await discoverProjects();
-  const proj = projects.find((p) => p.name === name);
+  const proj = findProject(name);
   if (!proj) return c.json({ error: "Project not found" }, 404);
+  if (!proj.decoded) return c.json(unresolvedBody(proj), 404);
+  const projectPath = proj.decoded;
 
   // Return cached if fresh enough
   if (!forceRefresh) {
@@ -782,14 +768,14 @@ api.get("/project/:name/github-trace", async (c) => {
     }
   }
 
-  const catalogues = await readCatalogues(proj.decoded);
+  const catalogues = await readCatalogues(projectPath);
 
   // Fetch commits (always available)
   let commits: { hash: string; date: string; subject: string }[] = [];
   try {
     const raw = execSync(
       `git log --format="%H|||%aI|||%s" -n 100`,
-      { cwd: proj.decoded, encoding: "utf8", timeout: 8000 }
+      { cwd: projectPath, encoding: "utf8", timeout: 8000 }
     ).trim();
     commits = raw.split("\n")
       .filter(Boolean)
@@ -810,7 +796,7 @@ api.get("/project/:name/github-trace", async (c) => {
   try {
     const issueRaw = execSync(
       `gh issue list --json number,title,body,createdAt,url --limit 100`,
-      { cwd: proj.decoded, encoding: "utf8", timeout: 12000 }
+      { cwd: projectPath, encoding: "utf8", timeout: 12000 }
     );
     issues = JSON.parse(issueRaw);
   } catch (e: unknown) {
@@ -820,7 +806,7 @@ api.get("/project/:name/github-trace", async (c) => {
   try {
     const prRaw = execSync(
       `gh pr list --json number,title,body,createdAt,url --limit 50 --state all`,
-      { cwd: proj.decoded, encoding: "utf8", timeout: 12000 }
+      { cwd: projectPath, encoding: "utf8", timeout: 12000 }
     );
     prs = JSON.parse(prRaw);
   } catch (e: unknown) {
@@ -830,7 +816,7 @@ api.get("/project/:name/github-trace", async (c) => {
   try {
     const repoRaw = execSync(
       `gh repo view --json url`,
-      { cwd: proj.decoded, encoding: "utf8", timeout: 8000 }
+      { cwd: projectPath, encoding: "utf8", timeout: 8000 }
     );
     repoUrl = JSON.parse(repoRaw)?.url ?? null;
   } catch {
@@ -839,13 +825,13 @@ api.get("/project/:name/github-trace", async (c) => {
 
   // Fetch entry creation dates for temporal proximity
   const entryDatesMap: Record<string, string> = {};
-  const anviDirPath = findAnviDir(proj.decoded);
+  const anviDirPath = findAnviDir(projectPath);
   if (anviDirPath) {
     for (const cat of catalogues) {
       try {
         const gitDate = execSync(
           `git log --diff-filter=A --format="%aI" -- "${cat.path}" | tail -1`,
-          { cwd: proj.decoded, encoding: "utf8", timeout: 5000 }
+          { cwd: projectPath, encoding: "utf8", timeout: 5000 }
         ).trim();
         for (const entry of cat.entries) {
           if (!entryDatesMap[entry.id]) entryDatesMap[entry.id] = gitDate;
