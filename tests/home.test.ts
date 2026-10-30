@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { needsCount, headlineText, badgeText, stripText } from "../ui/home-count";
-import { orderQueue, prLinkFromLine, prLinksIn, prVerdict, readNotesCurrency } from "../server/readers/home";
+import { groupFailedPrs, orderQueue, prLinkFromLine, prLinksIn, prVerdict, readNotesCurrency } from "../server/readers/home";
 import type { HomeResponse, QueueItem } from "../shared/home-types";
 
 const TMP = "/private/tmp/claude-501/ui18/test-fixtures";
@@ -30,7 +30,7 @@ function fixture(queue: QueueItem[], opts: { unread?: number; prs?: HomeResponse
 }
 
 const firstNumber = (s: string) => Number(/(\d+)/.exec(s)?.[1]);
-const needYouNumber = (s: string) => Number(/(\d+) needs? you/.exec(s)?.[1]);
+const needYouNumber = (s: string) => Number(/(\d+)\?? needs? you/.exec(s)?.[1]);
 
 describe("one count drives the headline, the badge and the live strip", () => {
   for (const n of [0, 1, 3, 15]) {
@@ -54,9 +54,11 @@ describe("one count drives the headline, the badge and the live strip", () => {
   test("could not read is never shown as nothing to decide", () => {
     const partial = needsCount(fixture([], { prs: "could-not-read" }));
     expect(partial.state).toBe("partial");
-    expect(headlineText(partial)).not.toBe("Nothing needs you");
+    expect(headlineText(partial)).not.toMatch(/^Nothing needs you/);
     expect(headlineText(partial)).toContain("could not be read");
     expect(badgeText(partial)).toBe("0?");
+    expect(stripText(partial)).toContain("0? need");
+    expect(needYouNumber(stripText(partial))).toBe(0);
 
     const unreadRows = needsCount(fixture([item("pr-review", "p", 1)], { unread: 2 }));
     expect(unreadRows.n).toBe(1); // unread rows are shown, never counted
@@ -110,6 +112,17 @@ describe("what may enter the queue", () => {
     // A recorded deadline would go first, whatever its kind.
     const due = { ...item("pr-review", "due", 999), dueBy: "2026-11-01" };
     expect(orderQueue([item("agent-waiting", "agent", 1), due])[0].id).toBe("due");
+  });
+
+  test("PRs that could not be checked: one row per reason, not one per PR", () => {
+    const fails = Array.from({ length: 53 }, (_, i) => ({ key: `o/r#${i}`, reason: 'Executable not found in $PATH: "gh"' }));
+    fails.push({ key: "o/r#99", reason: "HTTP 404" });
+    const rows = groupFailedPrs(fails);
+    expect(rows.length).toBe(2);
+    expect(rows[0].what).toBe("Could not check 53 PRs");
+    expect(rows[0].source).toContain("o/r#0, o/r#1, o/r#2 and 50 more");
+    expect(rows[1].what).toBe("Could not check PR o/r#99");
+    expect(groupFailedPrs([])).toEqual([]);
   });
 
   test("pr-link lines: only real pr-link records, not text that mentions them", () => {

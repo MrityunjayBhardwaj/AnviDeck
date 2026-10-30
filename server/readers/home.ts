@@ -184,6 +184,20 @@ export function orderQueue(items: QueueItem[]): QueueItem[] {
   );
 }
 
+/**
+ * PRs that could not be checked, one row per distinct reason: when gh is missing or logged
+ * out, every PR fails the same way, and 50 identical rows would bury the rest of the page.
+ */
+export function groupFailedPrs(failed: { key: string; reason: string }[]): UnreadItem[] {
+  const byReason = new Map<string, string[]>();
+  for (const f of failed) byReason.set(f.reason, [...(byReason.get(f.reason) ?? []), f.key]);
+  return [...byReason].map(([reason, keys]) => ({
+    id: `pr-unread:${reason}`,
+    what: keys.length === 1 ? `Could not check PR ${keys[0]}` : `Could not check ${keys.length} PRs`,
+    source: `gh pr view: ${reason}${keys.length > 1 ? ` (${keys.slice(0, 3).join(", ")}${keys.length > 3 ? ` and ${keys.length - 3} more` : ""})` : ""}`,
+  }));
+}
+
 function ago(ms: number, now: number): string {
   const m = Math.max(0, Math.round((now - ms) / 60000));
   if (m < 60) return `${m} min`;
@@ -260,6 +274,7 @@ export async function readHome(): Promise<HomeResponse> {
   timings.github = Math.round(performance.now() - tPr) - timings.transcripts;
   const tally = { review: 0, draft: 0, merged: 0, closed: 0, other: 0, failed: 0, cached: 0 };
   const openBySession = new Map<string, number[]>();
+  const failedPrs: { key: string; reason: string }[] = [];
   entries.forEach((e, i) => {
     const r = answers[i];
     if (r.cached) tally.cached++;
@@ -275,7 +290,7 @@ export async function readHome(): Promise<HomeResponse> {
     }
     if (!a) {
       tally.failed++;
-      unread.push({ id: `pr:${key}`, what: `Could not check PR ${key}`, source: `gh pr view: ${(r.err || "unparseable answer").slice(0, 160)}` });
+      failedPrs.push({ key, reason: (r.err || "unparseable answer").slice(0, 160) });
       return;
     }
     const v = prVerdict(a);
@@ -294,6 +309,7 @@ export async function readHome(): Promise<HomeResponse> {
       source: `pr-link in ${e.sessions.length === 1 ? "this session's transcript" : `${e.sessions.length} transcripts`} + gh pr view (state OPEN, not a draft)`,
     });
   });
+  unread.push(...groupFailedPrs(failedPrs));
   const prsSource: HomeSource = {
     status:
       entries.length === 0 ? (scanErrors.length ? "could-not-read" : "none")

@@ -44,8 +44,12 @@ function plural(n: number, one: string, many: string): string {
 export function headlineText(c: NeedsCount): string {
   if (c.state === "loading") return "Checking what needs you…";
   if (c.state === "failed") return "Could not read what needs you";
-  const base = c.n === 0 ? "Nothing needs you" : `${plural(c.n, "thing needs", "things need")} you`;
-  return c.state === "partial" ? `${base} (some sources could not be read)` : base;
+  // A partial answer must not open with "Nothing needs you": that is the all-clear.
+  if (c.state === "partial")
+    return c.n === 0
+      ? "Nothing found so far, but some sources could not be read"
+      : `${plural(c.n, "thing needs", "things need")} you, and some sources could not be read`;
+  return c.n === 0 ? "Nothing needs you" : `${plural(c.n, "thing needs", "things need")} you`;
 }
 
 /** The sidebar badge: the same n, "…" while loading, "?" appended when a source could not be read. */
@@ -59,5 +63,5 @@ export function badgeText(c: NeedsCount): string {
 export function stripText(c: NeedsCount): string {
   if (c.state === "loading") return "checking agents…";
   if (c.state === "failed") return "could not read agents";
-  return `${plural(c.live, "agent", "agents")} · ${c.busy} working · ${c.waiting} waiting on you · ${c.n} need${c.n === 1 ? "s" : ""} you`;
+  return `${plural(c.live, "agent", "agents")} · ${c.busy} working · ${c.waiting} waiting on you · ${badgeText(c)} need${c.n === 1 ? "s" : ""} you`;
 }
