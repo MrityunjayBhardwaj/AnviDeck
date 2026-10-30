@@ -39,6 +39,26 @@ export function ProjectView(
   }
   el.appendChild(quickLinks);
 
+  // Sources that exist but could not be read: say so, so zeros below aren't
+  // mistaken for "nothing found".
+  const readProblems = [
+    ["catalogues", project.readStatus?.catalogues],
+    ["memory", project.readStatus?.memory],
+    ["Ground Truth", project.grounding?.readStatus],
+  ].filter(([, r]) => r && typeof r === "object" && (r.status === "unreadable" || r.status === "partial"));
+  if (readProblems.length) {
+    const warn = document.createElement("div");
+    warn.className = "card";
+    warn.style.borderColor = "var(--red, #e5534b)";
+    warn.innerHTML = `<div class="card-body" style="color:var(--red, #e5534b);font-size:12px">${readProblems
+      .map(([label, r]) => {
+        const rep = r as NonNullable<typeof project.readStatus>["catalogues"];
+        return `Could not read all ${label} (${rep.status}): ${rep.errors.map((e) => e.replace(/</g, "&lt;")).join("; ")}`;
+      })
+      .join("<br>")}</div>`;
+    el.appendChild(warn);
+  }
+
   // Health summary
   const catTotal = project.catalogues.reduce((s, c) => s + c.entries.length, 0);
 

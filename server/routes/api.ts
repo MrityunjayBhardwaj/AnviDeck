@@ -2,12 +2,13 @@ import { Hono } from "hono";
 import { join } from "node:path";
 import {
   readCatalogues,
+  readCataloguesReport,
   extractBoundaries,
   countSignals,
   findAnviDir,
   GROUNDING_CATALOGUES,
 } from "../readers/catalogue";
-import { readProjectMemory, readGlobalMemory } from "../readers/memory";
+import { readMemoryDirReport, projectMemoryDir, GLOBAL_MEMORY_DIR } from "../readers/memory";
 import {
   getTimeline,
   showAtCommit,
@@ -15,18 +16,40 @@ import {
   readEntryDatesForFile,
 } from "../readers/git-history";
 import { readGroundingStatus } from "../readers/ground-truth";
-import { readLiveSessions } from "../readers/sessions";
+import { readLiveSessionsReport } from "../readers/sessions";
 import { readRoutingTable, alwaysLoadedFiles } from "../readers/routing";
 import { discoverProjects, type DiscoveredProject } from "../readers/projects";
 import { resolveDir } from "../../shared/anvi-paths";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { execSync } from "node:child_process";
-import type { ProjectSummary, ProjectState, HookLogEntry, EntryDate } from "../../shared/types";
+import type { ProjectSummary, ProjectState, HookLogEntry, EntryDate, ReadReport } from "../../shared/types";
+import type { Context } from "hono";
+import { errText, isAbsent, report } from "../readers/read-status";
 
 const api = new Hono();
 
+/**
+ * Answer an array endpoint so "could not read" never looks like "nothing
+ * found": the body stays the plain array (what the UI expects) with the read
+ * status in X-Read-Status; when nothing could be read the answer is 503 with
+ * the report instead of an empty 200.
+ */
+function arrayWithStatus<T>(c: Context, items: T[], r: ReadReport) {
+  c.header("X-Read-Status", r.status);
+  if (r.status === "unreadable") {
+    return c.json({ error: "could not read", status: r.status, path: r.path, errors: r.errors }, 503);
+  }
+  if (r.errors.length) c.header("X-Read-Errors", String(r.errors.length));
+  return c.json(items);
+}
+
+const EMPTY_REPORT: ReadReport = { status: "none", errors: [] };
+
 // GET /api/sessions — live (currently-running) Claude Code sessions
-api.get("/sessions", (c) => c.json(readLiveSessions()));
+api.get("/sessions", (c) => {
+  const { sessions, report } = readLiveSessionsReport();
+  return arrayWithStatus(c, sessions, report);
+});
 
 /**
  * Discovered projects, plus a lookup by short name. Path decoding lives in
@@ -56,12 +79,18 @@ function findProject(name: string): DiscoveredProject | undefined {
 
 // GET /api/projects — all projects with catalogue counts
 api.get("/projects", async (c) => {
-  const projects = listProjects();
+  const discovery = discoverProjects();
+  if (discovery.status === "unreadable") {
+    return c.json({ error: "could not read the projects directory", status: "unreadable", errors: [discovery.error] }, 503);
+  }
+  const projects = discovery.projects;
   const summaries: ProjectSummary[] = [];
 
   for (const proj of projects) {
-    const catalogues = proj.decoded ? await readCatalogues(proj.decoded) : [];
-    const memory = await readProjectMemory(proj.encoded);
+    const cat = proj.decoded ? await readCataloguesReport(proj.decoded) : { catalogues: [], report: EMPTY_REPORT };
+    const catalogues = cat.catalogues;
+    const mem = await readMemoryDirReport(projectMemoryDir(proj.encoded));
+    const memory = mem.entries;
     const signals = countSignals(catalogues);
 
     const catalogueCounts: Record<string, number> = {};
@@ -99,6 +128,7 @@ api.get("/projects", async (c) => {
       ...signals,
       groundingPercent,
       groundTruthDocCount,
+      readStatus: { catalogues: cat.report, memory: mem.report },
     });
   }
 
@@ -113,8 +143,10 @@ api.get("/project/:name", async (c) => {
   if (!proj) return c.json({ error: "Project not found" }, 404);
   if (!proj.decoded) return c.json(unresolvedBody(proj), 404);
 
-  const catalogues = await readCatalogues(proj.decoded);
-  const memory = await readProjectMemory(proj.encoded);
+  const cat = await readCataloguesReport(proj.decoded);
+  const catalogues = cat.catalogues;
+  const mem = await readMemoryDirReport(projectMemoryDir(proj.encoded));
+  const memory = mem.entries;
   const signals = countSignals(catalogues);
   const boundaries = extractBoundaries(catalogues);
 
@@ -129,6 +161,7 @@ api.get("/project/:name", async (c) => {
     boundaries,
     ...signals,
     grounding,
+    readStatus: { catalogues: cat.report, memory: mem.report },
   };
 
   return c.json(state);
@@ -142,8 +175,8 @@ api.get("/project/:name/catalogues", async (c) => {
   if (!proj) return c.json({ error: "Project not found" }, 404);
   if (!proj.decoded) return c.json(unresolvedBody(proj), 404);
 
-  const catalogues = await readCatalogues(proj.decoded);
-  return c.json(catalogues);
+  const { catalogues, report } = await readCataloguesReport(proj.decoded);
+  return arrayWithStatus(c, catalogues, report);
 });
 
 // GET /api/project/:name/memory — project memory
@@ -153,14 +186,14 @@ api.get("/project/:name/memory", async (c) => {
 
   if (!proj) return c.json({ error: "Project not found" }, 404);
 
-  const memory = await readProjectMemory(proj.encoded);
-  return c.json(memory);
+  const { entries, report } = await readMemoryDirReport(projectMemoryDir(proj.encoded));
+  return arrayWithStatus(c, entries, report);
 });
 
 // GET /api/memory — global memory
 api.get("/memory", async (c) => {
-  const memory = await readGlobalMemory();
-  return c.json(memory);
+  const { entries, report } = await readMemoryDirReport(GLOBAL_MEMORY_DIR);
+  return arrayWithStatus(c, entries, report);
 });
 
 // GET /api/timeline — git commit history
@@ -308,8 +341,11 @@ api.get("/cross-project", async (c) => {
   // files read (project, path, mtime, entry count); the keyword analysis below
   // is reused while it is unchanged.
   const sigParts: string[] = [];
+  const readErrors: string[] = []; // files that exist but could not be read
   for (const proj of projects) {
-    const catalogues = proj.decoded ? await readCatalogues(proj.decoded) : [];
+    const catRead = proj.decoded ? await readCataloguesReport(proj.decoded) : { catalogues: [], report: EMPTY_REPORT };
+    const catalogues = catRead.catalogues;
+    readErrors.push(...catRead.report.errors);
     for (const cat of catalogues) {
       sigParts.push(`${proj.name}|${cat.path}|${cat.lastModified.getTime()}|${cat.entries.length}`);
       for (const entry of cat.entries) {
@@ -324,8 +360,9 @@ api.get("/cross-project", async (c) => {
       }
     }
 
-    const memory = await readProjectMemory(proj.encoded);
-    for (const mem of memory) {
+    const memRead = await readMemoryDirReport(projectMemoryDir(proj.encoded));
+    readErrors.push(...memRead.report.errors);
+    for (const mem of memRead.entries) {
       allMemory.push({
         project: proj.name,
         name: mem.name,
@@ -365,6 +402,7 @@ api.get("/cross-project", async (c) => {
     sharedInvariants,
     memoryNetwork: { byType: memoryByType, totalCount: allMemory.length },
     projectCount: projects.length,
+    readErrors,
   });
 });
 
@@ -491,7 +529,11 @@ function findRecurringPatterns(
   return deduped.slice(0, 50); // top 50
 }
 
-// GET /api/hook-logs — aggregated hook log data from /tmp/
+// GET /api/hook-logs — aggregated hook log data from /tmp/.
+// The injector writes one JSON line per firing to /tmp/anvi-hook-<sid>.log
+// (anvi hooks/catalogue-context-injector.js). Besides `sessions` the body
+// carries status/errors (ReadReport) and how many lines were not JSON, so an
+// unreadable /tmp or log file never reads as "no hook activity".
 api.get("/hook-logs", (c) => {
   const sessions: Record<
     string,
@@ -504,6 +546,9 @@ api.get("/hook-logs", (c) => {
     }
   > = {};
 
+  const errors: string[] = [];
+  let filesRead = 0;
+  let malformedLines = 0;
   try {
     const files = readdirSync("/tmp").filter(
       (f) => f.startsWith("anvi-hook-") && f.endsWith(".log")
@@ -514,9 +559,11 @@ api.get("/hook-logs", (c) => {
       let content: string;
       try {
         content = readFileSync(filePath, "utf8");
-      } catch {
+      } catch (e) {
+        if (!isAbsent(e)) errors.push(errText(filePath, e));
         continue;
       }
+      filesRead++;
 
       for (const line of content.split("\n")) {
         const trimmed = line.trim();
@@ -541,15 +588,16 @@ api.get("/hook-logs", (c) => {
             if (!s.boundaries.includes(b)) s.boundaries.push(b);
           }
         } catch {
-          // skip malformed
+          malformedLines++;
         }
       }
     }
-  } catch {
-    // /tmp read failed
+  } catch (e) {
+    errors.push(errText("/tmp", e));
   }
 
-  return c.json({ sessions: Object.values(sessions) });
+  const r = report(filesRead, errors, "/tmp/anvi-hook-<sid>.log");
+  return c.json({ sessions: Object.values(sessions), ...r, filesRead, malformedLines });
 });
 
 // GET /api/project/:name/entry-dates — per-entry dates for catalogue entries.

@@ -56,6 +56,8 @@ export interface GroundingStatus {
   ungroundedEntries: number;
   groundTruthDocs: GroundTruthDoc[];
   sourceDirectories: string[];
+  /** Whether the ref/ directory and its docs could be read (see ReadReport). */
+  readStatus?: ReadReport;
 }
 
 export interface ProjectState {
@@ -75,6 +77,8 @@ export interface ProjectState {
   blindSpots: number;
   boundaries: BoundaryInfo[];
   grounding: GroundingStatus;
+  /** Per source: could it be read, or was there genuinely nothing? */
+  readStatus?: { catalogues: ReadReport; memory: ReadReport };
 }
 
 // -- Timeline types --
@@ -187,6 +191,8 @@ export interface CrossProjectData {
     totalCount: number;
   };
   projectCount: number;
+  /** Catalogue/memory files that exist but could not be read. */
+  readErrors?: string[];
 }
 
 // -- System Lens types --
@@ -291,6 +297,8 @@ export interface ProjectSummary {
   groundingPercent: number;
   /** Number of Ground Truth docs found */
   groundTruthDocCount: number;
+  /** Per source: could it be read, or was there genuinely nothing? */
+  readStatus?: { catalogues: ReadReport; memory: ReadReport };
 }
 
 /** A live (currently-running) Claude Code session. */
@@ -333,4 +341,22 @@ export interface EntryDate {
   created: string | null;
   lastModified: string | null;
   dateSource: DateSource;
+}
+
+/**
+ * What a reader could tell about its source, so "could not read" never looks
+ * like "nothing found":
+ *   ok         — items were read, nothing failed
+ *   none       — the source is absent or empty (genuinely nothing found)
+ *   partial    — some items read, some failed (see errors)
+ *   unreadable — reading failed and nothing was read
+ */
+export type ReadStatus = "ok" | "none" | "partial" | "unreadable";
+
+export interface ReadReport {
+  status: ReadStatus;
+  /** The location that was read, when there is one. */
+  path?: string;
+  /** One line per failure: "<path>: <code> <message>". */
+  errors: string[];
 }

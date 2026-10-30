@@ -2,7 +2,8 @@ import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { parseCatalogueEntries } from "../../shared/parser";
 import { resolveDir } from "../../shared/anvi-paths";
-import type { Catalogue, BoundaryInfo, CatalogueEntry } from "../../shared/types";
+import type { Catalogue, BoundaryInfo, CatalogueEntry, ReadReport } from "../../shared/types";
+import { errText, isAbsent, report } from "./read-status";
 
 const CATALOGUE_NAMES = ["hetvabhasa", "vyapti", "krama", "dharana"];
 
@@ -28,27 +29,45 @@ export function findAnviDir(projectPath: string): string | null {
 export async function readCatalogues(
   projectPath: string
 ): Promise<Catalogue[]> {
+  return (await readCataloguesReport(projectPath)).catalogues;
+}
+
+/**
+ * Catalogues plus a report that separates "no .anvi / no catalogue files"
+ * (status none) from "a catalogue file exists but could not be read"
+ * (unreadable / partial, with the failing path in errors).
+ */
+export async function readCataloguesReport(
+  projectPath: string
+): Promise<{ catalogues: Catalogue[]; report: ReadReport }> {
   const anviDir = findAnviDir(projectPath);
-  if (!anviDir) return [];
+  if (!anviDir) return { catalogues: [], report: report(0, []) };
 
   const catalogues: Catalogue[] = [];
+  const errors: string[] = [];
 
   for (const name of CATALOGUE_NAMES) {
     const filePath = join(anviDir, `${name}.md`);
+    let fileStat;
     try {
-      const fileStat = await stat(filePath);
+      fileStat = await stat(filePath);
+    } catch (e) {
+      if (!isAbsent(e)) errors.push(errText(filePath, e));
+      continue; // absent: this catalogue simply doesn't exist
+    }
+    try {
       catalogues.push({
         name,
         path: filePath,
         entries: await parsedEntries(filePath, name, fileStat.mtimeMs, fileStat.size),
         lastModified: fileStat.mtime,
       });
-    } catch {
-      // Catalogue file doesn't exist — skip
+    } catch (e) {
+      errors.push(errText(filePath, e));
     }
   }
 
-  return catalogues;
+  return { catalogues, report: report(catalogues.length, errors, anviDir) };
 }
 
 /**
