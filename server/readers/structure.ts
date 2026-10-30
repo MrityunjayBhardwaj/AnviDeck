@@ -111,11 +111,13 @@ interface Project { name: string; path: string }
  * the decoded path is a directory, plus the git toplevel of every registered package.
  */
 export function discoverProjects(reg: Registry = readRegistry()): Project[] {
+  // Keyed by the real directory, not the name: two projects can share a folder name, and keeping
+  // only one of them hid the other with nothing said (#23). Callers pick by path when names clash.
   const out = new Map<string, Project>();
   const add = (p: string) => {
     const name = p.split("/").pop() || p;
-    const prev = out.get(name);
-    if (!prev || p.length < prev.path.length) out.set(name, { name, path: p });
+    const key = realOr(p);
+    if (!out.has(key)) out.set(key, { name, path: p });
   };
   try {
     for (const d of readdirSync(join(HOME, ".claude", "projects"))) {
@@ -128,7 +130,7 @@ export function discoverProjects(reg: Registry = readRegistry()): Project[] {
     const top = gitTop(e.dir);
     if (top) add(top);
   }
-  return [...out.values()].sort((a, b) => a.name.localeCompare(b.name));
+  return [...out.values()].sort((a, b) => a.name.localeCompare(b.name) || a.path.localeCompare(b.path));
 }
 
 /**
@@ -150,18 +152,20 @@ function packagesOfProject(project: Project, reg: Registry, projects: Project[])
   return reg.packages.filter((e) => ownerOf(e.dir, projects)?.path === project.path);
 }
 
-export function listStructure(): StructureListResponse {
-  const reg = readRegistry();
+export function listStructure(opts: { registry?: { locked?: string; user?: string } } = {}): StructureListResponse {
+  const reg = readRegistry(opts.registry);
   const registry = { locked: reg.locked, user: reg.user, errors: reg.errors };
   if (reg.fatal) return { status: "could-not-read", reason: reg.fatal, registry, projects: [] };
-  const known = discoverProjects();
+  const known = discoverProjects(reg);
   const projects: StructureProjectListing[] = known.map((p) => {
     const pk = packagesOfProject(p, reg, known);
+    const same = known.filter((q) => q.name === p.name && q.path !== p.path).map((q) => q.path);
     return {
       name: p.name,
       path: p.path,
       hasDesign: pk.length > 0,
       packages: pk.map((e) => ({ dir: e.dir, designId: e.designId, source: e.source })),
+      ...(same.length ? { sameNameAs: same } : {}),
     };
   });
   return { status: "ok", registry, projects };
@@ -235,8 +239,40 @@ interface DriverInput {
   ref: string;
 }
 
+/**
+ * Guard runs at once. Each one archives the repository and loads TypeScript (~1.7 s, several
+ * hundred MB on stave), so requests for several refs must queue rather than all start (#23).
+ */
+export const GUARD_CONCURRENCY = Number(process.env.ANVIDECK_GUARD_CONCURRENCY ?? 2);
+const guardRuns = { active: 0, peak: 0, queued: 0, waiters: [] as (() => void)[] };
+/** Observed concurrency of guard runs since start (or the last reset): for tests and the PR's proof. */
+export function guardRunStats() { return { active: guardRuns.active, peak: guardRuns.peak, queued: guardRuns.queued, limit: GUARD_CONCURRENCY }; }
+export function resetGuardRunStats() { guardRuns.peak = guardRuns.active; guardRuns.queued = 0; }
+
+async function withGuardSlot<T>(fn: () => Promise<T>): Promise<{ value: T; queuedMs: number }> {
+  const q0 = Date.now();
+  if (guardRuns.active >= GUARD_CONCURRENCY) {
+    guardRuns.queued++;
+    await new Promise<void>((r) => guardRuns.waiters.push(r));
+  }
+  const queuedMs = Date.now() - q0;
+  guardRuns.active++;
+  guardRuns.peak = Math.max(guardRuns.peak, guardRuns.active);
+  try {
+    return { value: await fn(), queuedMs };
+  } finally {
+    guardRuns.active--;
+    guardRuns.waiters.shift()?.();
+  }
+}
+
 /** Run the guard's functions under node (as the merge hook runs the guard: structure-merge-hook.js guardAt). */
-function runDriver(input: DriverInput, guardPath: string): Promise<{ json: any; ms: number; stderr: string }> {
+async function runDriver(input: DriverInput, guardPath: string): Promise<{ json: any; ms: number; stderr: string; queuedMs: number }> {
+  const { value, queuedMs } = await withGuardSlot(() => spawnDriver(input, guardPath));
+  return { ...value, queuedMs };
+}
+
+function spawnDriver(input: DriverInput, guardPath: string): Promise<{ json: any; ms: number; stderr: string }> {
   mkdirSync(TMP_ROOT, { recursive: true });
   const t0 = Date.now();
   return new Promise((resolve) => {
@@ -292,6 +328,8 @@ export interface MeasureOptions {
   guardPath?: string;
   /** Which registered package, when the project owns more than one (its dir). */
   package?: string | null;
+  /** Which project, when several share the name (its directory). */
+  path?: string | null;
   /** Registry files to read instead of the lock and the user's — for the tests. */
   registry?: { locked?: string; user?: string };
 }
@@ -305,8 +343,22 @@ export async function readStructure(projectName: string, opts: MeasureOptions = 
   const reg = readRegistry(opts.registry);
   if (reg.fatal) return { status: "could-not-read", project: projectName, refAsked, reason: reg.fatal };
   const known = discoverProjects(reg);
-  const project = known.find((p) => p.name === projectName);
-  if (!project) return { status: "could-not-read", project: projectName, refAsked, reason: `no project named ${projectName} is known (~/.claude/projects or the structure registry)` };
+  const named = known.filter((p) => p.name === projectName);
+  if (!named.length) return { status: "could-not-read", project: projectName, refAsked, reason: `no project named ${projectName} is known (~/.claude/projects or the structure registry)` };
+  // Two projects with this name: the caller names one by path. Picking either would show one
+  // project's design under the other's name (#23).
+  let project = named[0];
+  if (opts.path) {
+    const want = realOr(opts.path);
+    const hit = named.find((p) => realOr(p.path) === want);
+    if (!hit)
+      return { status: "not-measured", project: projectName, refAsked,
+        reason: `${opts.path} is not a project named ${projectName}; projects with that name: ${named.map((p) => p.path).join(", ")}` };
+    project = hit;
+  } else if (named.length > 1) {
+    return { status: "not-measured", project: projectName, refAsked,
+      reason: `${named.length} projects are named ${projectName} — pass ?path=<dir> to name one: ${named.map((p) => p.path).join(", ")}` };
+  }
 
   const pkgs = packagesOfProject(project, reg, known);
   if (!pkgs.length) return readFolders(project, refAsked, t0);
@@ -363,7 +415,8 @@ export async function readStructure(projectName: string, opts: MeasureOptions = 
 function withTiming(r: StructureProjectResponse, kind: "hit" | "miss", ms: number, refAsked: string | null): StructureProjectResponse {
   if (r.status === "no-design") return { ...r, refAsked, timing: { cache: kind, ms } };
   const guardMs = "timing" in r && r.timing ? r.timing.guardMs : null;
-  return { ...r, refAsked, timing: { cache: kind, ms, guardMs } } as StructureProjectResponse;
+  const queuedMs = kind === "miss" && "timing" in r && r.timing ? (r.timing.queuedMs ?? 0) : 0;
+  return { ...r, refAsked, timing: { cache: kind, ms, guardMs, queuedMs } } as StructureProjectResponse;
 }
 
 async function measure(
@@ -376,7 +429,7 @@ async function measure(
   refAsked: string | null,
 ): Promise<StructureProjectResponse> {
   // The guard is handed the resolved commit, so what it measures is exactly what the cache key names.
-  const { json, ms } = await runDriver(
+  const { json, ms, queuedMs } = await runDriver(
     { dir: entry.dir, design: entry.design, baseline: entry.baseline, designId: entry.designId, extractor: entry.extractor, ref: sha },
     guardPath,
   );
@@ -389,7 +442,7 @@ async function measure(
     : undefined;
   if (json.status !== "measured") {
     const r: StructureNotMeasured = { status: "not-measured", project, package: entry, refAsked, reason: json.reason, source: src,
-      timing: { cache: "miss", ms, guardMs: ms } };
+      timing: { cache: "miss", ms, guardMs: ms, queuedMs } };
     if (measuredAt) r.measuredAt = measuredAt;
     return r;
   }
@@ -442,7 +495,7 @@ async function measure(
     extractor: json.extractor,
     typeOnlyImports: json.typeOnlyImports,
     source: src,
-    timing: { cache: "miss", ms, guardMs: ms },
+    timing: { cache: "miss", ms, guardMs: ms, queuedMs },
   };
   return out;
 }

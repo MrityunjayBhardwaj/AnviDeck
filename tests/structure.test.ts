@@ -14,6 +14,12 @@ import {
   readRegistry,
   readStructure,
   safeRef,
+  listStructure,
+  discoverProjects,
+  guardRunStats,
+  resetGuardRunStats,
+  clearStructureCache,
+  GUARD_CONCURRENCY,
 } from "../server/readers/structure";
 import type { StructureMeasured } from "../shared/structure-types";
 
@@ -183,4 +189,57 @@ describe("refs handed to git", () => {
     expect(safeRef("origin/main")).toBe(true);
     expect(safeRef(PR_2271_HEAD)).toBe(true);
   });
+});
+
+// #23: two projects with the same folder name must both be reachable, and asking by name alone
+// must say it is ambiguous rather than pick one. Fixture: two empty git repos both named "proj".
+describe("projects that share a folder name", () => {
+  const F = `${TMP_ROOT}-test-samename`;
+  const reg = { locked: `${F}/no-lock.json`, user: `${F}/user.json` };
+  const setup = () => {
+    rmSync(F, { recursive: true, force: true });
+    for (const x of ["a", "b"]) {
+      mkdirSync(`${F}/${x}/proj/pkg`, { recursive: true });
+      spawnSync("git", ["-C", `${F}/${x}/proj`, "init", "-q"]);
+    }
+    writeFileSync(`${F}/design.json`, "{}");
+    writeFileSync(`${F}/baseline.json`, "{}");
+    writeFileSync(reg.user, JSON.stringify({ packages: ["a", "b"].map((x) => ({ dir: `${F}/${x}/proj/pkg`, design: `${F}/design.json`, baseline: `${F}/baseline.json` })) }));
+  };
+  test("both are listed, each naming the other", () => {
+    setup();
+    try {
+      expect(discoverProjects(readRegistry(reg)).filter((p) => p.name === "proj").map((p) => p.path)).toEqual([`${F}/a/proj`, `${F}/b/proj`]);
+      const l = listStructure({ registry: reg }).projects.filter((p) => p.name === "proj");
+      expect(l.map((p) => p.sameNameAs)).toEqual([[`${F}/b/proj`], [`${F}/a/proj`]]);
+    } finally { rmSync(F, { recursive: true, force: true }); }
+  });
+  test("by name alone: NOT MEASURED, naming both paths; with ?path the named one is used", async () => {
+    setup();
+    try {
+      const r = await readStructure("proj", { registry: reg, ref: "HEAD" });
+      expect(r.status).toBe("not-measured");
+      expect((r as any).reason).toContain(`${F}/a/proj`);
+      expect((r as any).reason).toContain(`${F}/b/proj`);
+      const b = await readStructure("proj", { registry: reg, ref: "HEAD", path: `${F}/b/proj` });
+      expect((b as any).reason ?? "").not.toContain("are named proj");
+      expect((b as any).reason ?? "").toContain(`${F}/b/proj`); // empty repo: "HEAD is not a commit in …/b/proj"
+    } finally { rmSync(F, { recursive: true, force: true }); }
+  });
+  test("must-not-match: a unique name needs no ?path", () => {
+    expect(listStructure().projects.find((p) => p.name === "stave")?.sameNameAs).toBeUndefined();
+  });
+});
+
+// #23: guard runs queue at GUARD_CONCURRENCY; requests for several refs at once must not all start.
+describe("guard runs are limited", () => {
+  control(`three refs at once: at most ${GUARD_CONCURRENCY} run together, the rest wait and say so`, async () => {
+    clearStructureCache();
+    resetGuardRunStats();
+    const rs = await Promise.all(["origin/main", "origin/main~1", "origin/main~2"].map((ref) => readStructure("stave", { ref })));
+    for (const r of rs) expect(r.status).toBe("measured");
+    expect(guardRunStats().peak).toBeLessThanOrEqual(GUARD_CONCURRENCY);
+    expect(guardRunStats().queued).toBe(3 - GUARD_CONCURRENCY);
+    expect(rs.some((r: any) => r.timing.queuedMs > 0)).toBe(true);
+  }, 300_000);
 });

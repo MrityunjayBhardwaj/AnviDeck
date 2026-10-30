@@ -26,6 +26,8 @@ export interface StructureProjectListing {
   path: string;
   hasDesign: boolean;
   packages: { dir: string; designId: string | null; source: RegistrySource }[];
+  /** Other projects with the same folder name; ask for this one with ?path=<path> (#23). */
+  sameNameAs?: string[];
 }
 
 export interface StructureListResponse {
@@ -122,7 +124,7 @@ export interface StructureMeasured {
   extractor: string;
   typeOnlyImports: string;
   source: GuardSource;
-  timing: { cache: "hit" | "miss"; ms: number; guardMs: number | null };
+  timing: { cache: "hit" | "miss"; ms: number; guardMs: number | null; /** waiting for a free guard slot (#23) */ queuedMs?: number };
 }
 
 export interface StructureNotMeasured {
@@ -133,7 +135,7 @@ export interface StructureNotMeasured {
   measuredAt?: MeasuredAt;
   reason: string;
   source?: GuardSource;
-  timing?: { cache: "hit" | "miss"; ms: number; guardMs: number | null };
+  timing?: { cache: "hit" | "miss"; ms: number; guardMs: number | null; queuedMs?: number };
 }
 
 export interface StructureFolder {
