@@ -295,6 +295,7 @@ export function readReplay(sessionId: string, opts: ReplayOptions = {}): ReplayR
   const notes: NoteUsed[] = [];
   const prSeen = new Map<string, { number: number; repo: string; first: number; last: number; line: number }>();
   const repoHints = new Set<string>(); // dirs whose git repos may hold this session's commits
+  const cwdHints = new Set<string>(); // the records' own cwd values (a subset of repoHints)
   let sessionFirst = Infinity;
   let sessionLast = -Infinity;
 
@@ -371,7 +372,10 @@ export function readReplay(sessionId: string, opts: ReplayOptions = {}): ReplayR
           line: i + 1,
           sortMs: at,
         };
-        if (typeof r.cwd === "string") repoHints.add(r.cwd);
+        if (typeof r.cwd === "string") {
+          repoHints.add(r.cwd);
+          cwdHints.add(r.cwd);
+        }
 
         if (r.type === "assistant" && Array.isArray(r.message?.content)) {
           for (const c of r.message.content) {
@@ -606,14 +610,17 @@ export function readReplay(sessionId: string, opts: ReplayOptions = {}): ReplayR
     for (const d of repoHints) {
       if (!existsSync(d)) {
         repoOf.set(d, null);
-        // Worth saying for dirs a command cd'd into (worktrees), not every file's parent.
-        if (cdDirs.has(d)) dirStatus.push({ dir: d, status: "not-found", detail: "directory no longer exists (worktree removed?)" });
+        // Worth saying for where the session ran or cd'd into (worktrees), not every file's parent.
+        if (cdDirs.has(d) || cwdHints.has(d))
+          dirStatus.push({ dir: d, status: "not-found", detail: "directory no longer exists (worktree removed?)" });
         continue;
       }
       const r = run(["git", "-C", d, "rev-parse", "--show-toplevel", "--path-format=absolute", "--git-common-dir"], undefined, 3000);
       const [top, store] = r.ok ? r.out.trim().split("\n") : [];
       if (!top || !store) {
         repoOf.set(d, null);
+        // An existing dir that is not a repo is a definite answer: no commits there.
+        if (cdDirs.has(d) || cwdHints.has(d)) dirStatus.push({ dir: d, status: "none", detail: "not a git repository" });
         continue;
       }
       repoOf.set(d, { top, store });
@@ -653,14 +660,20 @@ export function readReplay(sessionId: string, opts: ReplayOptions = {}): ReplayR
       }
       dirStatus.push({ dir: store, status: n ? "ok" : "none", detail: `${n} commit(s) in the window, all branches` });
     }
+    // "none" only if at least one repository was actually logged; if none could be
+    // resolved (all gone, or not repos), we could not look — never "nothing found".
+    const logged = dirStatus.filter((d) => d.status === "ok" || d.status === "none").length;
     res.sources.git = {
       status: dirStatus.some((d) => d.status === "ok")
         ? "ok"
         : dirStatus.some((d) => d.status === "unreadable")
           ? "unreadable"
-          : "none",
+          : logged
+            ? "none"
+            : "not-found",
       count: allCommits.size,
       dirs: dirStatus,
+      detail: logged ? undefined : "no git repository could be resolved from the session's directories",
     };
   } else if (tPath) {
     res.sources.git = { status: "none", detail: "no time window and no timed records" };

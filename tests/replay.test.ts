@@ -139,6 +139,20 @@ describe("could not read vs nothing found", () => {
     expect(r.steps).toEqual([]);
   });
 
+  // A real session whose working directory (a scratch git repo) has been deleted.
+  const GONE_REPO_SID = "244a9823-fde6-44a2-b007-c681215100dc";
+  test.skipIf(!findTranscript(GONE_REPO_SID))("a session whose repo is gone says git 'not-found', not 'none' (#25)", () => {
+    const r = readReplay(GONE_REPO_SID, { github: false, fullText: false });
+    expect(r.transcript.status).toBe("ok");
+    expect(r.sources.git.status).toBe("not-found");
+    expect(r.sources.git.dirs?.some((d) => d.status === "not-found")).toBe(true);
+  });
+
+  test.skipIf(!noNotesPath)("a session in a live repo with no commits says git 'none'", () => {
+    const r = readReplay(NO_NOTES_SID, { github: false, fullText: false });
+    expect(r.sources.git.status).toBe("none");
+  });
+
   test("an unknown project lists no sessions and says why", () => {
     const r = listReplaySessions("no-such-project-zz9");
     expect(r.status).toBe("not-found");
