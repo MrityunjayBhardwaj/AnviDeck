@@ -5,7 +5,7 @@
 // that has neither. Nothing here writes into stave: the guard measures a commit through a
 // temporary `git archive` under TMP_ROOT and removes it.
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import {
   GUARD_PATH,
@@ -145,6 +145,32 @@ describe("structure map without a design", () => {
     expect(r.files).toBeGreaterThan(0);
     expect(r.folders.find((f) => f.path === ".")!.total).toBe(r.files);
   });
+});
+
+describe("a project with several registered packages", () => {
+  const dir = `${TMP_ROOT}-test-registry`;
+  const user = `${dir}/structure-guard.json`;
+  const registry = { locked: `${dir}/no-lock.json`, user };
+  const OTHER = `${STAVE}/packages/other-for-test`;
+  control("names none: NOT MEASURED, listing the packages — never the first one silently", async () => {
+    const entry = readRegistry().packages.find((e) => e.dir === STAVE_PKG)!;
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(user, JSON.stringify({ packages: [
+      { dir: STAVE_PKG, design: entry.design, baseline: entry.baseline, designId: entry.designId },
+      { dir: OTHER, design: entry.design, baseline: entry.baseline, designId: entry.designId },
+    ] }));
+    try {
+      const r = await readStructure("stave", { ref: "origin/main", registry } as any);
+      expect(r.status).toBe("not-measured");
+      if (r.status !== "not-measured") return;
+      expect(r.reason).toContain(STAVE_PKG);
+      expect(r.reason).toContain(OTHER);
+      const chosen = await readStructure("stave", { ref: "origin/main", registry, package: STAVE_PKG } as any);
+      expect(chosen.status).toBe("measured");
+      expect((chosen as StructureMeasured).package.dir).toBe(STAVE_PKG);
+      expect((chosen as StructureMeasured).package.source).toBe("user");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 180_000);
 });
 
 describe("refs handed to git", () => {

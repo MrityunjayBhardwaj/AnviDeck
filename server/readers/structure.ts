@@ -110,7 +110,7 @@ interface Project { name: string; path: string }
  * Projects as AnviDeck already knows them (~/.claude/projects/<encoded path>), kept only when
  * the decoded path is a directory, plus the git toplevel of every registered package.
  */
-export function discoverProjects(): Project[] {
+export function discoverProjects(reg: Registry = readRegistry()): Project[] {
   const out = new Map<string, Project>();
   const add = (p: string) => {
     const name = p.split("/").pop() || p;
@@ -124,7 +124,6 @@ export function discoverProjects(): Project[] {
       try { if (statSync(decoded).isDirectory()) add(decoded); } catch { /* not a real path */ }
     }
   } catch { /* no projects dir */ }
-  const reg = readRegistry();
   for (const e of reg.packages) {
     const top = gitTop(e.dir);
     if (top) add(top);
@@ -291,6 +290,10 @@ export interface MeasureOptions {
   /** Override registry entry fields — used by the tests to measure against a historical baseline. */
   entry?: Partial<StructurePackageEntry>;
   guardPath?: string;
+  /** Which registered package, when the project owns more than one (its dir). */
+  package?: string | null;
+  /** Registry files to read instead of the lock and the user's — for the tests. */
+  registry?: { locked?: string; user?: string };
 }
 
 export async function readStructure(projectName: string, opts: MeasureOptions = {}): Promise<StructureProjectResponse> {
@@ -299,16 +302,28 @@ export async function readStructure(projectName: string, opts: MeasureOptions = 
   if (refAsked !== null && !safeRef(refAsked))
     return { status: "not-measured", project: projectName, refAsked, reason: `the ref ${JSON.stringify(refAsked)} is not one this reader passes to git` };
 
-  const reg = readRegistry();
+  const reg = readRegistry(opts.registry);
   if (reg.fatal) return { status: "could-not-read", project: projectName, refAsked, reason: reg.fatal };
-  const known = discoverProjects();
+  const known = discoverProjects(reg);
   const project = known.find((p) => p.name === projectName);
   if (!project) return { status: "could-not-read", project: projectName, refAsked, reason: `no project named ${projectName} is known (~/.claude/projects or the structure registry)` };
 
   const pkgs = packagesOfProject(project, reg, known);
   if (!pkgs.length) return readFolders(project, refAsked, t0);
-  // One package per project today (stave/packages/editor). More would need a ?package= choice.
-  const entry: StructurePackageEntry = { ...pkgs[0], ...(opts.entry ?? {}) };
+  // Several packages: the caller names one. Measuring the first would hide the rest behind "measured".
+  let picked = pkgs[0];
+  if (opts.package) {
+    const want = realOr(opts.package);
+    const hit = pkgs.find((e) => realOr(e.dir) === want);
+    if (!hit)
+      return { status: "not-measured", project: projectName, refAsked,
+        reason: `${opts.package} is not a registered package of ${projectName}; its packages: ${pkgs.map((e) => e.dir).join(", ")}` };
+    picked = hit;
+  } else if (pkgs.length > 1) {
+    return { status: "not-measured", project: projectName, refAsked,
+      reason: `${projectName} has ${pkgs.length} registered packages — pass ?package=<dir> to name one: ${pkgs.map((e) => e.dir).join(", ")}` };
+  }
+  const entry: StructurePackageEntry = { ...picked, ...(opts.entry ?? {}) };
 
   const guardPath = opts.guardPath ?? GUARD_PATH;
   const src = guardSource(guardPath);
@@ -332,7 +347,8 @@ export async function readStructure(projectName: string, opts: MeasureOptions = 
 
   const key = JSON.stringify([realOr(entry.dir), sha, designSha, baselineSha, src.guard.sha256, src.rules?.sha256 ?? null, entry.designId, entry.extractor]);
   const hit = cache.get(key);
-  if (hit) return withTiming(hit, "hit", Date.now() - t0, refAsked);
+  // The verdict depends only on the key; who asked, and through which registry entry, is this request's.
+  if (hit) return withTiming({ ...hit, project: projectName, package: entry } as StructureProjectResponse, "hit", Date.now() - t0, refAsked);
   let job = inflight.get(key);
   if (!job) {
     job = measure(projectName, entry, sha, chosen, src, guardPath, refAsked).finally(() => inflight.delete(key));

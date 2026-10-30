@@ -13,7 +13,10 @@ structure.get("/", (c) => {
 });
 
 structure.get("/:project", async (c) => {
-  const r = await readStructure(c.req.param("project"), { ref: c.req.query("ref") ?? null });
+  const r = await readStructure(c.req.param("project"), {
+    ref: c.req.query("ref") ?? null,
+    package: c.req.query("package") ?? null,
+  });
   // 200 for every answer the reader could give, including "not measured" and "nothing blocked":
   // the status field says which. 404 only for a project nobody knows.
   const unknown = r.status === "could-not-read" && /^no project named /.test(r.reason);
