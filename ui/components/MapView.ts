@@ -1136,10 +1136,61 @@ function setProject(name: string) {
   draw();
 }
 
+// Drag state and the window listeners belong to the module, not to one mount: the
+// listeners are added once and act on whichever map is in the page now.
+let drag: { x: number; y: number; cx: number; cy: number } | null = null;
+let moved = false;
+let windowWired = false;
+
+function wireWindow() {
+  if (windowWired) return;
+  windowWired = true;
+  window.addEventListener("pointermove", (e) => {
+    if (!drag || !root?.isConnected) return;
+    const dx = e.clientX - drag.x;
+    const dy = e.clientY - drag.y;
+    if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
+    if (moved) {
+      S.cam.x = drag.cx - dx / S.cam.k;
+      S.cam.y = drag.cy - dy / S.cam.k;
+      applyCamera();
+    }
+  });
+  window.addEventListener("pointerup", (e) => {
+    if (!drag) return;
+    const wasDrag = moved;
+    drag = null;
+    const svg = root?.querySelector(".map-svg");
+    if (wasDrag || !root?.isConnected || !svg) return;
+    const target = e.target as Element | null;
+    if (!target || !svg.contains(target)) return;
+    const tile = target.closest<SVGGElement>("[data-proj]");
+    if (tile) {
+      setProject(tile.dataset.proj!);
+      return;
+    }
+    const cell = target.closest<SVGGElement>("[data-cell]");
+    if (cell && S.zoom === "files") {
+      S.sel = { kind: "file", path: cell.dataset.cell! };
+      draw();
+      return;
+    }
+    const blk = target.closest<SVGGElement>("[data-block]");
+    if (blk) {
+      S.sel = { kind: "block", id: blk.dataset.block! };
+      draw();
+      return;
+    }
+    if (S.sel) {
+      S.sel = null;
+      draw();
+    }
+  });
+}
+
 function wire(view: HTMLElement) {
   const svg = view.querySelector<SVGSVGElement>(".map-svg")!;
-  let drag: { x: number; y: number; cx: number; cy: number } | null = null;
-  let moved = false;
+  wireWindow();
   let raf = 0;
   const redrawDyn = () => {
     if (raf) return;
@@ -1174,46 +1225,6 @@ function wire(view: HTMLElement) {
   svg.addEventListener("pointerdown", (e) => {
     drag = { x: e.clientX, y: e.clientY, cx: S.cam.x, cy: S.cam.y };
     moved = false;
-  });
-  window.addEventListener("pointermove", (e) => {
-    if (!drag || !root?.isConnected) return;
-    const dx = e.clientX - drag.x;
-    const dy = e.clientY - drag.y;
-    if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
-    if (moved) {
-      S.cam.x = drag.cx - dx / S.cam.k;
-      S.cam.y = drag.cy - dy / S.cam.k;
-      applyCamera();
-    }
-  });
-  window.addEventListener("pointerup", (e) => {
-    if (!drag) return;
-    const wasDrag = moved;
-    drag = null;
-    if (wasDrag || !root?.isConnected) return;
-    const target = e.target as Element | null;
-    if (!target || !svg.contains(target)) return;
-    const tile = target.closest<SVGGElement>("[data-proj]");
-    if (tile) {
-      setProject(tile.dataset.proj!);
-      return;
-    }
-    const cell = target.closest<SVGGElement>("[data-cell]");
-    if (cell && S.zoom === "files") {
-      S.sel = { kind: "file", path: cell.dataset.cell! };
-      draw();
-      return;
-    }
-    const blk = target.closest<SVGGElement>("[data-block]");
-    if (blk) {
-      S.sel = { kind: "block", id: blk.dataset.block! };
-      draw();
-      return;
-    }
-    if (S.sel) {
-      S.sel = null;
-      draw();
-    }
   });
   svg.addEventListener("keydown", (e) => {
     const tile = (e.target as Element).closest?.<SVGGElement>("[data-proj]");
