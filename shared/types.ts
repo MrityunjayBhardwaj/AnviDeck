@@ -298,7 +298,7 @@ export interface ProjectSummary {
   /** Number of Ground Truth docs found */
   groundTruthDocCount: number;
   /** Per source: could it be read, or was there genuinely nothing? */
-  readStatus?: { catalogues: ReadReport; memory: ReadReport };
+  readStatus?: { catalogues: ReadReport; memory: ReadReport; groundTruth?: ReadReport };
 }
 
 /** A live (currently-running) Claude Code session. */

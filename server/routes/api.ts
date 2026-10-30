@@ -111,13 +111,18 @@ api.get("/projects", async (c) => {
     }
     const groundingPercent = totalEntries > 0 ? Math.round((groundedEntries / totalEntries) * 100) : 0;
 
-    // Count Ground Truth docs
+    // Count Ground Truth docs. An unreadable ref/ dir is reported, not shown as 0 docs.
     let groundTruthDocCount = 0;
-    try {
-      const refDir = proj.decoded ? resolveDir(proj.decoded, "ref") : null;
-      const refFiles = refDir ? readdirSync(refDir) : [];
-      groundTruthDocCount = refFiles.filter((f: string) => f.startsWith("GROUND_TRUTH_") && f.endsWith(".md")).length;
-    } catch {}
+    const refDir = proj.decoded ? resolveDir(proj.decoded, "ref") : null;
+    let gtReport: ReadReport = report(0, [], refDir ?? undefined);
+    if (refDir) {
+      try {
+        groundTruthDocCount = readdirSync(refDir).filter((f: string) => f.startsWith("GROUND_TRUTH_") && f.endsWith(".md")).length;
+        gtReport = report(groundTruthDocCount, [], refDir);
+      } catch (e) {
+        if (!isAbsent(e)) gtReport = report(0, [errText(refDir, e)], refDir);
+      }
+    }
 
     summaries.push({
       name: proj.name,
@@ -128,7 +133,7 @@ api.get("/projects", async (c) => {
       ...signals,
       groundingPercent,
       groundTruthDocCount,
-      readStatus: { catalogues: cat.report, memory: mem.report },
+      readStatus: { catalogues: cat.report, memory: mem.report, groundTruth: gtReport },
     });
   }
 
