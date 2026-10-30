@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll } from "bun:test";
-import { findTranscript, readReplay, shellWriteReason, listReplaySessions, mergeEvidence } from "../server/readers/replay";
+import { findTranscript, readReplay, shellWriteReason, shellWriteScope, listReplaySessions, mergeEvidence } from "../server/readers/replay";
 import replayRoutes from "../server/routes/replay";
 import type { ReplayResponse } from "../shared/replay-types";
 
@@ -68,6 +68,15 @@ describe.skipIf(!controlPath)("stave control session 811b15d0, 2026-10-30 00:00â
       expect(s, `Bash step at ${t}`).toBeDefined();
       expect(s!.mayEditFiles?.source).toBe("guessed");
     }
+  });
+
+  test("only the 5 real code changes are scope 'project'; scratch writes and links are not (#27)", () => {
+    const flagged = r.steps.filter((x) => x.mayEditFiles);
+    const project = flagged.filter((x) => x.mayEditFiles!.scope === "project").map((x) => hms(x.ts));
+    expect(project).toEqual(["09:26:22", "09:27:07", "09:27:21", "11:25:06", "11:25:14"]);
+    const scope = (t: string) => flagged.find((x) => hms(x.ts) === t)?.mayEditFiles?.scope;
+    expect(scope("09:14:59")).toBe("link");
+    for (const t of ["09:15:10", "09:26:25", "11:25:24", "11:26:26"]) expect(scope(t), t).toBe("scratch");
   });
 
   test("untimed records are counted and placed, not dropped", () => {
@@ -191,6 +200,16 @@ describe("shell write guess", () => {
     expect(shellWriteReason("git status --short 2>&1")).toBeNull();
     expect(shellWriteReason("grep -rn foo . > /dev/null")).toBeNull();
     expect(shellWriteReason("cat a | head -5")).toBeNull();
+  });
+  test("says where a write lands: scratch, link or project (#27)", () => {
+    // must-not-fire as a code change: a scratchpad redirect through a variable
+    expect(shellWriteScope("cd /repo && S=/private/tmp/x/scratchpad; npx vitest run > $S/out.txt 2>&1")).toBe("scratch");
+    expect(shellWriteScope("cd /tmp/scratch && python3 - <<'EOF'\nopen('a.md','w').write(s)\nEOF")).toBe("scratch");
+    expect(shellWriteScope("cd /repo && ln -s ../x node_modules")).toBe("link");
+    // must fire: any target inside the project wins over scratch targets
+    expect(shellWriteScope("cd /repo && S=/tmp/s; F=src/a.ts; cp $F $S/b.ts && git show HEAD:$F > $F")).toBe("project");
+    expect(shellWriteScope("cd /repo/src && git mv a.ts b.ts")).toBe("project");
+    expect(shellWriteScope("cd /repo/src && python3 - <<'EOF'\nopen(p,'w').write(s)\nEOF")).toBe("project");
   });
 });
 

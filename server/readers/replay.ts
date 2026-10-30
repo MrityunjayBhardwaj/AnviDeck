@@ -206,6 +206,55 @@ export function shellWriteReason(cmd: string): string | null {
   return null;
 }
 
+/** Directories whose files are throwaway (session scratchpads, temp output), never project code. */
+const SCRATCH_ROOTS = ["/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/"];
+const isScratch = (p: string) => SCRATCH_ROOTS.some((r) => p === r.slice(0, -1) || p.startsWith(r));
+
+/**
+ * Where a guessed shell write lands: "project" (could be a code change), "scratch"
+ * (temp/scratchpad only) or "link" (only creates links). Targets are found from
+ * redirects, cp/mv/tee/touch arguments and `open(<path>, 'w')`; `$VAR` is expanded
+ * from `VAR=value` assignments in the same command, and relative targets resolve
+ * against the last `cd` before them. When no target can be read (git mv, sed -i,
+ * write_text…), the directory the command ran in decides. Still a guess.
+ */
+export function shellWriteScope(cmd: string): "project" | "scratch" | "link" {
+  const vars = new Map<string, string>();
+  for (const m of cmd.matchAll(/(?:^|[\s;&|(])([A-Za-z_]\w*)=(['"]?)([^\s'";&|]+)\2/g)) vars.set(m[1], m[3]);
+  const expand = (s: string) => s.replace(/\$\{?([A-Za-z_]\w*)\}?/g, (all, v) => vars.get(v) ?? all);
+  const cds: { at: number; dir: string }[] = [];
+  let cwd = "";
+  for (const m of cmd.matchAll(/(?:^|[;&|]\s*|&&\s*)cd\s+(['"]?)([^\s'";&|]+)\1/g)) {
+    const d = expand(m[2]);
+    cwd = d.startsWith("/") ? d : cwd ? join(cwd, d) : d;
+    cds.push({ at: m.index!, dir: cwd });
+  }
+  const cwdAt = (i: number) => [...cds].reverse().find((c) => c.at < i)?.dir ?? "";
+  const resolve = (t: string, i: number) => {
+    const e = expand(t.replace(/^['"]|['"]$/g, ""));
+    return e.startsWith("/") ? e : join(cwdAt(i) || ".", e);
+  };
+  const targets: string[] = [];
+  for (const m of cmd.matchAll(/(?:^|[^0-9&>])>>?\s*([^\s&;|<>]+)/g)) {
+    if (m[1] !== "/dev/null" && !m[1].startsWith("&")) targets.push(resolve(m[1], m.index!));
+  }
+  for (const m of cmd.matchAll(/(?:^|[;&|(]\s*|&&\s*)(cp|mv)\s+([^;&|\n]+)/g)) {
+    const args = m[2].trim().split(/\s+/).filter((a) => !a.startsWith("-"));
+    if (args.length >= 2) targets.push(resolve(args[args.length - 1], m.index!));
+  }
+  for (const m of cmd.matchAll(/(?:^|[;&|(]\s*|&&\s*)(tee|touch)\s+([^;&|\n]+)/g)) {
+    for (const a of m[2].trim().split(/\s+/).filter((x) => !x.startsWith("-"))) targets.push(resolve(a, m.index!));
+  }
+  for (const m of cmd.matchAll(/open\(\s*(['"])([^'"]+)\1\s*,\s*['"][wa]b?\+?['"]/g)) targets.push(resolve(m[2], m.index!));
+  const onlyLinks = /(^|[;&|(]\s*|&&\s*)ln\s/.test(cmd) && targets.length === 0 && !SHELL_WRITE_PATTERNS.slice(0, 5).some(([re]) => re.test(cmd));
+  if (onlyLinks) return "link";
+  // A write whose target could not be read (open(p,'w') with p a variable, git mv…) lands where the command ran.
+  const opaque = SHELL_WRITE_PATTERNS.slice(0, 5).some(([re]) => re.test(cmd)) && !/open\(\s*['"]/.test(cmd);
+  if (opaque || /open\(\s*[A-Za-z_]/.test(cmd)) targets.push(cwd || ".");
+  if (targets.length === 0) targets.push(cwd || ".");
+  return targets.every((t) => isScratch(t)) ? "scratch" : "project";
+}
+
 /** `cd <abs path>` targets in a command (worktree hints; record cwd is often the main checkout). */
 function cdTargets(cmd: string): string[] {
   const out: string[] = [];
@@ -402,7 +451,7 @@ export function readReplay(sessionId: string, opts: ReplayOptions = {}): ReplayR
             if (command) {
               step.command = command;
               const why = shellWriteReason(command);
-              if (why) step.mayEditFiles = { source: "guessed", reason: why };
+              if (why) step.mayEditFiles = { source: "guessed", reason: why, scope: shellWriteScope(command) };
               for (const d of cdTargets(command)) repoHints.add(d);
             }
             raw.push(step);

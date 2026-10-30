@@ -67,7 +67,12 @@ export interface ReplayStep {
    * A guess, labelled as one: the command text looks like it writes files
    * (e.g. `git mv`, `sed -i`, a python `open(...,'w')`). `reason` names the match.
    */
-  mayEditFiles?: { source: "guessed"; reason: string };
+  /**
+   * A guess that this shell command writes files. `scope` says where: "project"
+   * (possibly a code change), "scratch" (temp/scratchpad only) or "link" (only
+   * creates links). Only "project" should be shown as a possible code change.
+   */
+  mayEditFiles?: { source: "guessed"; reason: string; scope: "project" | "scratch" | "link" };
   /** Injections attached to this tool call (by toolUseID). */
   noteIds?: number[];
   /** Extra detail for hook-meter / hook-log steps. */
