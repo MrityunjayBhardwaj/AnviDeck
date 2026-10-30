@@ -21,6 +21,7 @@ import {
 import { BrainView, addBrainHookEvent, addBrainRouteEvent } from "./components/BrainView";
 import { GitHubTrace } from "./components/GitHubTrace";
 import { LiveSessions } from "./components/LiveSessions";
+import { MapView } from "./components/MapView";
 import type {
   ProjectSummary,
   ProjectState,
@@ -44,7 +45,7 @@ export interface Nav {
 }
 
 // State
-type ViewName = "home" | "project" | "trace" | "system-lens" | "cross-project" | "routing" | "brain" | "github-trace" | "sessions";
+type ViewName = "home" | "project" | "trace" | "system-lens" | "cross-project" | "routing" | "brain" | "github-trace" | "sessions" | "map";
 let currentBrainProject: string | null = null;
 let currentView: ViewName = "home";
 let projects: ProjectSummary[] = [];
@@ -158,6 +159,7 @@ function renderSidebar() {
   const views: { id: ViewName; label: string; extra?: string }[] = [
     { id: "home", label: "Command Center" },
     { id: "sessions", label: "Live Sessions" },
+    { id: "map", label: "Map" },
     { id: "trace", label: "Live Trace", extra: wsConnected ? '<span class="ws-indicator connected"></span>' : '<span class="ws-indicator"></span>' },
     { id: "brain", label: "Brain" },
     { id: "system-lens", label: "System Lens" },
@@ -229,6 +231,8 @@ function renderMain() {
     mainEl!.appendChild(CrossProject(nav));
   } else if (currentView === "sessions") {
     mainEl!.appendChild(LiveSessions(nav));
+  } else if (currentView === "map") {
+    mainEl!.appendChild(MapView(nav));
   } else if (currentView === "routing") {
     mainEl!.appendChild(RoutingView(nav));
   } else if (currentView === "github-trace") {
@@ -285,6 +289,7 @@ async function onTimelineChange(state: TimelineState) {
 }
 
 function navigateTo(view: ViewName) {
+  if (view !== "map" && location.hash.startsWith("#map")) history.replaceState(null, "", location.pathname);
   currentView = view;
   currentProject = null;
   diffContent = null;
@@ -363,6 +368,7 @@ async function init() {
     ]);
     projects = projectsData;
     timelinePoints = timeline;
+    if (location.hash.startsWith("#map")) currentView = "map"; // e.g. #map?project=stave&zoom=files
     render();
   } catch (err) {
     mainEl!.innerHTML = `<div class="error-state">Failed to connect to AnviDeck server. Is it running on port 3000?</div>`;
