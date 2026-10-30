@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll } from "bun:test";
-import { findTranscript, readReplay, shellWriteReason, listReplaySessions } from "../server/readers/replay";
+import { findTranscript, readReplay, shellWriteReason, listReplaySessions, mergeEvidence } from "../server/readers/replay";
 import replayRoutes from "../server/routes/replay";
 import type { ReplayResponse } from "../shared/replay-types";
 
@@ -157,6 +157,25 @@ describe("could not read vs nothing found", () => {
     const r = listReplaySessions("no-such-project-zz9");
     expect(r.status).toBe("not-found");
     expect(r.sessions).toEqual([]);
+  });
+});
+
+// The session that ran `gh pr merge 2271` (17:44:27Z, 2026-10-30).
+const MERGER_SID = "a65698cb-7b6e-4c11-81f0-4d5b228e5476";
+describe.skipIf(!findTranscript(MERGER_SID))("merge evidence is confirmed by a transcript, not a meter row (#26)", () => {
+  test("the real merge of #2271 is confirmed in the merging session", () => {
+    const m = mergeEvidence(2271, "MrityunjayBhardwaj/Stave", "2026-10-30T17:44:30Z");
+    expect(m.how).toBe("claude-session");
+    expect(m.sessionId).toBe(MERGER_SID);
+    expect(m.commandAt?.slice(11, 19)).toBe("17:44:27");
+  });
+  test("a time with only an unrelated merge-hook run (17:26:14) is not called a Claude merge", () => {
+    const m = mergeEvidence(2271, "MrityunjayBhardwaj/Stave", "2026-10-30T17:26:20Z");
+    expect(m.how).not.toBe("claude-session");
+  });
+  test("another repo's PR with the same number is not confirmed", () => {
+    const m = mergeEvidence(2271, "someone/other-repo", "2026-10-30T17:44:30Z");
+    expect(m.how).not.toBe("claude-session");
   });
 });
 

@@ -128,15 +128,21 @@ export interface PrInfo {
 /** How a PR was merged, as far as local evidence shows. */
 export interface MergeEvidence {
   /**
-   *   claude-session   a structure-merge-hook run was metered near mergedAt
+   *   claude-session   a session's transcript shows `gh pr merge` for this PR
+   *                    shortly before mergedAt, and the merge hook was metered
+   *                    in that session (a meter row alone is not enough: the
+   *                    hook also runs on unrelated Bash calls)
    *   no-hook-run      merged, but no merge-hook run was metered near mergedAt
    *                    (e.g. merged on the GitHub web page)
    *   not-merged       PR not merged
-   *   unknown          could not look (meter unreadable, no mergedAt)
+   *   unknown          could not tell (meter unreadable, or candidate sessions
+   *                    whose transcripts are gone or show no merge command)
    */
   how: "claude-session" | "no-hook-run" | "not-merged" | "unknown";
   sessionId?: string;
   hookRunAt?: string;
+  /** When the confirming `gh pr merge` command ran (transcript timestamp). */
+  commandAt?: string;
   /** Did the merge hook write a judgement row for this PR in merges.jsonl? */
   judgementRow?: "found" | "none" | "could-not-read";
   detail?: string;

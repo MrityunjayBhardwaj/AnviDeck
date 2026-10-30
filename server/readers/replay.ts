@@ -771,7 +771,7 @@ export function readReplay(sessionId: string, opts: ReplayOptions = {}): ReplayR
           info.changedFiles = j.changedFiles;
           info.headCommittedInWindow = committedShas.has(j.headRefOid);
           if (info.headCommittedInWindow && Array.isArray(j.files)) prFiles.set(p.number, j.files);
-          info.merge = mergeEvidence(p.number, info.mergedAt ?? null);
+          info.merge = mergeEvidence(p.number, p.repo, info.mergedAt ?? null);
         } catch (e) {
           ghFailures++;
           info.read = { status: "unreadable", detail: (e as Error).message };
@@ -850,33 +850,42 @@ function designRulesLabel(pr: PrInfo | undefined): string {
 }
 
 /**
- * How a PR was merged, from local evidence: a structure-merge-hook.js run in
- * the hook meter near `mergedAt` (any session), and a judgement row in merges.jsonl.
- * Registration `"if": "Bash(gh pr merge:*)"` in ~/.claude/settings.json means a
- * metered run implies `gh pr merge` was run in a Claude session.
+ * How a PR was merged, from local evidence.
+ *
+ * A structure-merge-hook.js run in the hook meter is only a POINTER to a
+ * candidate session: the hook is registered `"if": "Bash(gh pr merge:*)"`
+ * (~/.claude/settings.json), but a Claude Code version that ignores `if` runs it
+ * for every Bash call (structure-merge-hook.js header, "WHAT IT COSTS"), and the
+ * meter holds thousands of its rows. So the merge is confirmed only by the
+ * candidate session's own transcript: a Bash `gh pr merge` naming this PR,
+ * shortly before GitHub's `mergedAt`.
  */
-function mergeEvidence(pr: number, mergedAt: string | null): MergeEvidence {
+export function mergeEvidence(pr: number, repo: string, mergedAt: string | null): MergeEvidence {
   if (!mergedAt) return { how: "not-merged" };
   const mm = Date.parse(mergedAt);
+  if (Number.isNaN(mm)) return { how: "unknown", detail: `unreadable mergedAt "${mergedAt}"` };
+  const BEFORE = 600000; // a merge command may wait on checks; look 10 min back
+  const AFTER = 60000; // clocks differ (local vs GitHub)
   let files: string[];
   try {
     files = readdirSync(METER_DIR).filter((f) => f.endsWith(".jsonl"));
   } catch {
     return { how: "unknown", detail: `could not read ${METER_DIR}` };
   }
-  let hit: { sid: string; ts: string } | null = null;
+  // 1. Candidate sessions: any merge-hook run in the window.
+  const candidates = new Map<string, string>(); // sid → nearest hook-run ts
   for (const f of files) {
     const p = join(METER_DIR, f);
     try {
-      if (statSync(p).mtimeMs < mm - 120000) continue; // last written before the merge
+      if (statSync(p).mtimeMs < mm - BEFORE) continue; // last written before the window
       for (const l of readFileSync(p, "utf8").split("\n")) {
         if (!l.includes("structure-merge-hook")) continue;
         try {
           const r = JSON.parse(l);
           const d = mm - Date.parse(r.ts);
-          // The hook starts before `gh pr merge` runs; mergedAt is GitHub's clock.
-          if (d >= -10000 && d <= 120000 && (!hit || Math.abs(d) < Math.abs(mm - Date.parse(hit.ts))))
-            hit = { sid: String(r.sid), ts: r.ts };
+          if (d < -AFTER || d > BEFORE || typeof r.sid !== "string") continue;
+          const prev = candidates.get(r.sid);
+          if (!prev || Math.abs(d) < Math.abs(mm - Date.parse(prev))) candidates.set(r.sid, r.ts);
         } catch {
           /* torn row */
         }
@@ -885,15 +894,78 @@ function mergeEvidence(pr: number, mergedAt: string | null): MergeEvidence {
       /* unreadable meter file: skip */
     }
   }
-  if (!hit) return { how: "no-hook-run", detail: "no structure-merge-hook.js run metered within 2 min before mergedAt" };
-  let judgementRow: MergeEvidence["judgementRow"] = "none";
+  if (candidates.size === 0)
+    return { how: "no-hook-run", detail: "no structure-merge-hook.js run metered in the 10 min before mergedAt (merged outside a Claude session?)" };
+
+  // 2. Confirm in each candidate's transcript.
+  const prRe = new RegExp(`(^|[^0-9])${pr}([^0-9]|$)`);
+  const repoName = repo.split("/").pop()?.toLowerCase() ?? "";
+  const unverifiable: string[] = [];
+  for (const [sid, hookTs] of [...candidates].sort((a, b) => Math.abs(mm - Date.parse(a[1])) - Math.abs(mm - Date.parse(b[1])))) {
+    const t = isValidSid(sid) ? findTranscript(sid) : null;
+    if (!t) {
+      unverifiable.push(sid);
+      continue;
+    }
+    let text: string;
+    try {
+      text = readFileSync(t, "utf8");
+    } catch {
+      unverifiable.push(sid);
+      continue;
+    }
+    for (const l of text.split("\n")) {
+      if (!l.includes("gh pr merge")) continue;
+      let r: any;
+      try {
+        r = JSON.parse(l);
+      } catch {
+        continue;
+      }
+      const at = Date.parse(r?.timestamp);
+      if (r?.type !== "assistant" || Number.isNaN(at) || mm - at < -AFTER || mm - at > BEFORE) continue;
+      for (const c of r.message?.content ?? []) {
+        const cmd = c?.type === "tool_use" ? c.input?.command : null;
+        if (typeof cmd !== "string") continue;
+        for (const seg of cmd.split(/&&|\|\||;|\n/)) {
+          if (!/\bgh\s+pr\s+merge\b/.test(seg) || !prRe.test(seg)) continue;
+          // A --repo/-R flag must name this repo; without one the cwd decides (accepted).
+          const rm = seg.match(/(?:--repo|-R)[=\s]+(\S+)/);
+          if (rm && !rm[1].toLowerCase().endsWith(repoName)) continue;
+          return {
+            how: "claude-session",
+            sessionId: sid,
+            hookRunAt: hookTs,
+            commandAt: r.timestamp,
+            judgementRow: judgementRowFor(pr),
+          };
+        }
+      }
+    }
+  }
+  return {
+    how: "unknown",
+    detail:
+      `merge-hook runs were metered near mergedAt in ${candidates.size} session(s), but no transcript shows ` +
+      `\`gh pr merge\` for #${pr}` + (unverifiable.length ? `; ${unverifiable.length} transcript(s) not found` : ""),
+  };
+}
+
+function judgementRowFor(pr: number): MergeEvidence["judgementRow"] {
   try {
     const rows = readFileSync(MERGE_LOG, "utf8").split("\n").filter(Boolean);
-    if (rows.some((l) => { try { return JSON.parse(l).pr === pr; } catch { return false; } })) judgementRow = "found";
+    return rows.some((l) => {
+      try {
+        return JSON.parse(l).pr === pr;
+      } catch {
+        return false;
+      }
+    })
+      ? "found"
+      : "none";
   } catch {
-    judgementRow = "could-not-read";
+    return "could-not-read";
   }
-  return { how: "claude-session", sessionId: hit.sid, hookRunAt: hit.ts, judgementRow };
 }
 
 export type { StepSource, SourceStatus, ReplaySessionSummary };
