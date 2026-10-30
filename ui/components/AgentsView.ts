@@ -168,13 +168,21 @@ function loadList(project: string): void {
     .finally(paint);
 }
 
+/** When live status was last read (ISO, UTC); printed beside the ranking. */
+let liveReadAt: string | null = null;
+
+/** Read live status. Called each time the view opens, so a revisit is not stale. */
 function loadLive(): void {
   if (liveRequested) return;
   liveRequested = true;
   getJson<LiveSession[]>("/api/sessions")
     .then((data) => (S.live = { status: "ok", data }))
     .catch((e) => (S.live = { status: "error", error: String(e?.message ?? e) }))
-    .finally(paint);
+    .finally(() => {
+      liveRequested = false;
+      liveReadAt = new Date().toISOString();
+      paint();
+    });
 }
 
 const queue: (() => Promise<void>)[] = [];
@@ -597,6 +605,7 @@ function sessionTab(ranked: Ranked[], sel: Ranked | undefined, load: Load<Replay
     <div class="ag-signals">
       <div><b>Ranked by:</b> waiting on you (live status) › ready for review (open PR, GitHub) › working (live status: busy) › running › not running (newest first).</div>
       <div><b>Not available:</b> deadline (no source records one). Open PRs are checked only for running sessions and the selected one.</div>
+      <div>${liveReadAt ? `Live status read at ${utc(liveReadAt)} (~/.claude/sessions); re-read each time this view opens.` : "Reading live status…"}</div>
     </div>
     ${liveNote}
     <div class="ag-prios">${rows}</div>
