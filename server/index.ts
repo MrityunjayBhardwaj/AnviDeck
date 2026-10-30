@@ -13,6 +13,7 @@ const app = new Hono();
 app.use("/*", cors());
 
 // Mount API routes
+app.route("/api/structure", (await import("./routes/structure")).default);
 app.route("/api", api);
 
 // Mount WebSocket route
