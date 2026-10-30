@@ -142,6 +142,8 @@ export interface RoutingFileInfo {
   name: string;
   sizeBytes: number;
   estimatedTokens: number;
+  /** False when the file could not be read (size then shows 0). */
+  readable?: boolean;
 }
 
 export interface RoutingTier {
@@ -156,6 +158,8 @@ export interface RoutingTableEntry {
   activity: string;
   files: string[];
   catalogues: string[];
+  /** Other things the row names (e.g. "GROUND_TRUTH_*.md"). */
+  other?: string[];
   totalTokens: number;
   fileDetails: RoutingFileInfo[];
 }
@@ -163,6 +167,8 @@ export interface RoutingTableEntry {
 export interface RoutingArchitecture {
   tiers: RoutingTier[];
   routingTable: RoutingTableEntry[];
+  /** Where the routing table was read from and whether it parsed. */
+  source?: { path: string; status: "ok" | "unreadable" | "unparsed"; error?: string };
   totalCapacity: number;
 }
 

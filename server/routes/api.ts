@@ -16,6 +16,7 @@ import {
 } from "../readers/git-history";
 import { readGroundingStatus } from "../readers/ground-truth";
 import { readLiveSessions } from "../readers/sessions";
+import { readRoutingTable, alwaysLoadedFiles } from "../readers/routing";
 import { discoverProjects, type DiscoveredProject } from "../readers/projects";
 import { resolveDir } from "../../shared/anvi-paths";
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -189,38 +190,27 @@ api.get("/diff/:from/:to", async (c) => {
   return c.json({ from, to, diff });
 });
 
-// GET /api/routing-architecture — three-tier context architecture with file sizes
+// GET /api/routing-architecture — three-tier context architecture with file sizes.
+// Tier 1 and the routing table are derived from ~/.claude/CLAUDE.md at request
+// time (see readers/routing). `source` reports whether that parse succeeded;
+// when it did not, routingTable is empty and source.error says why.
 api.get("/routing-architecture", async (c) => {
   const home = process.env.HOME ?? "/Users/mrityunjaybhardwaj";
-  const anviDir = join(home, ".claude", "anvi", "cognitive-os");
-  const claudeMdPath = join(home, ".claude", "CLAUDE.md");
 
   function fileInfo(filePath: string, displayName?: string) {
+    const name = displayName ?? filePath.split("/").pop() ?? filePath;
     try {
-      const stat = statSync(filePath);
-      const sizeBytes = stat.size;
-      const estimatedTokens = Math.round(sizeBytes / 4);
-      return {
-        path: filePath,
-        name: displayName ?? filePath.split("/").pop() ?? filePath,
-        sizeBytes,
-        estimatedTokens,
-      };
+      const sizeBytes = statSync(filePath).size;
+      return { path: filePath, name, sizeBytes, estimatedTokens: Math.round(sizeBytes / 4), readable: true };
     } catch {
-      return {
-        path: filePath,
-        name: displayName ?? filePath.split("/").pop() ?? filePath,
-        sizeBytes: 0,
-        estimatedTokens: 0,
-      };
+      return { path: filePath, name, sizeBytes: 0, estimatedTokens: 0, readable: false };
     }
   }
 
-  // Tier 1: Always loaded
-  const tier1Files = [
-    fileInfo(claudeMdPath, "CLAUDE.md (global)"),
-    fileInfo(join(anviDir, "base-layer.md"), "base-layer.md"),
-  ];
+  // Tier 1: always loaded — CLAUDE.md and everything it @-imports.
+  const tier1Files = alwaysLoadedFiles().map((f, i) =>
+    fileInfo(f.path, i === 0 ? "CLAUDE.md (global)" : undefined)
+  );
 
   // Tier 2: Hook injection (dynamic, no static files)
   const tier2Files = [
@@ -232,76 +222,29 @@ api.get("/routing-architecture", async (c) => {
     },
   ];
 
-  // Tier 3: Per-activity routing
-  const routingTable = [
-    {
-      activity: "Debugging",
-      files: ["adaptive-observation.md", "diagnose.md"],
-      catalogues: ["hetvabhasa.md"],
-    },
-    {
-      activity: "Planning",
-      files: ["dharana-spec.md", "design.md"],
-      catalogues: ["dharana.md"],
-    },
-    {
-      activity: "Implementing",
-      files: ["dhyana-spec.md"],
-      catalogues: ["dharana.md", "vyapti.md", "krama.md"],
-    },
-    {
-      activity: "Verifying",
-      files: ["adaptive-observation.md", "review.md"],
-      catalogues: ["dharana.md"],
-    },
-    {
-      activity: "Resuming",
-      files: ["dhyana-spec.md", "dharana-spec.md"],
-      catalogues: ["dharana.md"],
-    },
-  ];
+  // Tier 3: per-activity routing, parsed from CLAUDE.md.
+  const { routes, source } = readRoutingTable();
 
-  // Build tier 3 file list (unique)
-  const tier3FileNames = new Set<string>();
-  for (const route of routingTable) {
-    for (const f of route.files) tier3FileNames.add(f);
+  const tier3ByPath = new Map<string, ReturnType<typeof fileInfo>>();
+  for (const route of routes) {
+    route.filePaths.forEach((fp, i) => {
+      if (!tier3ByPath.has(fp)) tier3ByPath.set(fp, fileInfo(fp, route.files[i]));
+    });
   }
-
-  const tier3Files = [...tier3FileNames].map((f) => {
-    // Try modes/ subdirectory first, then root
-    const modesPath = join(anviDir, "modes", f);
-    const rootPath = join(anviDir, f);
-    try {
-      statSync(modesPath);
-      return fileInfo(modesPath, f);
-    } catch {
-      return fileInfo(rootPath, f);
-    }
-  });
+  const tier3Files = [...tier3ByPath.values()];
 
   const tier1Total = tier1Files.reduce((s, f) => s + f.estimatedTokens, 0);
   const tier2Total = tier2Files.reduce((s, f) => s + f.estimatedTokens, 0);
   const tier3Total = tier3Files.reduce((s, f) => s + f.estimatedTokens, 0);
 
-  // Build routing table with token costs
-  const routingTableWithCosts = routingTable.map((route) => {
-    const files = route.files.map((f) => {
-      const modesPath = join(anviDir, "modes", f);
-      const rootPath = join(anviDir, f);
-      try {
-        statSync(modesPath);
-        return fileInfo(modesPath, f);
-      } catch {
-        return fileInfo(rootPath, f);
-      }
-    });
-    const totalTokens =
-      tier1Total + files.reduce((s, f) => s + f.estimatedTokens, 0);
+  const routingTableWithCosts = routes.map((route) => {
+    const files = route.filePaths.map((fp) => tier3ByPath.get(fp)!);
     return {
       activity: route.activity,
       files: route.files,
       catalogues: route.catalogues,
-      totalTokens,
+      other: route.other,
+      totalTokens: tier1Total + files.reduce((s, f) => s + f.estimatedTokens, 0),
       fileDetails: files,
     };
   });
@@ -311,7 +254,7 @@ api.get("/routing-architecture", async (c) => {
       {
         tier: 1,
         name: "Always Loaded",
-        description: "Loaded every prompt. Global instructions + base cognitive checks.",
+        description: "Loaded every prompt. Global instructions and every file they @-import.",
         files: tier1Files,
         totalTokens: tier1Total,
       },
@@ -331,6 +274,7 @@ api.get("/routing-architecture", async (c) => {
       },
     ],
     routingTable: routingTableWithCosts,
+    source,
     totalCapacity: 200_000,
   });
 });
