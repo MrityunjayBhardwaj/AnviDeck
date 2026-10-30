@@ -235,6 +235,27 @@ describe("replay paths → files on the map", () => {
     expect(t[4]).toMatchObject({ how: "commit", modules: ["src/engine/HapStream.ts"] });
     const at = agentAt(t, 3);
     expect(at.last).toBe("src/codeView/index.ts");
+  });
+
+  test("a shell edit to a changed file the map does not hold takes the replay's label for it (#42)", () => {
+    const r = replay(
+      [{ tool: "Bash", command: "cd /w/packages/editor/src && python3 - <<'EOF'\np='engine/StrudelEngine.test.ts'\nopen(p,'w')\nEOF", mayEditFiles: { source: "guessed", reason: "a script opens a file for writing", scope: "project" } }],
+      [{ path: "/w/stave-wt-2264/packages/editor/src/engine/StrudelEngine.test.ts", how: ["commit"], viaShell: true, designRules: "checked at merge, not at edit (PR #2271 merged)", notesGap: "no notes given for these files" }]
+    );
+    const [t] = stepTouches(r, measured());
+    expect(t.modules).toEqual([]);
+    expect(t.offMap).toEqual(["src/engine/StrudelEngine.test.ts"]);
+    expect(t.designRules).toBe("checked at merge, not at edit (PR #2271 merged)");
+  });
+
+  test("agentAt keeps the order files were first touched", () => {
+    const r = replay([
+      { tool: "Edit", filePath: "/w/packages/editor/src/engine/HapStream.ts" },
+      { tool: "Edit", filePath: "/w/packages/editor/src/codeView/index.ts" },
+    ]);
+    const t = stepTouches(r, measured());
+    const at = agentAt(t, 1);
+    expect(at.last).toBe("src/codeView/index.ts");
     expect(at.trail).toEqual(["src/engine/HapStream.ts", "src/codeView/index.ts"]);
   });
 });

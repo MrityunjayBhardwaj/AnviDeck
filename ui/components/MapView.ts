@@ -861,6 +861,7 @@ function shellBadge(t: StepTouch | undefined): string {
     <div>Design rules: <b>${esc(t.designRules ?? "not confirmed")}</b>.</div>
     <div>Notes: ${esc(t.notesGap ?? "no notes given for these files")}.</div>
     <div class="dim">Files named in the command, on the map: ${t.modules.length ? t.modules.map(mono).join(", ") : "none"}.</div>
+    ${t.offMap.length ? `<div class="dim">Changed files it names that the guard's graph does not hold: ${t.offMap.map(mono).join(", ")}.</div>` : ""}
   </div>`;
 }
 

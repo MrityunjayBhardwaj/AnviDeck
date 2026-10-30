@@ -358,9 +358,15 @@ export function stepTouches(r: ReplayResponse, m: StructureMeasured): StepTouch[
   const tail = packageTail(m.package.dir);
   const paths = new Set(m.modules.map((x) => x.path));
   const changeByModule = new Map<string, ChangedFile>();
+  const shellChangesOffMap = new Map<string, ChangedFile>(); // path inside the package → change
   for (const f of r.changes?.files ?? []) {
     const mod = moduleForPath(f.path, paths, tail);
     if (mod) changeByModule.set(mod, f);
+    else if (f.viaShell) {
+      const norm = "/" + f.path.replace(/^\/+/, "");
+      const i = norm.lastIndexOf(`/${tail}/`);
+      if (i >= 0) shellChangesOffMap.set(norm.slice(i + tail.length + 2), f);
+    }
   }
   const commitBySha = new Map(r.commits.map((c) => [c.sha, c]));
   return r.steps.map((s) => {
@@ -382,7 +388,15 @@ export function stepTouches(r: ReplayResponse, m: StructureMeasured): StepTouch[
       if (t.shellWrite) {
         t.modules = modulesNamedInCommand(s.command, m.modules);
         t.how = t.modules.length ? "shell-guess" : null;
+        // The replay's labels for the files this command names: map modules, and also changed
+        // files the guard's graph does not hold (a test file, say), matched by their package path.
         const labels = t.modules.map((x) => changeByModule.get(x)).filter((c): c is ChangedFile => !!c && c.viaShell);
+        for (const [inPkg, c] of shellChangesOffMap) {
+          if (modulesNamedInCommand(s.command, [{ path: inPkg, rel: inPkg }]).length) {
+            labels.push(c);
+            t.offMap.push(inPkg);
+          }
+        }
         t.designRules = labels.find((c) => c.designRules)?.designRules ?? "not confirmed";
         t.notesGap = labels.find((c) => c.notesGap)?.notesGap ?? null;
       }
