@@ -23,14 +23,14 @@ function parseTime(v: string | undefined): { ok: boolean; value: string | null }
   return Number.isNaN(ms) ? { ok: false, value: null } : { ok: true, value: new Date(ms).toISOString() };
 }
 
-replay.get("/session/:sid", (c) => {
+replay.get("/session/:sid", async (c) => {
   const sid = c.req.param("sid");
   if (!isValidSid(sid)) return c.json({ error: "invalid session id" }, 400);
   const from = parseTime(c.req.query("from"));
   const to = parseTime(c.req.query("to"));
   if (!from.ok || !to.ok) return c.json({ error: "from/to must be ISO 8601 times, e.g. 2026-10-30T00:00:00Z" }, 400);
   return c.json(
-    readReplay(sid, {
+    await readReplay(sid, {
       from: from.value,
       to: to.value,
       github: c.req.query("github") !== "0",

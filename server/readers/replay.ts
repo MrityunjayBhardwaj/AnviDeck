@@ -352,6 +352,43 @@ function run(cmd: string[], cwd?: string, timeoutMs = 10000): { ok: boolean; out
   }
 }
 
+/** Like run(), but does not block: several can be in flight at once (#28). */
+async function runAsync(cmd: string[], timeoutMs = 10000): Promise<{ ok: boolean; out: string; err: string }> {
+  try {
+    const p = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" });
+    const timer = setTimeout(() => p.kill(), timeoutMs);
+    const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+    clearTimeout(timer);
+    return { ok: code === 0, out, err: err.trim() };
+  } catch (e) {
+    return { ok: false, out: "", err: (e as Error).message };
+  }
+}
+
+/**
+ * `gh pr view` answers, by "repo#number". A merged or closed PR no longer
+ * changes, so its answer is kept for the life of the server; an open PR's
+ * answer is kept for 60 s. Failures are never cached (#28).
+ */
+const PR_OPEN_TTL_MS = 60_000;
+const prViewCache = new Map<string, { at: number; out: string }>();
+async function ghPrView(number: number, repo: string): Promise<{ ok: boolean; out: string; err: string; cached: boolean }> {
+  const key = `${repo}#${number}`;
+  const hit = prViewCache.get(key);
+  if (hit) {
+    let state = "";
+    try {
+      state = JSON.parse(hit.out).state;
+    } catch {
+      /* treat as open */
+    }
+    if (state === "MERGED" || state === "CLOSED" || Date.now() - hit.at < PR_OPEN_TTL_MS) return { ok: true, out: hit.out, err: "", cached: true };
+  }
+  const r = await runAsync(["gh", "pr", "view", String(number), "--repo", repo, "--json", "headRefOid,state,mergedAt,changedFiles,files"], 20000);
+  if (r.ok) prViewCache.set(key, { at: Date.now(), out: r.out });
+  return { ...r, cached: false };
+}
+
 // ─── Main reader ─────────────────────────────────────────────────────────────
 
 export interface ReplayOptions {
@@ -369,7 +406,7 @@ interface RawStep extends Omit<ReplayStep, "seq"> {
 
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 
-export function readReplay(sessionId: string, opts: ReplayOptions = {}): ReplayResponse {
+export async function readReplay(sessionId: string, opts: ReplayOptions = {}): Promise<ReplayResponse> {
   const t0 = performance.now();
   const timings: Record<string, number> = {};
   const fromMs = opts.from ? Date.parse(opts.from) : -Infinity;
@@ -868,7 +905,12 @@ export function readReplay(sessionId: string, opts: ReplayOptions = {}): ReplayR
   const committedShas = new Set(res.commits.map((c) => c.sha));
   const prFiles = new Map<number, { path: string; additions: number; deletions: number }[]>();
   let ghFailures = 0;
-  for (const p of prSeen.values()) {
+  let ghCached = 0;
+  const prList = [...prSeen.values()];
+  const views = await Promise.all(
+    prList.map((p) => (opts.github !== false && p.repo ? ghPrView(p.number, p.repo) : Promise.resolve(null)))
+  );
+  prList.forEach((p, i) => {
     const info: PrInfo = {
       number: p.number,
       repo: p.repo,
@@ -876,12 +918,9 @@ export function readReplay(sessionId: string, opts: ReplayOptions = {}): ReplayR
       lastSeen: iso(p.last),
       read: { status: "skipped" },
     };
-    if (opts.github !== false && p.repo) {
-      const r = run(
-        ["gh", "pr", "view", String(p.number), "--repo", p.repo, "--json", "headRefOid,state,mergedAt,changedFiles,files"],
-        undefined,
-        20000
-      );
+    const r = views[i];
+    if (r) {
+      if (r.cached) ghCached++;
       if (!r.ok) {
         ghFailures++;
         info.read = { status: "unreadable", detail: r.err.slice(0, 300) };
@@ -903,13 +942,17 @@ export function readReplay(sessionId: string, opts: ReplayOptions = {}): ReplayR
       }
     }
     res.prs.push(info);
-  }
+  });
   res.sources.github =
     opts.github === false
       ? { status: "skipped", detail: "github=0" }
       : prSeen.size === 0
         ? { status: "none", detail: "no PR linked in the window" }
-        : { status: ghFailures === prSeen.size ? "unreadable" : "ok", count: prSeen.size - ghFailures };
+        : {
+            status: ghFailures === prSeen.size ? "unreadable" : "ok",
+            count: prSeen.size - ghFailures,
+            detail: ghCached ? `${ghCached} of ${prSeen.size} PR answer(s) from cache (merged/closed: kept; open: 60 s)` : undefined,
+          };
   timings.github = Math.round(performance.now() - tGh);
 
   // ── Changes ──
@@ -924,9 +967,14 @@ export function readReplay(sessionId: string, opts: ReplayOptions = {}): ReplayR
     // A tool edit counts for a committed file when it names the same file in the same
     // object store (main checkout vs worktree, /tmp vs /private/tmp) at or before the
     // commit, anywhere in the session (#29). Exact path equality missed all three.
+    // Only edits whose file name matches a committed file can match it; resolving
+    // every edited folder of a long session costs one git call each (#28).
+    const tChanges = performance.now();
+    const committedNames = new Set(res.commits.flatMap((c) => c.files.map((f) => basename(f.path))));
     const keyCache = new Map<string, { store: string; top: string } | null>();
     const editsByKey = new Map<string, { path: string; ms: number; ts: string; tool: string }[]>();
     for (const e of sessionToolEdits) {
+      if (!committedNames.has(basename(e.path))) continue;
       const k = repoFileKey(e.path, keyCache);
       if (k) (editsByKey.get(k) ?? editsByKey.set(k, []).get(k)!).push(e);
     }
@@ -970,6 +1018,7 @@ export function readReplay(sessionId: string, opts: ReplayOptions = {}): ReplayR
       detail: files.size ? undefined : "no Edit/Write calls and no attributed commits in the window",
       files: [...files.values()],
     };
+    timings.changes = Math.round(performance.now() - tChanges);
   }
 
   timings.total = Math.round(performance.now() - t0);

@@ -22,8 +22,8 @@ if (!controlPath) console.warn(`SKIP control: transcript ${CONTROL_SID}.jsonl no
 
 describe.skipIf(!controlPath)("stave control session 811b15d0, 2026-10-30 00:00â€“12:00 UTC", () => {
   let r: ReplayResponse;
-  beforeAll(() => {
-    r = readReplay(CONTROL_SID, WINDOW);
+  beforeAll(async () => {
+    r = await readReplay(CONTROL_SID, WINDOW);
   }, 60000);
 
   test("says its timezone, and the transcript was read", () => {
@@ -71,6 +71,13 @@ describe.skipIf(!controlPath)("stave control session 811b15d0, 2026-10-30 00:00â
     }
   });
 
+  test("a second replay reuses the merged PRs' GitHub answers (#28)", async () => {
+    const again = await readReplay(CONTROL_SID, WINDOW);
+    expect(again.sources.github.detail).toMatch(/^2 of 2 PR answer\(s\) from cache/);
+    expect(again.prs.find((p) => p.number === 2271)?.changedFiles).toBe(24);
+    expect(again.timingsMs.github).toBeLessThan(1000);
+  }, 60000);
+
   test("only the 5 real code changes are scope 'project'; scratch writes and links are not (#27)", () => {
     const flagged = r.steps.filter((x) => x.mayEditFiles);
     const project = flagged.filter((x) => x.mayEditFiles!.scope === "project").map((x) => hms(x.ts));
@@ -109,7 +116,7 @@ describe.skipIf(!controlPath)("stave control session 811b15d0, 2026-10-30 00:00â
     expect(files.filter((f) => f.path.includes("/dist/"))).toHaveLength(14);
   });
 
-  test("shell-only files carry the two gaps as separate labels", () => {
+  test("shell-only files carry the two gaps as separate labels", async () => {
     const f = r.changes.files.find((x) => x.path.endsWith("packages/editor/src/engine/HapStream.ts"));
     expect(f).toBeDefined();
     expect(f!.viaShell).toBe(true);
@@ -122,8 +129,8 @@ const noNotesPath = findTranscript(NO_NOTES_SID);
 if (!noNotesPath) console.warn(`SKIP must-not-match: transcript ${NO_NOTES_SID}.jsonl not found`);
 
 describe.skipIf(!noNotesPath)("must-not-match: a session with no anvi injections", () => {
-  test("returns 'no notes' (status none, empty list), not an error", () => {
-    const r = readReplay(NO_NOTES_SID, { github: false });
+  test("returns 'no notes' (status none, empty list), not an error", async () => {
+    const r = await readReplay(NO_NOTES_SID, { github: false });
     expect(r.transcript.status).toBe("ok");
     expect(r.steps.filter((s) => s.kind === "tool").length).toBeGreaterThan(0);
     expect(r.notes.status).toBe("none");
@@ -132,8 +139,8 @@ describe.skipIf(!noNotesPath)("must-not-match: a session with no anvi injections
 });
 
 describe("could not read vs nothing found", () => {
-  test("a nonexistent session says 'not-found', which differs from 'none'", () => {
-    const r = readReplay("00000000-0000-0000-0000-000000000000", WINDOW);
+  test("a nonexistent session says 'not-found', which differs from 'none'", async () => {
+    const r = await readReplay("00000000-0000-0000-0000-000000000000", WINDOW);
     expect(r.transcript.status).toBe("not-found");
     expect(r.transcript.detail).toContain("transcript not found");
     expect(r.notes.status).toBe("not-found");
@@ -142,8 +149,8 @@ describe("could not read vs nothing found", () => {
     expect(r.timezone).toBe("UTC");
   });
 
-  test.skipIf(!controlPath)("a window with nothing in it says 'none', not 'not-found'", () => {
-    const r = readReplay(CONTROL_SID, { from: "2020-01-01T00:00:00Z", to: "2020-01-02T00:00:00Z", github: false });
+  test.skipIf(!controlPath)("a window with nothing in it says 'none', not 'not-found'", async () => {
+    const r = await readReplay(CONTROL_SID, { from: "2020-01-01T00:00:00Z", to: "2020-01-02T00:00:00Z", github: false });
     expect(r.transcript.status).toBe("none");
     expect(r.notes.status).toBe("none");
     expect(r.steps).toEqual([]);
@@ -151,15 +158,15 @@ describe("could not read vs nothing found", () => {
 
   // A real session whose working directory (a scratch git repo) has been deleted.
   const GONE_REPO_SID = "244a9823-fde6-44a2-b007-c681215100dc";
-  test.skipIf(!findTranscript(GONE_REPO_SID))("a session whose repo is gone says git 'not-found', not 'none' (#25)", () => {
-    const r = readReplay(GONE_REPO_SID, { github: false, fullText: false });
+  test.skipIf(!findTranscript(GONE_REPO_SID))("a session whose repo is gone says git 'not-found', not 'none' (#25)", async () => {
+    const r = await readReplay(GONE_REPO_SID, { github: false, fullText: false });
     expect(r.transcript.status).toBe("ok");
     expect(r.sources.git.status).toBe("not-found");
     expect(r.sources.git.dirs?.some((d) => d.status === "not-found")).toBe(true);
   });
 
-  test.skipIf(!noNotesPath)("a session in a live repo with no commits says git 'none'", () => {
-    const r = readReplay(NO_NOTES_SID, { github: false, fullText: false });
+  test.skipIf(!noNotesPath)("a session in a live repo with no commits says git 'none'", async () => {
+    const r = await readReplay(NO_NOTES_SID, { github: false, fullText: false });
     expect(r.sources.git.status).toBe("none");
   });
 
@@ -228,8 +235,8 @@ describe("routes", () => {
 // changed replay-types.ts and replay.test.ts only through python (shell).
 const FIX_SID = "dba8cb1e-5edb-4121-9d58-bd839b9c077c";
 describe.skipIf(!findTranscript(FIX_SID))("tool edits before the window or by another path (#29)", () => {
-  test("a file edited with Edit just before the window is not called shell-only", () => {
-    const r = readReplay(FIX_SID, { from: "2026-10-30T18:41:40Z", to: "2026-10-30T18:42:40Z", github: false, fullText: false });
+  test("a file edited with Edit just before the window is not called shell-only", async () => {
+    const r = await readReplay(FIX_SID, { from: "2026-10-30T18:41:40Z", to: "2026-10-30T18:42:40Z", github: false, fullText: false });
     const f = (end: string) => r.changes.files.find((x) => x.path.endsWith(end) && x.sha?.startsWith("441b653"));
     expect(f("server/readers/replay.ts")?.viaShell).toBe(false);
     expect(f("server/readers/replay.ts")?.toolEdit?.ts).toBe("2026-10-30T18:41:33.982Z");
@@ -237,8 +244,8 @@ describe.skipIf(!findTranscript(FIX_SID))("tool edits before the window or by an
     expect(f("shared/replay-types.ts")?.viaShell).toBe(true);
     expect(f("tests/replay.test.ts")?.viaShell).toBe(true);
   }, 60000);
-  test("an Edit made after the commit does not explain the commit", () => {
-    const r = readReplay(FIX_SID, { from: "2026-10-30T18:41:40Z", to: "2026-10-30T18:43:30Z", github: false, fullText: false });
+  test("an Edit made after the commit does not explain the commit", async () => {
+    const r = await readReplay(FIX_SID, { from: "2026-10-30T18:41:40Z", to: "2026-10-30T18:43:30Z", github: false, fullText: false });
     const f = r.changes.files.find((x) => x.path.endsWith("shared/replay-types.ts") && x.sha?.startsWith("441b653"));
     expect(f?.viaShell).toBe(true);
   }, 60000);
