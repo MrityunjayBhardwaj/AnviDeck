@@ -20,7 +20,7 @@ import { readLiveSessionsReport } from "../readers/sessions";
 import { readRoutingTable, alwaysLoadedFiles } from "../readers/routing";
 import { discoverProjects, type DiscoveredProject } from "../readers/projects";
 import { resolveDir } from "../../shared/anvi-paths";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { execSync } from "node:child_process";
 import type { ProjectSummary, ProjectState, HookLogEntry, EntryDate, ReadReport } from "../../shared/types";
 import type { Context } from "hono";
@@ -137,8 +137,48 @@ api.get("/projects", async (c) => {
     });
   }
 
+  markSharedStores(summaries, projects.map((p) => (p.decoded ? findAnviDir(p.decoded) : null)));
   return c.json(summaries);
 });
+
+/**
+ * One notes store, one owner (#36, #32). A worktree whose .anvi is a symlink to its parent's
+ * store, or a folder whose name differs only in letter case from the store's (macOS file names
+ * are case-insensitive), serves the SAME store as another project. Counting it per project
+ * counted the notes twice. Identity is the directory's device + inode, which holds under any
+ * runtime: Node's realpathSync keeps the case it was asked with ("Stave/.anvi"), Bun's returns
+ * the on-disk case ("stave/.anvi"), so a path comparison would depend on which one runs this.
+ * The owner is the project whose path contains the store, else the one named exactly like the
+ * store's folder, else the shortest path. The others are marked `sharesNotesWith`, and totals
+ * skip them.
+ */
+export function markSharedStores(summaries: ProjectSummary[], anviDirs: (string | null)[]): void {
+  const groups = new Map<string, number[]>();
+  anviDirs.forEach((dir, i) => {
+    if (!dir) return;
+    try {
+      const st = statSync(dir);
+      const id = `${st.dev}:${st.ino}`;
+      groups.set(id, [...(groups.get(id) ?? []), i]);
+    } catch {
+      /* unreadable store: reported by readStatus, not grouped */
+    }
+  });
+  for (const idx of groups.values()) {
+    if (idx.length < 2) continue;
+    const store = realpathSync.native(anviDirs[idx[0]]!);
+    const storeName = store.split("/").slice(-2, -1)[0];
+    const inside = idx.find((i) => store.startsWith(summaries[i].path + "/"));
+    const named = idx.find((i) => summaries[i].path.split("/").pop() === storeName);
+    const shortest = [...idx].sort((a, b) => summaries[a].path.length - summaries[b].path.length)[0];
+    const owner = inside ?? named ?? shortest;
+    for (const i of idx) if (i !== owner) {
+      summaries[i].sharesNotesWith = summaries[owner].name;
+      summaries[i].notesStore = store;
+    }
+    summaries[owner].notesStore = store;
+  }
+}
 
 // GET /api/project/:name — full project state
 api.get("/project/:name", async (c) => {

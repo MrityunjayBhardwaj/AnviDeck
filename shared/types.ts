@@ -299,6 +299,14 @@ export interface ProjectSummary {
   groundTruthDocCount: number;
   /** Per source: could it be read, or was there genuinely nothing? */
   readStatus?: { catalogues: ReadReport; memory: ReadReport; groundTruth?: ReadReport };
+  /**
+   * Set when this project's notes store is the same directory as another project's (a worktree
+   * with a symlinked .anvi, or a case-twin folder). Names the owner. Its catalogue counts are the
+   * owner's notes, so totals must not add them again (#36).
+   */
+  sharesNotesWith?: string;
+  /** The store's real path, set only when a store is shared. */
+  notesStore?: string;
 }
 
 /** A live (currently-running) Claude Code session. */
