@@ -19,12 +19,15 @@ import { homedir } from "node:os";
  *   2. filesystem — rebuild the path segment by segment from `/`, keeping only
  *      directory entries that re-encode to the next part of the name. Accepted
  *      only if exactly ONE existing path matches.
- *   3. unresolved — no transcript cwd and zero (or several) filesystem matches.
+ *   3. store — the directory is gone and left no transcript, but exactly one
+ *      central-store project (~/.anvideck/projects/<N>) re-encodes to the
+ *      name's tail and the rest of the name is one existing parent directory.
+ *   4. unresolved — none of the above, or several filesystem matches.
  *      The path is left null rather than guessed: a wrong path would silently
  *      read another project's notes.
  */
 
-export type PathSource = "transcript" | "filesystem" | "unresolved";
+export type PathSource = "transcript" | "filesystem" | "store" | "unresolved";
 
 export interface DiscoveredProject {
   /** Directory name under ~/.claude/projects/ */
@@ -137,6 +140,32 @@ export function filesystemMatches(encoded: string, limit = 2): string[] {
   return out;
 }
 
+export const STORE_PROJECTS_DIR = join(homedir(), ".anvideck", "projects");
+
+/**
+ * For a project whose directory is gone and that left no transcript: a
+ * central-store project `<N>` whose encoded name is the tail of `encoded`, and
+ * whose remaining prefix is exactly one existing directory. E.g.
+ * `-Users-x-Documents-projects-struCode` → `/Users/x/Documents/projects` +
+ * store `struCode`. Returns every such candidate (caller accepts only one).
+ */
+export function storeMatches(encoded: string, storeDir = STORE_PROJECTS_DIR): string[] {
+  let names: string[];
+  try {
+    names = readdirSync(storeDir);
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  for (const n of names) {
+    const tail = "-" + encodeProjectPath(n);
+    if (!encoded.endsWith(tail)) continue;
+    const parents = filesystemMatches(encoded.slice(0, -tail.length));
+    if (parents.length === 1) out.push(join(parents[0]!, n));
+  }
+  return out;
+}
+
 export function resolveEncodedProject(encoded: string, projectsDir = PROJECTS_DIR): DiscoveredProject {
   const fromTranscript = cwdFromTranscripts(join(projectsDir, encoded), encoded);
   if (fromTranscript) {
@@ -145,6 +174,12 @@ export function resolveEncodedProject(encoded: string, projectsDir = PROJECTS_DI
   const matches = filesystemMatches(encoded);
   if (matches.length === 1) {
     return { encoded, decoded: matches[0]!, name: basename(matches[0]!), pathSource: "filesystem" };
+  }
+  if (matches.length === 0) {
+    const fromStore = storeMatches(encoded);
+    if (fromStore.length === 1) {
+      return { encoded, decoded: fromStore[0]!, name: basename(fromStore[0]!), pathSource: "store" };
+    }
   }
   return {
     encoded,

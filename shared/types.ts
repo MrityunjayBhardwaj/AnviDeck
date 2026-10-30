@@ -63,10 +63,11 @@ export interface ProjectState {
   path: string;
   /**
    * How the project path was determined from ~/.claude/projects/<encoded>:
-   * the cwd in its transcripts, a unique filesystem match, or not at all
-   * (path is then "" and nothing is read from a guessed location).
+   * the cwd in its transcripts, a unique filesystem match, a unique
+   * central-store name under an existing parent (directory itself gone), or
+   * not at all (path is then "" and nothing is read from a guessed location).
    */
-  pathSource?: "transcript" | "filesystem" | "unresolved";
+  pathSource?: "transcript" | "filesystem" | "store" | "unresolved";
   catalogues: Catalogue[];
   memory: MemoryEntry[];
   fatalitySignals: number;
@@ -270,10 +271,11 @@ export interface ProjectSummary {
   path: string;
   /**
    * How the project path was determined from ~/.claude/projects/<encoded>:
-   * the cwd in its transcripts, a unique filesystem match, or not at all
-   * (path is then "" and nothing is read from a guessed location).
+   * the cwd in its transcripts, a unique filesystem match, a unique
+   * central-store name under an existing parent (directory itself gone), or
+   * not at all (path is then "" and nothing is read from a guessed location).
    */
-  pathSource?: "transcript" | "filesystem" | "unresolved";
+  pathSource?: "transcript" | "filesystem" | "store" | "unresolved";
   catalogueCounts: Record<string, number>;
   memoryCount: number;
   fatalitySignals: number;
