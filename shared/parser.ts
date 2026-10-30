@@ -19,7 +19,14 @@ const KNOWN_TAGS = [
  * Sections within entries: **Key:** value  (bold key followed by colon)
  * Provenance fields: ORIGIN:, WHY:, HOW: (line-level, no bold)
  */
-export function parseCatalogueEntries(markdown: string): CatalogueEntry[] {
+export function parseCatalogueEntries(
+  markdown: string,
+  catalogueName?: string
+): CatalogueEntry[] {
+  // Status in a HEADER is a convention of the status-bearing catalogues only
+  // (see extractTags). Error-pattern and lifecycle headers are lesson titles,
+  // where a tag word is prose ("…IS A BLIND SPOT THE DAY…").
+  const headerTags = !catalogueName || HEADER_STATUS_CATALOGUES.includes(catalogueName);
   const entries: CatalogueEntry[] = [];
   const seenIds = new Set<string>();
   // Split into entry blocks by h2 or h3 headers
@@ -46,7 +53,7 @@ export function parseCatalogueEntries(markdown: string): CatalogueEntry[] {
       nextIndex
     );
 
-    const entry = parseEntryBlock(header.text.trim(), body);
+    const entry = parseEntryBlock(header.text.trim(), body, headerTags);
     // Fold an h3 sub-section that repeats an entry's ID back into that entry —
     // e.g. an h3 "### SP107 — ORIGINAL FRAMING (SUPERSEDED)" audit block beneath
     // the "## SP107:" entry is not a separate entry. Only h3 repeats are folded:
@@ -93,12 +100,77 @@ export function entryIdFromHeader(
   return { id: m[1], rest: m[2] };
 }
 
+/**
+ * Status tags an entry CARRIES, as opposed to words its prose mentions.
+ *
+ * A tag counts only where catalogues state status:
+ *   1. the entry's header line, in the status-bearing catalogues (vyapti,
+ *      dharana) — anvi's own scans read MISALIGNED from vyapti headers
+ *      (hooks/debug-grounding-gate.js, hooks/ground-truth-session-start.js:
+ *      `^## <ID>:…MISALIGNED`) and FATALITY from dharana
+ *      (hooks/catalogue-context-injector.js), or
+ *   2. the value of a status field — a line labelled `Status:`,
+ *      `**Status:**`, `**Current status:**`, `STATUS:`, `**Fatality status:**`
+ *      (dharana-spec's "Status: ALIGNED / MISALIGNED / CONSOLIDATION PLANNED").
+ * Anywhere else (narrative, amendments, cross-references, tables about other
+ * entries) the word is a mention and does not tag the entry. Within those two
+ * places a tag is still skipped when it is struck through (~~X~~), negated or
+ * historical ("was X", "not X", "no longer X", "NOT YET A FATALITY"), or part
+ * of a template list of options ("ALIGNED / MISALIGNED / …").
+ * Matching is whole-word, so ALIGNED does not fire inside MISALIGNED.
+ */
+export function extractTags(headerRest: string, body: string): string[] {
+  const places: string[] = [headerRest];
+  const fatalityTestPlaces: string[] = [headerRest];
+  for (const line of body.split("\n")) {
+    const m = line.match(STATUS_LINE);
+    if (m) places.push(m[1]!);
+    if (FATALITY_TEST_LINE.test(line)) fatalityTestPlaces.push(line);
+  }
+  const tags: string[] = [];
+  // The fatality test's own result line ("FATALITY TEST: … TRIPPED",
+  // "(…; fatality test TRIPPED: 3 patterns…)") — dharana-spec §4 records
+  // "fatality test results"; a "NOT re-tripped" / "not tripped" reading is not one.
+  if (fatalityTestPlaces.some((p) => FATALITY_TRIPPED.test(p.replace(/~~[^~]*~~/g, " ")))) {
+    tags.push("FATALITY");
+  }
+  for (const raw of places) {
+    const text = raw.replace(/~~[^~]*~~/g, " ");
+    if (TEMPLATE_OPTIONS.test(text)) continue;
+    for (const tag of KNOWN_TAGS) {
+      if (tags.includes(tag)) continue;
+      const re = new RegExp(`(?<![A-Za-z])${tag}(?![A-Za-z])`, "g");
+      for (const hit of text.matchAll(re)) {
+        const before = text.slice(Math.max(0, hit.index! - 24), hit.index!);
+        if (tag !== "NOT YET IMPLEMENTED" && NEGATED_BEFORE.test(before)) continue;
+        tags.push(tag);
+        break;
+      }
+    }
+  }
+  return tags;
+}
+
+/** Catalogues whose entry headers may carry a status tag. */
+const HEADER_STATUS_CATALOGUES = ["vyapti", "dharana"];
+/** `<label containing "status">: <value>` with optional markdown around the label. */
+const STATUS_LINE = /^[\s>#*_|\-]*[^:\n]{0,40}?\bstatus\b[^:\n]{0,40}?(?:\*\*)?\s*:\s*(?:\*\*)?(.*)$/i;
+/** A body line that starts (ignoring markdown/symbols) with "fatality test". */
+const FATALITY_TEST_LINE = /^[^A-Za-z]*fatality test\b/i;
+/** "fatality test … tripped" with no "not" in between. */
+const FATALITY_TRIPPED = /\bfatality test\b(?:(?!\bnot\b)[^.\n]){0,80}?\btripped\b/i;
+/** Words right before a tag that make it historical or negated. */
+const NEGATED_BEFORE = /\b(?:was|were|not|no longer|formerly|never|not yet an?|previously)\s+(?:an?\s+|the\s+)?(?:[A-Za-z-]+\s+)?$/i;
+/** "ALIGNED / MISALIGNED / CONSOLIDATION PLANNED" — a list of options, not a status. */
+const TEMPLATE_OPTIONS = /\b[A-Z][A-Z ]+ \/ [A-Z][A-Z ]+\b/;
+
 /** A catalogue header line: `## text` or `### text`. */
 export const ENTRY_HEADER_LINE = /^(#{2,3})\s+(.+)$/;
 
 function parseEntryBlock(
   headerText: string,
-  body: string
+  body: string,
+  headerTags = true
 ): CatalogueEntry | null {
   const headerMatch = entryIdFromHeader(headerText);
   if (!headerMatch) return null;
@@ -106,23 +178,9 @@ function parseEntryBlock(
   const id = headerMatch.id;
 
   let titleRaw = headerMatch.rest;
-
-  // Extract tags from title (in parentheses)
-  const tags: string[] = [];
-  const parenMatch = titleRaw.match(/\(([^)]+)\)/);
-  if (parenMatch) {
-    const parenContent = parenMatch[1];
-    for (const tag of KNOWN_TAGS) {
-      if (parenContent.includes(tag)) tags.push(tag);
-    }
+  const tags = extractTags(headerTags ? titleRaw : "", body);
+  if (/\([^)]+\)/.test(titleRaw)) {
     titleRaw = titleRaw.replace(/\s*\([^)]+\)/, "").trim();
-  }
-
-  // Extract tags from body
-  for (const tag of KNOWN_TAGS) {
-    if (!tags.includes(tag) && body.includes(tag)) {
-      tags.push(tag);
-    }
   }
 
   // Parse sections: **Key:** value

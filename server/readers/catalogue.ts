@@ -38,7 +38,7 @@ export async function readCatalogues(
     try {
       const content = await readFile(filePath, "utf-8");
       const fileStat = await stat(filePath);
-      const entries = parseCatalogueEntries(content);
+      const entries = parseCatalogueEntries(content, name);
 
       catalogues.push({
         name,
