@@ -279,6 +279,13 @@ api.get("/routing-architecture", async (c) => {
   });
 });
 
+/** Last cross-project keyword analysis, keyed by the catalogue files it read. */
+let patternCache: {
+  sig: string;
+  recurringPatterns: ReturnType<typeof findRecurringPatterns>;
+  sharedInvariants: ReturnType<typeof findRecurringPatterns>;
+} | null = null;
+
 // GET /api/cross-project — cross-project pattern analysis
 api.get("/cross-project", async (c) => {
   const projects = listProjects();
@@ -297,10 +304,14 @@ api.get("/cross-project", async (c) => {
     type: string;
   }[] = [];
 
-  // Load all projects with catalogues
+  // Load all projects with catalogues. `sig` identifies the exact catalogue
+  // files read (project, path, mtime, entry count); the keyword analysis below
+  // is reused while it is unchanged.
+  const sigParts: string[] = [];
   for (const proj of projects) {
     const catalogues = proj.decoded ? await readCatalogues(proj.decoded) : [];
     for (const cat of catalogues) {
+      sigParts.push(`${proj.name}|${cat.path}|${cat.lastModified.getTime()}|${cat.entries.length}`);
       for (const entry of cat.entries) {
         allEntries.push({
           project: proj.name,
@@ -324,13 +335,16 @@ api.get("/cross-project", async (c) => {
     }
   }
 
-  // Find recurring hetvabhasa patterns across projects
-  const hetvabhasaEntries = allEntries.filter((e) => e.catalogue === "hetvabhasa");
-  const recurringPatterns = findRecurringPatterns(hetvabhasaEntries);
-
-  // Find shared vyapti invariants across projects
-  const vyaptiEntries = allEntries.filter((e) => e.catalogue === "vyapti");
-  const sharedInvariants = findRecurringPatterns(vyaptiEntries);
+  const sig = sigParts.join("\n");
+  if (!patternCache || patternCache.sig !== sig) {
+    patternCache = {
+      sig,
+      // Recurring hetvabhasa patterns / shared vyapti invariants across projects
+      recurringPatterns: findRecurringPatterns(allEntries.filter((e) => e.catalogue === "hetvabhasa")),
+      sharedInvariants: findRecurringPatterns(allEntries.filter((e) => e.catalogue === "vyapti")),
+    };
+  }
+  const { recurringPatterns, sharedInvariants } = patternCache;
 
   // Group memory by type
   const memoryByType: Record<
@@ -406,6 +420,10 @@ function findRecurringPatterns(
     { project: string; entryId: string; title: string; content: string }[]
   >();
 
+  // keyword → "project\0entryId" already listed (a Set: the linear scan this
+  // replaces made the loop quadratic in the number of entries per keyword).
+  const keywordSeen = new Map<string, Set<string>>();
+
   for (const entry of entries) {
     const text = [
       entry.title,
@@ -413,15 +431,19 @@ function findRecurringPatterns(
       ...entry.tags,
     ].join(" ");
     const keywords = extractKeywords(text);
+    const entryKey = `${entry.project}\0${entry.id}`;
 
     for (const kw of new Set(keywords)) {
       if (!keywordMap.has(kw)) keywordMap.set(kw, new Set());
       keywordMap.get(kw)!.add(entry.project);
 
       if (!keywordEntries.has(kw)) keywordEntries.set(kw, []);
+      if (!keywordSeen.has(kw)) keywordSeen.set(kw, new Set());
       // Avoid duplicating same entry for same keyword
       const existing = keywordEntries.get(kw)!;
-      if (!existing.some((e) => e.entryId === entry.id && e.project === entry.project)) {
+      const seen = keywordSeen.get(kw)!;
+      if (!seen.has(entryKey)) {
+        seen.add(entryKey);
         existing.push({
           project: entry.project,
           entryId: entry.id,

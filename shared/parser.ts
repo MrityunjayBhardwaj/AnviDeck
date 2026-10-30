@@ -122,10 +122,14 @@ export function entryIdFromHeader(
 export function extractTags(headerRest: string, body: string): string[] {
   const places: string[] = [headerRest];
   const fatalityTestPlaces: string[] = [headerRest];
-  for (const line of body.split("\n")) {
-    const m = line.match(STATUS_LINE);
-    if (m) places.push(m[1]!);
-    if (FATALITY_TEST_LINE.test(line)) fatalityTestPlaces.push(line);
+  // Cheap prefilter: only lines naming "status" or "fatality test" can matter.
+  if (/status|fatality test/i.test(body)) {
+    for (const line of body.split("\n")) {
+      if (!/status|fatality test/i.test(line)) continue;
+      const m = line.match(STATUS_LINE);
+      if (m) places.push(m[1]!);
+      if (FATALITY_TEST_LINE.test(line)) fatalityTestPlaces.push(line);
+    }
   }
   const tags: string[] = [];
   // The fatality test's own result line ("FATALITY TEST: … TRIPPED",
@@ -139,8 +143,8 @@ export function extractTags(headerRest: string, body: string): string[] {
     if (TEMPLATE_OPTIONS.test(text)) continue;
     for (const tag of KNOWN_TAGS) {
       if (tags.includes(tag)) continue;
-      const re = new RegExp(`(?<![A-Za-z])${tag}(?![A-Za-z])`, "g");
-      for (const hit of text.matchAll(re)) {
+      if (!text.includes(tag)) continue;
+      for (const hit of text.matchAll(TAG_RE[tag]!)) {
         const before = text.slice(Math.max(0, hit.index! - 24), hit.index!);
         if (tag !== "NOT YET IMPLEMENTED" && NEGATED_BEFORE.test(before)) continue;
         tags.push(tag);
@@ -151,6 +155,10 @@ export function extractTags(headerRest: string, body: string): string[] {
   return tags;
 }
 
+/** Whole-word matcher per tag (ALIGNED must not fire inside MISALIGNED). */
+const TAG_RE: Record<string, RegExp> = Object.fromEntries(
+  KNOWN_TAGS.map((t) => [t, new RegExp(`(?<![A-Za-z])${t}(?![A-Za-z])`, "g")])
+);
 /** Catalogues whose entry headers may carry a status tag. */
 const HEADER_STATUS_CATALOGUES = ["vyapti", "dharana"];
 /** `<label containing "status">: <value>` with optional markdown around the label. */

@@ -2,7 +2,7 @@ import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { parseCatalogueEntries } from "../../shared/parser";
 import { resolveDir } from "../../shared/anvi-paths";
-import type { Catalogue, BoundaryInfo } from "../../shared/types";
+import type { Catalogue, BoundaryInfo, CatalogueEntry } from "../../shared/types";
 
 const CATALOGUE_NAMES = ["hetvabhasa", "vyapti", "krama", "dharana"];
 
@@ -36,14 +36,11 @@ export async function readCatalogues(
   for (const name of CATALOGUE_NAMES) {
     const filePath = join(anviDir, `${name}.md`);
     try {
-      const content = await readFile(filePath, "utf-8");
       const fileStat = await stat(filePath);
-      const entries = parseCatalogueEntries(content, name);
-
       catalogues.push({
         name,
         path: filePath,
-        entries,
+        entries: await parsedEntries(filePath, name, fileStat.mtimeMs, fileStat.size),
         lastModified: fileStat.mtime,
       });
     } catch {
@@ -52,6 +49,26 @@ export async function readCatalogues(
   }
 
   return catalogues;
+}
+
+/**
+ * Parsed entries per catalogue file, keyed by mtime + size: a request that
+ * finds the file unchanged reuses the last parse instead of re-reading it.
+ * Entries are shared between requests, so callers must not mutate them.
+ */
+const parseCache = new Map<string, { mtimeMs: number; size: number; entries: CatalogueEntry[] }>();
+
+async function parsedEntries(
+  filePath: string,
+  name: string,
+  mtimeMs: number,
+  size: number
+): Promise<CatalogueEntry[]> {
+  const hit = parseCache.get(filePath);
+  if (hit && hit.mtimeMs === mtimeMs && hit.size === size) return hit.entries;
+  const entries = parseCatalogueEntries(await readFile(filePath, "utf-8"), name);
+  parseCache.set(filePath, { mtimeMs, size, entries });
+  return entries;
 }
 
 /**

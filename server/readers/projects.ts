@@ -63,8 +63,29 @@ function readHead(file: string): string {
   }
 }
 
+/**
+ * Transcript answers keyed by the project directory's mtime: a new or removed
+ * transcript changes that mtime, so an unchanged directory reuses the answer
+ * instead of re-reading transcript heads on every request.
+ */
+const transcriptCache = new Map<string, { mtimeMs: number; cwd: string | null }>();
+
 /** cwd from the project's transcripts that re-encodes to `encoded`, or null. */
 export function cwdFromTranscripts(projectDir: string, encoded: string): string | null {
+  let mtimeMs: number;
+  try {
+    mtimeMs = statSync(projectDir).mtimeMs;
+  } catch {
+    return null;
+  }
+  const hit = transcriptCache.get(projectDir);
+  if (hit && hit.mtimeMs === mtimeMs) return hit.cwd;
+  const cwd = readCwdFromTranscripts(projectDir, encoded);
+  transcriptCache.set(projectDir, { mtimeMs, cwd });
+  return cwd;
+}
+
+function readCwdFromTranscripts(projectDir: string, encoded: string): string | null {
   let files: { f: string; m: number }[];
   try {
     files = readdirSync(projectDir)
