@@ -94,8 +94,13 @@ export interface ChangedFile {
   deletions?: number;
   sha?: string;
   pr?: number;
-  /** Only via shell/commit, no Edit/Write tool call on this path in the window. */
+  /**
+   * Only via shell/commit: no Edit/Write tool call on this file (same repository
+   * store and repo-relative path, at or before the commit, anywhere in the session).
+   */
   viaShell: boolean;
+  /** The tool edit that matched when it named the file by another path or fell before the window. */
+  toolEdit?: { path: string; ts: string; tool: string };
   /**
    * Plain-language labels for the two gaps a shell edit has. Present only when
    * viaShell. Kept as separate facts, never merged into one.

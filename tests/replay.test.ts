@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeAll } from "bun:test";
-import { findTranscript, readReplay, shellWriteReason, shellWriteScope, listReplaySessions, mergeEvidence } from "../server/readers/replay";
+import { findTranscript, readReplay, shellWriteReason, shellWriteScope, listReplaySessions, mergeEvidence, repoFileKey } from "../server/readers/replay";
+import { join } from "node:path";
 import replayRoutes from "../server/routes/replay";
 import type { ReplayResponse } from "../shared/replay-types";
 
@@ -218,5 +219,40 @@ describe("routes", () => {
     expect((await replayRoutes.request("/session/..%2F..%2Fetc")).status).toBe(400);
     expect((await replayRoutes.request(`/session/${CONTROL_SID}?from=yesterday`)).status).toBe(400);
     expect((await replayRoutes.request("/sessions")).status).toBe(400);
+  });
+});
+
+// #29: a tool edit must count for a committed file even when it named the file by
+// another path or fell before the window. Control: the session that fixed this
+// edited replay.ts with Edit at 18:41:33Z, committed 441b653 at 18:42:26Z, and
+// changed replay-types.ts and replay.test.ts only through python (shell).
+const FIX_SID = "dba8cb1e-5edb-4121-9d58-bd839b9c077c";
+describe.skipIf(!findTranscript(FIX_SID))("tool edits before the window or by another path (#29)", () => {
+  test("a file edited with Edit just before the window is not called shell-only", () => {
+    const r = readReplay(FIX_SID, { from: "2026-10-30T18:41:40Z", to: "2026-10-30T18:42:40Z", github: false, fullText: false });
+    const f = (end: string) => r.changes.files.find((x) => x.path.endsWith(end) && x.sha?.startsWith("441b653"));
+    expect(f("server/readers/replay.ts")?.viaShell).toBe(false);
+    expect(f("server/readers/replay.ts")?.toolEdit?.ts).toBe("2026-10-30T18:41:33.982Z");
+    // must-not-match: files that really changed only through the shell keep the label
+    expect(f("shared/replay-types.ts")?.viaShell).toBe(true);
+    expect(f("tests/replay.test.ts")?.viaShell).toBe(true);
+  }, 60000);
+  test("an Edit made after the commit does not explain the commit", () => {
+    const r = readReplay(FIX_SID, { from: "2026-10-30T18:41:40Z", to: "2026-10-30T18:43:30Z", github: false, fullText: false });
+    const f = r.changes.files.find((x) => x.path.endsWith("shared/replay-types.ts") && x.sha?.startsWith("441b653"));
+    expect(f?.viaShell).toBe(true);
+  }, 60000);
+});
+
+describe("repoFileKey: one file, one key, whatever path names it (#29)", () => {
+  const worktree = join(import.meta.dir, "..");
+  const main = "/Users/mrityunjaybhardwaj/Documents/projects/AnviDeck";
+  test.skipIf(worktree === main)("main checkout and worktree paths of the same file match", () => {
+    expect(repoFileKey(join(main, "server/index.ts"))).not.toBeNull();
+    expect(repoFileKey(join(worktree, "server/index.ts"))).toBe(repoFileKey(join(main, "server/index.ts")));
+  });
+  test("different files differ, and a path outside any repository has no key", () => {
+    expect(repoFileKey(join(worktree, "server/index.ts"))).not.toBe(repoFileKey(join(worktree, "server/routes/replay.ts")));
+    expect(repoFileKey("/private/tmp/not-a-repo-xyz/a.ts")).toBeNull();
   });
 });

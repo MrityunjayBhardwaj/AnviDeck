@@ -1,5 +1,5 @@
-import { existsSync, readdirSync, readFileSync, statSync, openSync, readSync, closeSync } from "node:fs";
-import { join, dirname, basename, isAbsolute } from "node:path";
+import { existsSync, readdirSync, readFileSync, statSync, openSync, readSync, closeSync, realpathSync } from "node:fs";
+import { join, dirname, basename, isAbsolute, relative } from "node:path";
 import { homedir } from "node:os";
 import type {
   ChangedFile,
@@ -347,6 +347,7 @@ export function readReplay(sessionId: string, opts: ReplayOptions = {}): ReplayR
   const cwdHints = new Set<string>(); // the records' own cwd values (a subset of repoHints)
   let sessionFirst = Infinity;
   let sessionLast = -Infinity;
+  const sessionToolEdits: { path: string; ms: number; ts: string; tool: string }[] = [];
 
   if (tPath) {
     let text: string;
@@ -407,6 +408,15 @@ export function readReplay(sessionId: string, opts: ReplayOptions = {}): ReplayR
           untimed++;
         }
         const at = placed[i];
+        // Tool edits from the WHOLE session: a file edited before the window and
+        // committed inside it was still edited through a tool that got notes (#29).
+        if (r.type === "assistant" && Array.isArray(r.message?.content) && !Number.isNaN(at)) {
+          for (const c of r.message.content) {
+            const fp = c?.input?.file_path ?? c?.input?.notebook_path;
+            if (c?.type === "tool_use" && EDIT_TOOLS.has(String(c.name)) && typeof fp === "string" && isAbsolute(fp))
+              sessionToolEdits.push({ path: fp, ms: at, ts: iso(at), tool: String(c.name) });
+          }
+        }
         if (Number.isNaN(at) || !inWin(at)) continue;
         inWindowRecords++;
         if (!hasTs) {
@@ -735,6 +745,7 @@ export function readReplay(sessionId: string, opts: ReplayOptions = {}): ReplayR
   // as unattributed (another agent may share the repo), never claimed.
   const usedSteps = new Set<RawStep>();
   const matched = new Map<string, RawStep>();
+  const storeOfSha = new Map<string, string>();
   for (const c of [...allCommits.values()].sort((a, b) => a.committedAt.localeCompare(b.committedAt))) {
     const cm = Date.parse(c.committedAt);
     let best: RawStep | null = null;
@@ -755,7 +766,8 @@ export function readReplay(sessionId: string, opts: ReplayOptions = {}): ReplayR
         bestTop = top;
       }
     }
-    const { store: _store, ...info } = c;
+    const { store, ...info } = c;
+    storeOfSha.set(info.sha, store);
     if (best) {
       usedSteps.add(best);
       if (bestTop) info.repoDir = bestTop; // the worktree it was made in
@@ -840,21 +852,38 @@ export function readReplay(sessionId: string, opts: ReplayOptions = {}): ReplayR
   // ── Changes ──
   if (tPath && res.transcript.status !== "unreadable") {
     const files = new Map<string, ChangedFile>();
-    const toolEdited = new Set<string>();
     for (const s of res.steps) {
       if (s.kind !== "tool" || !s.tool || !EDIT_TOOLS.has(s.tool) || !s.filePath) continue;
-      toolEdited.add(s.filePath);
       if (!files.has(s.filePath)) files.set(s.filePath, { path: s.filePath, how: ["tool"], viaShell: false });
     }
     const prOfSha = new Map<string, PrInfo>();
     for (const p of res.prs) if (p.headRefOid && p.headCommittedInWindow) prOfSha.set(p.headRefOid, p);
+    // A tool edit counts for a committed file when it names the same file in the same
+    // object store (main checkout vs worktree, /tmp vs /private/tmp) at or before the
+    // commit, anywhere in the session (#29). Exact path equality missed all three.
+    const keyCache = new Map<string, { store: string; top: string } | null>();
+    const editsByKey = new Map<string, { path: string; ms: number; ts: string; tool: string }[]>();
+    for (const e of sessionToolEdits) {
+      const k = repoFileKey(e.path, keyCache);
+      if (k) (editsByKey.get(k) ?? editsByKey.set(k, []).get(k)!).push(e);
+    }
     for (const c of res.commits) {
       const pr = prOfSha.get(c.sha);
       const prF = pr ? prFiles.get(pr.number) : undefined;
+      const store = storeOfSha.get(c.sha);
+      const cm = Date.parse(c.committedAt);
       for (const f of c.files) {
         const abs = join(c.repoDir, f.path);
-        const viaTool = toolEdited.has(abs);
-        const e: ChangedFile = files.get(abs) ?? { path: abs, how: [], viaShell: !viaTool };
+        const prior = store
+          ? (editsByKey.get(`${realOr(store)}\0${f.path}`) ?? []).filter((x) => x.ms <= cm + 2000)
+          : [];
+        // Only edits at or before this commit can explain its content; a later edit cannot.
+        const e: ChangedFile = files.get(abs) ?? { path: abs, how: [], viaShell: true };
+        e.viaShell = prior.length === 0;
+        if (prior.length) {
+          const last = prior[prior.length - 1];
+          e.toolEdit = { path: last.path, ts: last.ts, tool: last.tool };
+        }
         if (!e.how.includes("commit")) e.how.push("commit");
         e.status = f.status;
         if (f.oldPath) e.oldPath = f.oldPath;
@@ -882,6 +911,39 @@ export function readReplay(sessionId: string, opts: ReplayOptions = {}): ReplayR
 
   timings.total = Math.round(performance.now() - t0);
   return res;
+}
+
+function realOr(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
+/**
+ * "<object store>\0<repo-relative path>" for an absolute file path, or null when it
+ * is not inside a git repository. A worktree and its main checkout share one store,
+ * so the same file reached through either gets the same key (#29).
+ */
+export function repoFileKey(absPath: string, cache = new Map<string, { store: string; top: string } | null>()): string | null {
+  let dir = dirname(absPath);
+  const rest = [basename(absPath)];
+  while (!existsSync(dir) && dir !== dirname(dir)) {
+    rest.unshift(basename(dir));
+    dir = dirname(dir);
+  }
+  const real = realOr(dir);
+  let repo = cache.get(real);
+  if (repo === undefined) {
+    const r = run(["git", "-C", real, "rev-parse", "--show-toplevel", "--path-format=absolute", "--git-common-dir"], undefined, 3000);
+    const [top, store] = r.ok ? r.out.trim().split("\n") : [];
+    repo = top && store ? { top: realOr(top), store: realOr(store) } : null;
+    cache.set(real, repo);
+  }
+  if (!repo) return null;
+  const rel = relative(repo.top, join(real, ...rest));
+  return rel.startsWith("..") ? null : `${repo.store}\0${rel}`;
 }
 
 /** The design-rules label for a file changed only through the shell. */
