@@ -14,6 +14,8 @@ import {
   showAtCommit,
   diffCommits,
   readEntryDatesForFile,
+  CLAUDE_GIT_DIR,
+  isRevision,
 } from "../readers/git-history";
 import { readGroundingStatus } from "../readers/ground-truth";
 import { readLiveSessionsReport } from "../readers/sessions";
@@ -241,12 +243,18 @@ api.get("/memory", async (c) => {
   return arrayWithStatus(c, entries, report);
 });
 
+/** 503 for a history read git could not answer, with git's own words (#35). */
+function gitFailed(c: Context, what: string, err: string) {
+  return c.json({ error: `could not read ${what}: git failed`, status: "unreadable", path: CLAUDE_GIT_DIR, errors: [err] }, 503);
+}
+
 // GET /api/timeline — git commit history
 api.get("/timeline", async (c) => {
   const limit = parseInt(c.req.query("limit") ?? "100", 10);
   const offset = parseInt(c.req.query("offset") ?? "0", 10);
-  const points = await getTimeline(limit, offset);
-  return c.json(points);
+  const res = await getTimeline(limit, offset);
+  if (!res.ok) return arrayWithStatus(c, [], report(0, [res.err], CLAUDE_GIT_DIR));
+  return arrayWithStatus(c, res.value, report(res.value.length, [], CLAUDE_GIT_DIR));
 });
 
 // GET /api/state-at/:hash — show file at specific commit
@@ -254,18 +262,22 @@ api.get("/state-at/:hash", async (c) => {
   const hash = c.req.param("hash");
   const file = c.req.query("file");
   if (!file) return c.json({ error: "file query param required" }, 400);
+  if (!isRevision(hash)) return c.json({ error: "not a revision", status: "bad-request" }, 400);
 
-  const content = await showAtCommit(hash, file);
-  if (content === null) return c.json({ error: "Not found" }, 404);
-  return c.json({ hash, file, content });
+  const res = await showAtCommit(hash, file);
+  if (!res.ok) return gitFailed(c, `${file} at ${hash}`, res.err);
+  if (res.value === null) return c.json({ error: `${file} is not in commit ${hash}`, status: "none" }, 404);
+  return c.json({ hash, file, content: res.value });
 });
 
 // GET /api/diff/:from/:to — diff between two commits
 api.get("/diff/:from/:to", async (c) => {
   const from = c.req.param("from");
   const to = c.req.param("to");
-  const diff = await diffCommits(from, to);
-  return c.json({ from, to, diff });
+  if (!isRevision(from) || !isRevision(to)) return c.json({ error: "not a revision", status: "bad-request" }, 400);
+  const res = await diffCommits(from, to);
+  if (!res.ok) return gitFailed(c, `the diff ${from}..${to}`, res.err);
+  return c.json({ from, to, diff: res.value });
 });
 
 // GET /api/routing-architecture — three-tier context architecture with file sizes.
