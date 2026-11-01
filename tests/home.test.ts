@@ -209,6 +209,29 @@ describe("open PRs you authored, from gh search (#45)", () => {
     expect(calls).toBe(3);
     resetAuthoredSearch();
   });
+
+  test("a failing background refresh is reported beside the answer it could not replace, until one succeeds (#54)", async () => {
+    resetAuthoredSearch();
+    const okRun = async () => ({ ok: true, out: JSON.stringify([row("o/a", 1, 2)]), err: "" });
+    const fail = async () => ({ ok: false, out: "", err: "gh: not logged in" });
+    const tick = () => new Promise((r) => setTimeout(r, 0));
+    await searchAuthoredPrs(okRun, NOW);
+    const fresh = await searchAuthoredPrs(fail, Date.now()); // fresh cache: no refresh, nothing to report
+    expect(fresh.ok && fresh.refreshFailed).toBeUndefined();
+
+    await searchAuthoredPrs(fail, Date.now() + 61_000); // stale: served, refresh fails behind it
+    await tick();
+    const after = await searchAuthoredPrs(fail, Date.now() + 62_000);
+    expect(after.ok && after.prs.length).toBe(1); // the last answer is still served...
+    expect(after.ok && after.refreshFailed?.err).toBe("gh: not logged in"); // ...and says it could not be refreshed
+
+    await tick();
+    await searchAuthoredPrs(okRun, Date.now() + 63_000); // gh works again
+    await tick();
+    const healed = await searchAuthoredPrs(okRun, Date.now());
+    expect(healed.ok && healed.refreshFailed).toBeUndefined();
+    resetAuthoredSearch();
+  });
 });
 
 describe("notes currency snapshot", () => {
