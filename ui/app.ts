@@ -56,6 +56,8 @@ let currentView: ViewName = "home";
 let projects: ProjectSummary[] = [];
 let currentProject: ProjectState | null = null;
 let timelinePoints: TimelinePoint[] = [];
+/** Set when the history could not be read (#35): shown in the timeline strip, never as "no history". */
+let timelineError: string | null = null;
 let timelineState: TimelineState | null = null;
 let diffContent: string | null = null;
 let wsConnected = false;
@@ -273,7 +275,17 @@ function renderMain() {
 
 function renderTimeline() {
   const showTimeline = currentView === "home" || currentView === "project";
-  if (timelinePoints.length > 0 && showTimeline) {
+  if (timelineError && showTimeline) {
+    timelineEl!.innerHTML = "";
+    timelineEl!.style.display = "";
+    const bar = document.createElement("div");
+    bar.className = "timeline-bar";
+    const msg = document.createElement("div");
+    msg.className = "timeline-empty";
+    msg.textContent = `Could not read the history — ${timelineError}`;
+    bar.appendChild(msg);
+    timelineEl!.appendChild(bar);
+  } else if (timelinePoints.length > 0 && showTimeline) {
     timelineEl!.innerHTML = "";
     timelineEl!.style.display = "";
     const initialIndex = timelineState?.selectedIndex ?? 0;
@@ -293,8 +305,8 @@ async function onTimelineChange(state: TimelineState) {
     try {
       const result = await api.diff(from.hash, to.hash);
       diffContent = result.diff;
-    } catch {
-      diffContent = "Failed to load diff";
+    } catch (err) {
+      diffContent = `Failed to load diff — ${(err as Error).message}`;
     }
   } else {
     diffContent = null;
@@ -396,12 +408,17 @@ async function init() {
   ensureStructure();
   mainEl!.innerHTML = `<div class="loading-state"><div class="loading-spinner"></div><span>Loading projects...</span></div>`;
   try {
+    // The history loads on its own: a git failure must not read as "server down" (#35).
     const [projectsData, timeline] = await Promise.all([
       api.projects(),
-      api.timeline(200),
+      api.timeline(200).then(
+        (points) => ({ points, error: null }),
+        (err: Error) => ({ points: [] as TimelinePoint[], error: err.message }),
+      ),
     ]);
     projects = projectsData;
-    timelinePoints = timeline;
+    timelinePoints = timeline.points;
+    timelineError = timeline.error;
     agentsRoute = parseAgentsHash(location.hash);
     if (agentsRoute) currentView = "agents";
     if (location.hash.startsWith("#map")) currentView = "map"; // e.g. #map?project=stave&zoom=files

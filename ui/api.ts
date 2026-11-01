@@ -6,7 +6,12 @@ const BASE = "/api";
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`);
-  if (!res.ok) throw new Error(`API error: ${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    // Keep the server's own words (e.g. git's stderr), not just the status code.
+    const body = await res.json().catch(() => null) as { error?: string; errors?: string[] } | null;
+    const why = body?.error ? `${body.error}${body.errors?.length ? `: ${body.errors.join("; ")}` : ""}` : res.statusText;
+    throw new Error(`API error: ${res.status} ${why}`);
+  }
   return res.json();
 }
 

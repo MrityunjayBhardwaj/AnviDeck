@@ -3,19 +3,19 @@ import { dirname, relative } from "node:path";
 import { entryIdFromHeader, ENTRY_HEADER_LINE } from "../../shared/parser";
 import type { TimelinePoint, EntryDate } from "../../shared/types";
 
-const CLAUDE_GIT_DIR = `${process.env.HOME ?? "/Users/mrityunjaybhardwaj"}/.claude`;
+export const CLAUDE_GIT_DIR = `${process.env.HOME ?? "/Users/mrityunjaybhardwaj"}/.claude`;
 
 /**
- * Run a git command in the ~/.claude repo.
+ * What a history read found, or why git could not answer (#35). A failed git
+ * command (bad hash, no repo, git missing, a lock) is never read as "nothing".
  */
-async function gitCmd(args: string[]): Promise<string> {
-  const proc = Bun.spawn(["git", "-C", CLAUDE_GIT_DIR, ...args], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const output = await new Response(proc.stdout).text();
-  await proc.exited;
-  return output.trim();
+export type GitRead<T> = { ok: true; value: T } | { ok: false; err: string };
+
+/** Run a git command in the ~/.claude repo (or `dir`); never throws. */
+async function gitCmd(args: string[], dir = CLAUDE_GIT_DIR): Promise<GitRead<string>> {
+  const r = await gitIn(dir, args);
+  if (!r.ok) return { ok: false, err: r.err || `git ${args[0]} failed in ${dir}` };
+  return { ok: true, value: r.out.trim() };
 }
 
 /**
@@ -24,20 +24,23 @@ async function gitCmd(args: string[]): Promise<string> {
  */
 export async function getTimeline(
   limit = 100,
-  offset = 0
-): Promise<TimelinePoint[]> {
+  offset = 0,
+  dir = CLAUDE_GIT_DIR
+): Promise<GitRead<TimelinePoint[]>> {
   // Use a unique commit delimiter to avoid ambiguity with --name-only blank lines
   const DELIM = "---COMMIT---";
-  const raw = await gitCmd([
+  const res = await gitCmd([
     "log",
     `--skip=${offset}`,
     `-n`,
     `${limit}`,
     `--format=${DELIM}%n%H|%s|%aI`,
     "--name-only",
-  ]);
+  ], dir);
+  if (!res.ok) return res;
+  const raw = res.value;
 
-  if (!raw) return [];
+  if (!raw) return { ok: true, value: [] };
 
   const points: TimelinePoint[] = [];
   const blocks = raw.split(DELIM).filter(Boolean);
@@ -67,22 +70,24 @@ export async function getTimeline(
     });
   }
 
-  return points;
+  return { ok: true, value: points };
 }
 
 /**
- * Show file contents at a specific commit.
+ * Show file contents at a specific commit. `value: null` means git answered
+ * that the commit exists but holds no such file; an empty file is "".
  */
 export async function showAtCommit(
   hash: string,
-  filePath: string
-): Promise<string | null> {
-  try {
-    const output = await gitCmd(["show", `${hash}:${filePath}`]);
-    return output || null;
-  } catch {
-    return null;
-  }
+  filePath: string,
+  dir = CLAUDE_GIT_DIR
+): Promise<GitRead<string | null>> {
+  const res = await gitCmd(["show", `${hash}:${filePath}`], dir);
+  if (res.ok) return res;
+  // `git show` fails the same way for "no such file in this commit" and for
+  // "could not look". Only a commit that resolves makes it the former.
+  const commit = await gitCmd(["rev-parse", "--verify", "--quiet", `${hash}^{commit}`], dir);
+  return commit.ok ? { ok: true, value: null } : res;
 }
 
 /**
@@ -90,9 +95,10 @@ export async function showAtCommit(
  */
 export async function diffCommits(
   from: string,
-  to: string
-): Promise<string> {
-  return gitCmd(["diff", from, to]);
+  to: string,
+  dir = CLAUDE_GIT_DIR
+): Promise<GitRead<string>> {
+  return gitCmd(["diff", from, to], dir);
 }
 
 /**
@@ -100,20 +106,12 @@ export async function diffCommits(
  */
 export async function listAtCommit(
   hash: string,
-  dirPath: string
-): Promise<string[]> {
-  try {
-    const output = await gitCmd([
-      "ls-tree",
-      "-r",
-      "--name-only",
-      hash,
-      dirPath,
-    ]);
-    return output ? output.split("\n").filter(Boolean) : [];
-  } catch {
-    return [];
-  }
+  dirPath: string,
+  dir = CLAUDE_GIT_DIR
+): Promise<GitRead<string[]>> {
+  const res = await gitCmd(["ls-tree", "-r", "--name-only", hash, dirPath], dir);
+  if (!res.ok) return res;
+  return { ok: true, value: res.value ? res.value.split("\n").filter(Boolean) : [] };
 }
 
 // ---- Per-entry dates ----------------------------------------------------
