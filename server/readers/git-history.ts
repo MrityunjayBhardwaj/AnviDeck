@@ -11,6 +11,15 @@ export const CLAUDE_GIT_DIR = `${process.env.HOME ?? "/Users/mrityunjaybhardwaj"
  */
 export type GitRead<T> = { ok: true; value: T } | { ok: false; err: string };
 
+/**
+ * True for a value shaped like a revision (a hash, HEAD, HEAD~3, a branch name).
+ * URL values reach git as arguments, and one starting with "-" would be read as
+ * a git option, some of which write files (#56). Callers reject anything else.
+ */
+export function isRevision(s: string): boolean {
+  return /^[A-Za-z0-9_][A-Za-z0-9._\/~^@{}-]{0,199}$/.test(s);
+}
+
 /** Run a git command in the ~/.claude repo (or `dir`); never throws. */
 async function gitCmd(args: string[], dir = CLAUDE_GIT_DIR): Promise<GitRead<string>> {
   const r = await gitIn(dir, args);
@@ -82,11 +91,12 @@ export async function showAtCommit(
   filePath: string,
   dir = CLAUDE_GIT_DIR
 ): Promise<GitRead<string | null>> {
-  const res = await gitCmd(["show", `${hash}:${filePath}`], dir);
+  // --end-of-options: git never reads what follows as an option (#56).
+  const res = await gitCmd(["show", "--end-of-options", `${hash}:${filePath}`], dir);
   if (res.ok) return res;
   // `git show` fails the same way for "no such file in this commit" and for
   // "could not look". Only a commit that resolves makes it the former.
-  const commit = await gitCmd(["rev-parse", "--verify", "--quiet", `${hash}^{commit}`], dir);
+  const commit = await gitCmd(["rev-parse", "--verify", "--quiet", "--end-of-options", `${hash}^{commit}`], dir);
   return commit.ok ? { ok: true, value: null } : res;
 }
 
@@ -98,7 +108,7 @@ export async function diffCommits(
   to: string,
   dir = CLAUDE_GIT_DIR
 ): Promise<GitRead<string>> {
-  return gitCmd(["diff", from, to], dir);
+  return gitCmd(["diff", "--end-of-options", from, to], dir);
 }
 
 /**
@@ -109,7 +119,7 @@ export async function listAtCommit(
   dirPath: string,
   dir = CLAUDE_GIT_DIR
 ): Promise<GitRead<string[]>> {
-  const res = await gitCmd(["ls-tree", "-r", "--name-only", hash, dirPath], dir);
+  const res = await gitCmd(["ls-tree", "-r", "--name-only", "--end-of-options", hash, "--", dirPath], dir);
   if (!res.ok) return res;
   return { ok: true, value: res.value ? res.value.split("\n").filter(Boolean) : [] };
 }

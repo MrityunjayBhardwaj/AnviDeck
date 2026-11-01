@@ -1,9 +1,9 @@
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { getTimeline, showAtCommit, diffCommits } from "../server/readers/git-history";
+import { getTimeline, showAtCommit, diffCommits, isRevision } from "../server/readers/git-history";
 import api from "../server/routes/api";
 
 // #35: a failed git read must never answer as "nothing there".
@@ -75,5 +75,28 @@ describe("history reads tell 'git failed' from 'nothing there' (#35)", () => {
 
     const d = await api.request("/diff/deadbeef/HEAD");
     expect(d.status).toBe(503);
+  });
+});
+
+describe("URL values never reach git as options (#56)", () => {
+  test("revision shapes: hashes, HEAD~n and branch names pass; option-shaped and odd values do not", () => {
+    for (const ok of ["deadbeef", "HEAD", "HEAD~3", "HEAD^", "main", "fix/35-x", "v1.2"]) expect(isRevision(ok)).toBe(true);
+    for (const bad of ["--output=x", "-p", "", "a b", "a:b", "x".repeat(201)]) expect(isRevision(bad)).toBe(false);
+  });
+
+  test("an option-shaped value gets 400 from the routes and git writes nothing", async () => {
+    const out = join(notRepo, "written.txt");
+    const opt = encodeURIComponent(`--output=${out}`);
+    expect((await api.request(`/diff/${opt}/HEAD`)).status).toBe(400);
+    expect((await api.request(`/diff/HEAD/${opt}`)).status).toBe(400);
+    expect((await api.request(`/state-at/${opt}?file=a.md`)).status).toBe(400);
+    expect(existsSync(out)).toBe(false);
+  });
+
+  test("the reader alone also keeps git from reading an option-shaped value as an option", async () => {
+    const out = join(notRepo, "written2.txt");
+    expect((await diffCommits(`--output=${out}`, second, repo)).ok).toBe(false);
+    expect((await showAtCommit(`--output=${out}`, "a.md", repo)).ok).toBe(false);
+    expect(existsSync(out)).toBe(false);
   });
 });

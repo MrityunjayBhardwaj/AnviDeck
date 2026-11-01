@@ -15,6 +15,7 @@ import {
   diffCommits,
   readEntryDatesForFile,
   CLAUDE_GIT_DIR,
+  isRevision,
 } from "../readers/git-history";
 import { readGroundingStatus } from "../readers/ground-truth";
 import { readLiveSessionsReport } from "../readers/sessions";
@@ -261,6 +262,7 @@ api.get("/state-at/:hash", async (c) => {
   const hash = c.req.param("hash");
   const file = c.req.query("file");
   if (!file) return c.json({ error: "file query param required" }, 400);
+  if (!isRevision(hash)) return c.json({ error: "not a revision", status: "bad-request" }, 400);
 
   const res = await showAtCommit(hash, file);
   if (!res.ok) return gitFailed(c, `${file} at ${hash}`, res.err);
@@ -272,6 +274,7 @@ api.get("/state-at/:hash", async (c) => {
 api.get("/diff/:from/:to", async (c) => {
   const from = c.req.param("from");
   const to = c.req.param("to");
+  if (!isRevision(from) || !isRevision(to)) return c.json({ error: "not a revision", status: "bad-request" }, 400);
   const res = await diffCommits(from, to);
   if (!res.ok) return gitFailed(c, `the diff ${from}..${to}`, res.err);
   return c.json({ from, to, diff: res.value });
