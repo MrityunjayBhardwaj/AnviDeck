@@ -7,11 +7,12 @@ import type {
   HomeMetric,
   HomeResponse,
   HomeSource,
+  OlderPr,
   QueueItem,
   UnreadItem,
 } from "../../shared/home-types";
 import { readLiveSessionsReport } from "./sessions";
-import { encodeCwd, findTranscript, ghPrView } from "./replay";
+import { encodeCwd, findTranscript, ghPrView, runAsync } from "./replay";
 import { listStructure, readStructure } from "./structure";
 
 /**
@@ -21,7 +22,8 @@ import { listStructure, readStructure } from "./structure";
  *   - live sessions:   ~/.claude/sessions/<pid>.json (status "waiting" = blocked on you)
  *   - PRs:             "pr-link" records in the live sessions' transcripts, each asked of
  *                      GitHub with `gh pr view` (the replay reader's cache: merged/closed kept,
- *                      open for 60 s)
+ *                      open for 60 s), plus `gh search prs --author=@me --state=open` for PRs
+ *                      whose session has ended (#45)
  *   - structure:       the structure guard's verdict for each project that has a design
  *   - notes currency:  the newest fleet health snapshot, health-<date>.json
  *
@@ -123,6 +125,107 @@ export function prVerdict(a: PrAnswer): "review" | "draft" | "merged" | "closed"
   if (a.state === "MERGED") return "merged";
   if (a.state === "CLOSED") return "closed";
   return "other";
+}
+
+// ── Open PRs you authored, asked of GitHub (#45) ──────────────────────────────────────────
+//
+// pr-link records only exist in transcripts, and only live ones are scanned, so a PR whose
+// session has ended was invisible. Scanning every recent transcript costs ~1.4 GB a week;
+// one `gh search prs` finds every open PR you authored in ~2 s, and is cached.
+
+export interface AuthoredPr {
+  key: string;
+  number: number;
+  repo: string;
+  title: string;
+  url: string;
+  isDraft: boolean;
+  /** Epoch ms. */
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** A PR not updated in this many days is listed apart from the queue, not in it. */
+export const RECENT_DAYS = 30;
+export const SEARCH_LIMIT = 100;
+const SEARCH_TTL_MS = 60_000;
+
+/** Parse `gh search prs --json number,repository,title,url,isDraft,createdAt,updatedAt`. Throws on bad JSON. */
+export function parseAuthoredPrs(out: string): AuthoredPr[] {
+  const rows = JSON.parse(out);
+  if (!Array.isArray(rows)) throw new Error("gh search prs did not answer with a list");
+  return rows.map((r: any) => {
+    const repo = String(r.repository?.nameWithOwner ?? "");
+    return {
+      key: `${repo}#${r.number}`,
+      number: Number(r.number),
+      repo,
+      title: String(r.title ?? ""),
+      url: String(r.url ?? `https://github.com/${repo}/pull/${r.number}`),
+      isDraft: !!r.isDraft,
+      createdAt: Date.parse(r.createdAt ?? "") || 0,
+      updatedAt: Date.parse(r.updatedAt ?? "") || 0,
+    };
+  });
+}
+
+/**
+ * Which authored PRs join the queue: open, not a draft, not already linked by a live session
+ * (that row names the session), and updated within RECENT_DAYS. Older ones are listed apart.
+ */
+export function splitAuthoredPrs(prs: AuthoredPr[], linked: Set<string>, now: number, days = RECENT_DAYS) {
+  const cutoff = now - days * 86_400_000;
+  const out = { recent: [] as AuthoredPr[], older: [] as AuthoredPr[], alreadyLinked: 0, drafts: 0 };
+  for (const p of prs) {
+    if (linked.has(p.key)) out.alreadyLinked++;
+    else if (p.isDraft) out.drafts++;
+    else if (p.updatedAt >= cutoff) out.recent.push(p);
+    else out.older.push(p);
+  }
+  out.older.sort((a, b) => a.updatedAt - b.updatedAt);
+  return out;
+}
+
+export type SearchAnswer =
+  | { ok: true; prs: AuthoredPr[]; at: number; cached: boolean }
+  | { ok: false; err: string };
+
+type Runner = (cmd: string[], timeoutMs?: number) => Promise<{ ok: boolean; out: string; err: string }>;
+let searchCache: { at: number; prs: AuthoredPr[] } | null = null;
+let searchInFlight: Promise<SearchAnswer> | null = null;
+
+export function resetAuthoredSearch() {
+  searchCache = null;
+  searchInFlight = null;
+}
+
+async function runSearch(run: Runner): Promise<SearchAnswer> {
+  const r = await run(
+    ["gh", "search", "prs", "--author=@me", "--state=open", "--limit", String(SEARCH_LIMIT), "--json", "number,repository,title,url,isDraft,createdAt,updatedAt"],
+    20000
+  );
+  if (!r.ok) return { ok: false, err: (r.err || "gh search prs failed").slice(0, 160) };
+  try {
+    const prs = parseAuthoredPrs(r.out);
+    searchCache = { at: Date.now(), prs };
+    return { ok: true, prs, at: searchCache.at, cached: false };
+  } catch (e) {
+    return { ok: false, err: `unparseable answer: ${(e as Error).message}`.slice(0, 160) };
+  }
+}
+
+/**
+ * Open PRs you authored. Fresh for 60 s; after that the last answer is returned at once and
+ * a new search runs behind it, so only the very first Home load waits for GitHub. Failures
+ * are never cached.
+ */
+export async function searchAuthoredPrs(run: Runner = runAsync, now = Date.now()): Promise<SearchAnswer> {
+  const refresh = () => (searchInFlight ??= runSearch(run).finally(() => (searchInFlight = null)));
+  if (searchCache) {
+    if (now - searchCache.at >= SEARCH_TTL_MS) void refresh();
+    return { ok: true, prs: searchCache.prs, at: searchCache.at, cached: true };
+  }
+  return refresh();
 }
 
 // ── Notes currency: the newest fleet health snapshot ──────────────────────────────────────
@@ -245,6 +348,8 @@ export async function readHome(): Promise<HomeResponse> {
     const results = await Promise.all(withDesign.map((p) => readStructure(p.name)));
     return { list, results };
   })().finally(() => (timings.structure = Math.round(performance.now() - tStruct)));
+  const tSearch = performance.now();
+  const searchP = searchAuthoredPrs().finally(() => (timings.search = Math.round(performance.now() - tSearch)));
 
   // PRs linked by live sessions
   const tPr = performance.now();
@@ -310,19 +415,50 @@ export async function readHome(): Promise<HomeResponse> {
     });
   });
   unread.push(...groupFailedPrs(failedPrs));
+
+  // Open PRs you authored that no live session links: their session has ended, or they
+  // were opened outside Claude.
+  const search = await searchP;
+  let olderPrs: OlderPr[] = [];
+  let searchDetail: string;
+  if (search.ok) {
+    const split = splitAuthoredPrs(search.prs, new Set(links.keys()), now);
+    for (const p of split.recent) {
+      queue.push({
+        kind: "pr-review",
+        id: `pr:${p.key}`,
+        what: `Review PR #${p.number}${p.title ? `: ${p.title}` : ""}`,
+        why: `Open and not a draft in ${p.repo}, opened ${ago(p.createdAt, now)} ago, last updated ${ago(p.updatedAt, now)} ago. No live session links it: its session has ended, or it was opened outside Claude.`,
+        dueBy: null,
+        since: p.createdAt || null,
+        action: { label: "Open on GitHub", href: p.url },
+        source: "gh search prs --author=@me --state=open",
+      });
+    }
+    olderPrs = split.older.map((p) => ({ key: p.key, number: p.number, repo: p.repo, title: p.title, url: p.url, updatedAt: new Date(p.updatedAt).toISOString() }));
+    const n = search.prs.length;
+    searchDetail =
+      `gh search found ${n >= SEARCH_LIMIT ? `at least ${n}` : n} open PR(s) you authored` +
+      ` (searched ${ago(search.at, now)} ago): ${split.alreadyLinked} linked by a live session, ${split.recent.length} added to the queue,` +
+      ` ${split.older.length} not updated in ${RECENT_DAYS} days listed apart, ${split.drafts} draft(s).`;
+  } else {
+    unread.push({ id: "pr-search", what: "Could not search GitHub for your open PRs", source: `gh search prs: ${search.err}` });
+    searchDetail = `gh search prs could not be read (${search.err}), so PRs from sessions that have ended are missing.`;
+  }
+
   const prsSource: HomeSource = {
     status:
-      entries.length === 0 ? (scanErrors.length ? "could-not-read" : "none")
-      : tally.failed === entries.length ? "could-not-read"
-      : tally.failed || scanErrors.length ? "partial" : "ok",
-    label: `PR links in ${scanned} of ${sessions.length} live transcripts, checked with gh pr view`,
+      !search.ok && tally.failed === entries.length ? "could-not-read"
+      : !search.ok || tally.failed || scanErrors.length ? "partial"
+      : entries.length === 0 && search.prs.length === 0 ? "none" : "ok",
+    label: `PR links in ${scanned} of ${sessions.length} live transcripts, checked with gh pr view · open PRs you authored, from gh search`,
     detail:
       `${entries.length} linked: ${tally.review} open for review, ${tally.draft} draft, ${tally.merged} merged, ${tally.closed} closed` +
       (tally.other ? `, ${tally.other} other` : "") +
       (tally.failed ? `, ${tally.failed} could not be checked` : "") +
       (tally.cached ? `; ${tally.cached} answers from cache` : "") +
       (scanErrors.length ? `; ${scanErrors.length} transcript(s) unreadable` : "") +
-      ". PRs from sessions that have ended are not scanned.",
+      `. ${searchDetail}`,
   };
 
   // Structure results
@@ -425,5 +561,5 @@ export async function readHome(): Promise<HomeResponse> {
   }));
 
   timings.total = Math.round(performance.now() - t0);
-  return { generatedAt: new Date(now).toISOString(), queue: orderQueue(queue), unread, metrics, agents, sources: sourceList, timings };
+  return { generatedAt: new Date(now).toISOString(), queue: orderQueue(queue), unread, olderPrs, metrics, agents, sources: sourceList, timings };
 }

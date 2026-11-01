@@ -353,7 +353,7 @@ function run(cmd: string[], cwd?: string, timeoutMs = 10000): { ok: boolean; out
 }
 
 /** Like run(), but does not block: several can be in flight at once (#28). */
-async function runAsync(cmd: string[], timeoutMs = 10000): Promise<{ ok: boolean; out: string; err: string }> {
+export async function runAsync(cmd: string[], timeoutMs = 10000): Promise<{ ok: boolean; out: string; err: string }> {
   try {
     const p = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" });
     const timer = setTimeout(() => p.kill(), timeoutMs);

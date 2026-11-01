@@ -101,7 +101,19 @@ function queueEl(home: HomeResponse | null, count: NeedsCount): HTMLElement {
       <div class="hq-right"><span class="hq-when">not counted</span></div>`;
     q.appendChild(row);
   }
+  if (home.olderPrs.length) q.appendChild(olderPrsEl(home.olderPrs));
   return q;
+}
+
+/** Open PRs you authored that have been quiet for 30 days: named once, not counted (#45). */
+function olderPrsEl(prs: HomeResponse["olderPrs"]): HTMLElement {
+  const d = document.createElement("details");
+  d.className = "hq-older";
+  const oldest = prs[0].updatedAt.slice(0, 10);
+  d.innerHTML = `<summary><span class="hq-dot hollow"></span>${prs.length} older open PR${prs.length > 1 ? "s" : ""} you authored, not updated in 30 days (oldest last updated ${esc(oldest)}) · not counted</summary>
+    <ul>${prs.map((p) => `<li><a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.repo)}#${p.number}</a> ${esc(p.title)} <span class="hq-src">updated ${esc(p.updatedAt.slice(0, 10))}</span></li>`).join("")}</ul>
+    <div class="hq-src">Source: gh search prs --author=@me --state=open</div>`;
+  return d;
 }
 
 const KIND_COLOUR: Record<QueueItem["kind"], string> = {

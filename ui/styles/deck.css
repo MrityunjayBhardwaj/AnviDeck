@@ -2601,6 +2601,11 @@ button:focus-visible {
 .home { font-family: var(--font-ui); display: flex; flex-direction: column; gap: 14px; max-width: 1180px; padding-left: 14px; }
 .hq-more { background: none; border: 0; border-top: 1px solid var(--border); color: var(--text-1); font: inherit; padding: 8px 14px; text-align: left; cursor: pointer; }
 .hq-more:hover { color: var(--text-0); background: var(--bg-2); }
+.hq-older { border-top: 1px solid var(--border); padding: 8px 14px; color: var(--text-1); }
+.hq-older summary { cursor: pointer; display: flex; gap: 10px; align-items: center; }
+.hq-older ul { margin: 8px 0 4px 20px; padding: 0; }
+.hq-older li { margin: 3px 0; }
+.hq-older li .hq-src { display: inline; }
 .home .mono { font-family: var(--font-mono); font-size: 12px; }
 .home-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .home-h1 { font-size: 20px; font-weight: 600; color: var(--text-0); letter-spacing: 0; text-transform: none; }
