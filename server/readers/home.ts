@@ -187,16 +187,23 @@ export function splitAuthoredPrs(prs: AuthoredPr[], linked: Set<string>, now: nu
 }
 
 export type SearchAnswer =
-  | { ok: true; prs: AuthoredPr[]; at: number; cached: boolean }
+  | {
+      ok: true; prs: AuthoredPr[]; at: number; cached: boolean;
+      /** Set while the latest background refresh failed: `prs` is then older than it looks (#54). */
+      refreshFailed?: { err: string; at: number };
+    }
   | { ok: false; err: string };
 
 type Runner = (cmd: string[], timeoutMs?: number) => Promise<{ ok: boolean; out: string; err: string }>;
 let searchCache: { at: number; prs: AuthoredPr[] } | null = null;
 let searchInFlight: Promise<SearchAnswer> | null = null;
+/** The latest search failure, cleared by the next success. */
+let searchFailure: { err: string; at: number } | null = null;
 
 export function resetAuthoredSearch() {
   searchCache = null;
   searchInFlight = null;
+  searchFailure = null;
 }
 
 async function runSearch(run: Runner): Promise<SearchAnswer> {
@@ -204,26 +211,34 @@ async function runSearch(run: Runner): Promise<SearchAnswer> {
     ["gh", "search", "prs", "--author=@me", "--state=open", "--limit", String(SEARCH_LIMIT), "--json", "number,repository,title,url,isDraft,createdAt,updatedAt"],
     20000
   );
-  if (!r.ok) return { ok: false, err: (r.err || "gh search prs failed").slice(0, 160) };
+  const fail = (err: string): SearchAnswer => {
+    searchFailure = { err: err.slice(0, 160), at: Date.now() };
+    return { ok: false, err: searchFailure.err };
+  };
+  if (!r.ok) return fail(r.err || "gh search prs failed");
   try {
     const prs = parseAuthoredPrs(r.out);
     searchCache = { at: Date.now(), prs };
+    searchFailure = null;
     return { ok: true, prs, at: searchCache.at, cached: false };
   } catch (e) {
-    return { ok: false, err: `unparseable answer: ${(e as Error).message}`.slice(0, 160) };
+    return fail(`unparseable answer: ${(e as Error).message}`);
   }
 }
 
 /**
  * Open PRs you authored. Fresh for 60 s; after that the last answer is returned at once and
  * a new search runs behind it, so only the very first Home load waits for GitHub. Failures
- * are never cached.
+ * are never cached, but a failed refresh is reported beside the answer it could not replace.
  */
 export async function searchAuthoredPrs(run: Runner = runAsync, now = Date.now()): Promise<SearchAnswer> {
   const refresh = () => (searchInFlight ??= runSearch(run).finally(() => (searchInFlight = null)));
   if (searchCache) {
     if (now - searchCache.at >= SEARCH_TTL_MS) void refresh();
-    return { ok: true, prs: searchCache.prs, at: searchCache.at, cached: true };
+    return {
+      ok: true, prs: searchCache.prs, at: searchCache.at, cached: true,
+      ...(searchFailure ? { refreshFailed: searchFailure } : {}), // a success clears it, so it is newer than the cache
+    };
   }
   return refresh();
 }
@@ -441,6 +456,14 @@ export async function readHome(): Promise<HomeResponse> {
       `gh search found ${n >= SEARCH_LIMIT ? `at least ${n}` : n} open PR(s) you authored` +
       ` (searched ${ago(search.at, now)} ago): ${split.alreadyLinked} linked by a live session, ${split.recent.length} added to the queue,` +
       ` ${split.older.length} not updated in ${RECENT_DAYS} days listed apart, ${split.drafts} draft(s).`;
+    if (search.refreshFailed) {
+      unread.push({
+        id: "pr-search",
+        what: `Could not refresh the search of GitHub for your open PRs; showing the answer from ${ago(search.at, now)} ago`,
+        source: `gh search prs: ${search.refreshFailed.err}`,
+      });
+      searchDetail += ` The latest refresh failed (${search.refreshFailed.err}), so PRs opened or closed since then are not shown.`;
+    }
   } else {
     unread.push({ id: "pr-search", what: "Could not search GitHub for your open PRs", source: `gh search prs: ${search.err}` });
     searchDetail = `gh search prs could not be read (${search.err}), so PRs from sessions that have ended are missing.`;
@@ -449,7 +472,7 @@ export async function readHome(): Promise<HomeResponse> {
   const prsSource: HomeSource = {
     status:
       !search.ok && tally.failed === entries.length ? "could-not-read"
-      : !search.ok || tally.failed || scanErrors.length ? "partial"
+      : !search.ok || search.refreshFailed || tally.failed || scanErrors.length ? "partial"
       : entries.length === 0 && search.prs.length === 0 ? "none" : "ok",
     label: `PR links in ${scanned} of ${sessions.length} live transcripts, checked with gh pr view · open PRs you authored, from gh search`,
     detail:
