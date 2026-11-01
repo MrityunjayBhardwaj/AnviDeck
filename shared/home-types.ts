@@ -39,6 +39,20 @@ export interface UnreadItem {
   source: string;
 }
 
+/**
+ * An open PR you authored that has not been updated in RECENT_DAYS: named once below the
+ * queue, never counted in it (#45).
+ */
+export interface OlderPr {
+  key: string;
+  number: number;
+  repo: string;
+  title: string;
+  url: string;
+  /** ISO time of the last update on GitHub. */
+  updatedAt: string;
+}
+
 export type MetricState = "ok" | "warn" | "bad" | "unknown";
 
 export interface HomeMetric {
@@ -68,6 +82,7 @@ export interface HomeResponse {
   generatedAt: string;
   queue: QueueItem[];
   unread: UnreadItem[];
+  olderPrs: OlderPr[];
   metrics: HomeMetric[];
   agents: HomeAgent[];
   sources: {

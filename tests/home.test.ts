@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { needsCount, headlineText, badgeText, stripText } from "../ui/home-count";
-import { groupFailedPrs, orderQueue, prLinkFromLine, prLinksIn, prVerdict, readNotesCurrency } from "../server/readers/home";
+import { groupFailedPrs, orderQueue, parseAuthoredPrs, prLinkFromLine, prLinksIn, prVerdict, readNotesCurrency, resetAuthoredSearch, searchAuthoredPrs, splitAuthoredPrs } from "../server/readers/home";
 import type { HomeResponse, QueueItem } from "../shared/home-types";
 
 const TMP = "/private/tmp/claude-501/ui18/test-fixtures";
@@ -18,6 +18,7 @@ function fixture(queue: QueueItem[], opts: { unread?: number; prs?: HomeResponse
     generatedAt: "2026-10-31T00:00:00Z",
     queue,
     unread: Array.from({ length: opts.unread ?? 0 }, (_, i) => ({ id: `u${i}`, what: "could not check", source: "fixture" })),
+    olderPrs: [],
     metrics: [],
     agents: [
       { sessionId: "a", name: "a", project: "p", cwd: "/p", branch: null, status: "busy", updatedAt: 0, openPrs: [] },
@@ -152,6 +153,61 @@ describe("what may enter the queue", () => {
     expect(prLinksIn(t).map((l) => l.number)).toEqual([1, 2]);
     writeFileSync(t, `${link(3)}\n`); // shrank: read again from the start
     expect(prLinksIn(t).map((l) => l.number)).toEqual([3]);
+  });
+});
+
+describe("open PRs you authored, from gh search (#45)", () => {
+  const DAY = 86_400_000;
+  const NOW = Date.parse("2026-11-01T00:00:00Z");
+  const row = (repo: string, n: number, updatedDaysAgo: number, isDraft = false) => ({
+    number: n,
+    repository: { nameWithOwner: repo },
+    title: `t${n}`,
+    url: `https://github.com/${repo}/pull/${n}`,
+    isDraft,
+    createdAt: new Date(NOW - (updatedDaysAgo + 5) * DAY).toISOString(),
+    updatedAt: new Date(NOW - updatedDaysAgo * DAY).toISOString(),
+  });
+
+  test("an ended session's open PR joins the queue; linked, draft and quiet ones do not", () => {
+    const prs = parseAuthoredPrs(JSON.stringify([row("o/a", 1, 2), row("o/b", 2, 3), row("o/c", 3, 1, true), row("o/d", 4, 400), row("o/e", 5, 31)]));
+    const s = splitAuthoredPrs(prs, new Set(["o/b#2"]), NOW);
+    expect(s.recent.map((p) => p.key)).toEqual(["o/a#1"]); // must match: recent, unlinked, not a draft
+    expect(s.alreadyLinked).toBe(1); // must not: a live session already links it
+    expect(s.drafts).toBe(1); // must not: a draft is not a review
+    expect(s.older.map((p) => p.key)).toEqual(["o/d#4", "o/e#5"]); // must not: quiet for 30+ days, oldest first
+  });
+
+  test("the 30-day edge: updated exactly 30 days ago is still recent, a minute more is not", () => {
+    const at = (ms: number) => parseAuthoredPrs(JSON.stringify([{ ...row("o/a", 1, 0), updatedAt: new Date(ms).toISOString() }]));
+    expect(splitAuthoredPrs(at(NOW - 30 * DAY), new Set(), NOW).recent.length).toBe(1);
+    expect(splitAuthoredPrs(at(NOW - 30 * DAY - 60_000), new Set(), NOW).older.length).toBe(1);
+  });
+
+  test("a bad answer throws instead of reading as no PRs", () => {
+    expect(() => parseAuthoredPrs("not json")).toThrow();
+    expect(() => parseAuthoredPrs('{"message":"rate limited"}')).toThrow();
+    expect(parseAuthoredPrs("[]")).toEqual([]);
+  });
+
+  test("searched once, then served from cache; a failure is reported and never cached", async () => {
+    resetAuthoredSearch();
+    let calls = 0;
+    const fail = async () => (calls++, { ok: false, out: "", err: "gh: not logged in" });
+    const a = await searchAuthoredPrs(fail, NOW);
+    expect(a).toEqual({ ok: false, err: "gh: not logged in" });
+    const okRun = async () => (calls++, { ok: true, out: JSON.stringify([row("o/a", 1, 2)]), err: "" });
+    const b = await searchAuthoredPrs(okRun, NOW); // the failure was not cached: asks again
+    expect(b.ok && !b.cached && b.prs.length).toBe(1);
+    expect(calls).toBe(2);
+    const c = await searchAuthoredPrs(okRun, Date.now()); // fresh: no new call
+    expect(c.ok && c.cached).toBe(true);
+    expect(calls).toBe(2);
+    const d = await searchAuthoredPrs(okRun, Date.now() + 61_000); // stale: answered at once, refreshed behind
+    expect(d.ok && d.cached).toBe(true);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls).toBe(3);
+    resetAuthoredSearch();
   });
 });
 
