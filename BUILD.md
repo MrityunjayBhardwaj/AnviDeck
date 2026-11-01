@@ -206,7 +206,7 @@ AnviDeck/
 ├── shared/
 │   ├── types.ts              ✅ Full type definitions (~170 lines)
 │   └── parser.ts             ✅ Markdown → structured data parser (161 lines)
-├── .planning/                ✅ Phase plans + research (phases 4-7)
+├── .anvi/                    ⇢ symlink into ~/.anvideck (catalogues + phase plans, not tracked here)
 ├── ref/
 │   ├── ANVI_THESIS.md        ✅ Framework thesis (923 lines, includes Part VIII)
 │   └── DATA_EXAMPLES.md      ✅ Parsed data examples for every type
