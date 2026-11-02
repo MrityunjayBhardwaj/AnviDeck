@@ -40,7 +40,17 @@ export interface AgentsRoute {
   scope?: AgentsScope;
 }
 
-type Load<T> = { status: "loading" } | { status: "ok"; data: T } | { status: "error"; error: string };
+/**
+ * `readAt` is when the shown answer was read (ISO, UTC). `refreshError` is set when a later
+ * re-read failed: the answer shown is then older than a running session (#40).
+ */
+type Load<T> =
+  | { status: "loading" }
+  | { status: "ok"; data: T; readAt?: string; refreshError?: string }
+  | { status: "error"; error: string };
+
+/** How often a visible Agents view re-reads running sessions. A replay costs ~0.6–1.1 s server-side. */
+const REFRESH_MS = 30_000;
 
 /** How many sessions the "All in <project>" switch reads at most. */
 const ALL_SCOPE_MAX = 8;
@@ -162,16 +172,31 @@ async function getJson<T>(url: string): Promise<T> {
 function loadList(project: string): void {
   if (S.lists.has(project)) return;
   S.lists.set(project, { status: "loading" });
+  refreshList(project);
+}
+
+/** Re-read a project's session list; the last answer stays on screen until the new one lands. */
+function refreshList(project: string): void {
   getJson<ReplaySessionsResponse>(`/api/replay/sessions?project=${encodeURIComponent(project)}`)
-    .then((data) => S.lists.set(project, { status: "ok", data }))
-    .catch((e) => S.lists.set(project, { status: "error", error: String(e?.message ?? e) }))
-    .finally(paint);
+    .then((data) => {
+      const prev = S.lists.get(project);
+      if (prev?.status === "ok" && JSON.stringify(prev.data) === JSON.stringify(data)) return false;
+      S.lists.set(project, { status: "ok", data, readAt: new Date().toISOString() });
+      return true;
+    })
+    .catch((e) => {
+      const prev = S.lists.get(project);
+      const error = String(e?.message ?? e);
+      S.lists.set(project, prev?.status === "ok" ? { ...prev, refreshError: error } : { status: "error", error });
+      return true;
+    })
+    .then((changed) => changed && paint());
 }
 
 /** When live status was last read (ISO, UTC); printed beside the ranking. */
 let liveReadAt: string | null = null;
 
-/** Read live status. Called each time the view opens, so a revisit is not stale. */
+/** Read live status. Called when the view opens and on each poll, so a revisit is not stale. */
 function loadLive(): void {
   if (liveRequested) return;
   liveRequested = true;
@@ -181,8 +206,37 @@ function loadLive(): void {
     .finally(() => {
       liveRequested = false;
       liveReadAt = new Date().toISOString();
+      refreshRunning();
       paint();
     });
+}
+
+/** Sessions live at the previous read: one more re-read after they stop picks up their last steps. */
+let wasLive = new Set<string>();
+
+/**
+ * Re-read what can still change: the replays of running sessions (and of those that just
+ * stopped) and the open project's session list. Ended sessions keep their answer.
+ */
+function refreshRunning(): void {
+  // Live status that could not be read is not "nothing running": keep re-reading what last ran.
+  const live = S.live.status === "error" ? wasLive : new Set(liveBySid().keys());
+  for (const [key, load] of S.replays) {
+    const sid = key.slice(0, key.indexOf("|"));
+    if (load.status !== "loading" && (live.has(sid) || wasLive.has(sid))) fetchReplay(key);
+  }
+  wasLive = live;
+  if (S.project && S.lists.get(S.project)?.status !== "loading") refreshList(S.project);
+}
+
+let pollStarted = false;
+/** Re-read on a slow poll while this view is on screen and the tab is visible. */
+function startPolling(): void {
+  if (pollStarted) return;
+  pollStarted = true;
+  setInterval(() => {
+    if (root?.isConnected && document.visibilityState === "visible") loadLive();
+  }, REFRESH_MS);
 }
 
 const queue: (() => Promise<void>)[] = [];
@@ -204,17 +258,79 @@ function loadReplay(sid: string, from: string | null, to: string | null): Load<R
   if (have) return have;
   const pending: Load<ReplayResponse> = { status: "loading" };
   S.replays.set(key, pending);
+  fetchReplay(key);
+  return pending;
+}
+
+/** Everything but the read's own timings, which differ on every read. */
+function replayContent(r: ReplayResponse): string {
+  return JSON.stringify({ ...r, timingsMs: undefined });
+}
+
+const replaysInFlight = new Set<string>();
+
+/**
+ * Read (or re-read) one replay. A re-read keeps the answer on screen until the new one
+ * lands, repaints only if the content changed, and on failure keeps the answer with
+ * `refreshError` set rather than replacing it with an error.
+ */
+function fetchReplay(key: string): void {
+  if (replaysInFlight.has(key)) return;
+  replaysInFlight.add(key);
+  const [sid, from, to] = key.split("|");
   const qs = new URLSearchParams();
   if (from) qs.set("from", from);
   if (to) qs.set("to", to);
   queue.push(() =>
-    getJson<ReplayResponse>(`/api/replay/session/${encodeURIComponent(sid)}${qs.toString() ? `?${qs}` : ""}`)
-      .then((data) => void S.replays.set(key, { status: "ok", data }))
-      .catch((e) => void S.replays.set(key, { status: "error", error: String(e?.message ?? e) }))
-      .finally(paint)
+    getJson<ReplayResponse>(`/api/replay/session/${encodeURIComponent(sid!)}${qs.toString() ? `?${qs}` : ""}`)
+      .then((data) => {
+        const prev = S.replays.get(key);
+        const readAt = new Date().toISOString();
+        if (prev?.status === "ok" && !prev.refreshError && replayContent(prev.data) === replayContent(data)) {
+          S.replays.set(key, { ...prev, readAt });
+          stampReadAt(key, readAt);
+          return false;
+        }
+        S.replays.set(key, { status: "ok", data, readAt });
+        return true;
+      })
+      .catch((e) => {
+        const prev = S.replays.get(key);
+        const error = String(e?.message ?? e);
+        S.replays.set(key, prev?.status === "ok" ? { ...prev, refreshError: error } : { status: "error", error });
+        return true;
+      })
+      .then((changed) => {
+        replaysInFlight.delete(key);
+        if (changed) paint();
+      })
   );
   pump();
-  return pending;
+}
+
+/** Update a shown read time in place, so an unchanged re-read does not repaint the view. */
+function stampReadAt(key: string, readAt: string): void {
+  root?.querySelectorAll<HTMLElement>("[data-readat]").forEach((el) => {
+    if (el.dataset.readat === key) el.textContent = utc(readAt);
+  });
+}
+
+/** "Read at … UTC" for a replay, and whether a re-read failed since. */
+function readLine(sid: string, load: Load<ReplayResponse>): string {
+  if (load.status !== "ok" || !load.readAt) return "";
+  const key = windowKey(sid, S.from, S.to);
+  const again =
+    S.live.status === "error"
+      ? wasLive.has(sid)
+        ? `; live status could not be read, so it is re-read every ${REFRESH_MS / 1000} s as last seen running`
+        : "; live status could not be read, so whether it is running is unknown"
+      : liveBySid().has(sid)
+        ? `; re-read every ${REFRESH_MS / 1000} s while it runs and this view is open`
+        : "; this session is not running, so it is not re-read";
+  const failed = load.refreshError
+    ? `<div class="ag-state ag-cnr" role="status"><b>Could not re-read</b> · ${esc(load.refreshError)} · showing the answer read at ${esc(utc(load.readAt))}</div>`
+    : "";
+  return `<div class="ag-note">Read at <span data-readat="${esc(key)}">${esc(utc(load.readAt))}</span>${again}.</div>${failed}`;
 }
 
 function liveBySid(): Map<string, LiveSession> {
@@ -486,8 +602,9 @@ function stepsCard(load: Load<ReplayResponse>): string {
   if (load.status === "loading") return `<div class="ag-card"><div class="ag-loading">Reading this session's transcript…</div></div>`;
   if (load.status === "error") return `<div class="ag-card">${statusBlock("unreadable", `the server answered ${load.error}`, "")}</div>`;
   const r = load.data;
+  const read = S.sid ? readLine(S.sid, load) : "";
   if (isCouldNotRead(r.transcript.status)) {
-    return `<div class="ag-card">${sourcesLine(r)}${statusBlock(r.transcript.status, r.transcript.detail ?? "transcript not found", "")}
+    return `<div class="ag-card">${sourcesLine(r)}${read}${statusBlock(r.transcript.status, r.transcript.detail ?? "transcript not found", "")}
       <div class="ag-note">Not found means the transcript is gone or the id is wrong. It does not mean the session did nothing.</div></div>`;
   }
   const notes = new Map(r.notes.items.map((n) => [n.id, n]));
@@ -504,7 +621,7 @@ function stepsCard(load: Load<ReplayResponse>): string {
     ? `<div class="ag-note">${r.transcript.untimedInWindow} transcript records in this window have no timestamp; steps among them are placed by their neighbour and marked ≈.</div>`
     : "";
   return `<div class="ag-card">
-    ${sourcesLine(r)}
+    ${sourcesLine(r)}${read}
     ${
       r.steps.length
         ? `<table class="ag-steps"><thead><tr><th>Time (UTC)</th><th>Step</th><th>Known from</th></tr></thead><tbody>${rows}</tbody></table>${untimed}`
@@ -613,7 +730,7 @@ function sessionTab(ranked: Ranked[], sel: Ranked | undefined, load: Load<Replay
     <div class="ag-signals">
       <div><b>Ranked by:</b> waiting on you (live status) › ready for review (open PR, GitHub) › working (live status: busy) › running › not running (newest first).</div>
       <div><b>Not available:</b> deadline (no source records one). Open PRs are checked only for running sessions and the selected one.</div>
-      <div>${liveReadAt ? `Live status read at ${utc(liveReadAt)} (~/.claude/sessions); re-read each time this view opens.` : "Reading live status…"}</div>
+      <div>${liveReadAt ? `Live status read at ${utc(liveReadAt)} (~/.claude/sessions); re-read when this view opens and every ${REFRESH_MS / 1000} s while it is on screen.` : "Reading live status…"}</div>
     </div>
     ${liveNote}
     <div class="ag-prios">${rows}</div>
@@ -732,7 +849,7 @@ function scoped(
               ? statusBlock("unreadable", `the server answered ${l.error}`, "")
               : isCouldNotRead(l.data.transcript.status)
                 ? statusBlock(l.data.transcript.status, l.data.transcript.detail, "")
-                : fn(l.data);
+                : fn(l.data) + (S.scope === "all" ? readLine(sid, l) : "");
         return S.scope === "all" ? `<section class="ag-sec"><h4>${esc(nameOf(sid))} <span class="mono ag-note">${esc(shortSid(sid))}</span></h4>${body}</section>` : body;
       })
       .join("")
@@ -898,8 +1015,9 @@ export function AgentsView(projectNames: string[], route?: AgentsRoute | null): 
   root.addEventListener("click", onClick);
   root.addEventListener("change", onChange);
   root.addEventListener("submit", onSubmit);
-  loadLive();
+  loadLive(); // and, once read, re-reads running sessions' replays (#40)
   if (S.project) loadList(S.project);
+  startPolling();
   // paint after the element is in the DOM
   queueMicrotask(paint);
   return root;
