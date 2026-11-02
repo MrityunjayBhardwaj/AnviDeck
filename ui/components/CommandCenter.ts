@@ -97,7 +97,7 @@ function queueEl(home: HomeResponse | null, count: NeedsCount): HTMLElement {
     const row = document.createElement("div");
     row.className = "hq-row hq-unread";
     row.innerHTML = `<span class="hq-dot hollow"></span>
-      <div><div class="hq-what">${esc(u.what)}</div><div class="hq-src">Could not read · ${esc(u.source)}</div></div>
+      <div><div class="hq-what">${esc(u.what)}</div><div class="hq-src">${u.reading ? "Still reading" : "Could not read"} · ${esc(u.source)}</div></div>
       <div class="hq-right"><span class="hq-when">not counted</span></div>`;
     q.appendChild(row);
   }

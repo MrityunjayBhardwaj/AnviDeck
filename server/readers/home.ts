@@ -325,9 +325,34 @@ function ago(ms: number, now: number): string {
 
 // ── Build ─────────────────────────────────────────────────────────────────────────────────
 
-export async function readHome(): Promise<HomeResponse> {
+/**
+ * How long Home waits for its slow sources (structure guard, gh). Bun closes a request that
+ * has not answered in 10 s; a cold load on a busy machine took longer than that (#61).
+ */
+export const HOME_BUDGET_MS = 5000;
+
+export const STILL_READING = Symbol("still reading");
+export type Deadline = { at: Promise<typeof STILL_READING>; cancel: () => void };
+
+/** One deadline shared by every slow read of a load. */
+export function deadlineIn(ms: number): Deadline {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const at = new Promise<typeof STILL_READING>((r) => (timer = setTimeout(() => r(STILL_READING), ms)));
+  return { at, cancel: () => clearTimeout(timer) };
+}
+
+/**
+ * The read's answer, or STILL_READING if the deadline came first. The read keeps running and
+ * fills its cache, so a later load gets the answer.
+ */
+export function byDeadline<T>(p: Promise<T>, d: Deadline): Promise<T | typeof STILL_READING> {
+  return Promise.race([p, d.at]);
+}
+
+export async function readHome(budgetMs = HOME_BUDGET_MS): Promise<HomeResponse> {
   const t0 = performance.now();
   const now = Date.now();
+  const deadline = deadlineIn(budgetMs);
   const timings: Record<string, number> = {};
   const queue: QueueItem[] = [];
   const unread: UnreadItem[] = [];
@@ -390,13 +415,17 @@ export async function readHome(): Promise<HomeResponse> {
   }
   timings.transcripts = Math.round(performance.now() - tPr);
   const entries = [...links.values()];
-  const answers = await Promise.all(entries.map((e) => ghPrView(e.link.number, e.link.repo)));
+  const answers = await Promise.all(entries.map((e) => byDeadline(ghPrView(e.link.number, e.link.repo), deadline)));
   timings.github = Math.round(performance.now() - tPr) - timings.transcripts;
-  const tally = { review: 0, draft: 0, merged: 0, closed: 0, other: 0, failed: 0, cached: 0 };
+  const tally = { review: 0, draft: 0, merged: 0, closed: 0, other: 0, failed: 0, cached: 0, reading: 0 };
   const openBySession = new Map<string, number[]>();
   const failedPrs: { key: string; reason: string }[] = [];
   entries.forEach((e, i) => {
     const r = answers[i];
+    if (r === STILL_READING) {
+      tally.reading++;
+      return;
+    }
     if (r.cached) tally.cached++;
     const key = `${e.link.repo}#${e.link.number}`;
     let a: PrAnswer | null = null;
@@ -430,13 +459,30 @@ export async function readHome(): Promise<HomeResponse> {
     });
   });
   unread.push(...groupFailedPrs(failedPrs));
+  if (tally.reading) {
+    unread.push({
+      id: "pr-reading",
+      what: `Still asking GitHub about ${tally.reading} PR(s) linked by live sessions; the next refresh shows them`,
+      source: `gh pr view: no answer within ${budgetMs / 1000} s`,
+      reading: true,
+    });
+  }
 
   // Open PRs you authored that no live session links: their session has ended, or they
   // were opened outside Claude.
-  const search = await searchP;
+  const searched = await byDeadline(searchP, deadline);
+  const search: SearchAnswer | null = searched === STILL_READING ? null : searched;
   let olderPrs: OlderPr[] = [];
   let searchDetail: string;
-  if (search.ok) {
+  if (!search) {
+    unread.push({
+      id: "pr-search",
+      what: "Still searching GitHub for your open PRs; the next refresh shows them",
+      source: `gh search prs: no answer within ${budgetMs / 1000} s`,
+      reading: true,
+    });
+    searchDetail = `gh search prs had not answered within ${budgetMs / 1000} s, so PRs from sessions that have ended are not shown yet.`;
+  } else if (search.ok) {
     const split = splitAuthoredPrs(search.prs, new Set(links.keys()), now);
     for (const p of split.recent) {
       queue.push({
@@ -471,7 +517,8 @@ export async function readHome(): Promise<HomeResponse> {
 
   const prsSource: HomeSource = {
     status:
-      !search.ok && tally.failed === entries.length ? "could-not-read"
+      !search || tally.reading ? "reading"
+      : !search.ok && tally.failed === entries.length ? "could-not-read"
       : !search.ok || search.refreshFailed || tally.failed || scanErrors.length ? "partial"
       : entries.length === 0 && search.prs.length === 0 ? "none" : "ok",
     label: `PR links in ${scanned} of ${sessions.length} live transcripts, checked with gh pr view · open PRs you authored, from gh search`,
@@ -479,13 +526,17 @@ export async function readHome(): Promise<HomeResponse> {
       `${entries.length} linked: ${tally.review} open for review, ${tally.draft} draft, ${tally.merged} merged, ${tally.closed} closed` +
       (tally.other ? `, ${tally.other} other` : "") +
       (tally.failed ? `, ${tally.failed} could not be checked` : "") +
+      (tally.reading ? `, ${tally.reading} still being read` : "") +
       (tally.cached ? `; ${tally.cached} answers from cache` : "") +
       (scanErrors.length ? `; ${scanErrors.length} transcript(s) unreadable` : "") +
       `. ${searchDetail}`,
   };
 
   // Structure results
-  const { list, results } = await structureP;
+  const structured = await byDeadline(structureP, deadline);
+  deadline.cancel();
+  const structureReading = structured === STILL_READING;
+  const { list, results } = structureReading ? { list: null, results: [] } : structured;
   let newBreaks = 0, allowed = 0, measured = 0;
   const notMeasured: string[] = [];
   const measuredLines: string[] = [];
@@ -506,7 +557,7 @@ export async function readHome(): Promise<HomeResponse> {
           why: `Imports its design does not allow: ${keys.slice(0, 2).join("; ")}${keys.length > 2 ? ` and ${keys.length - 2} more` : ""}.`,
           dueBy: null,
           since: (r.measuredAt.date && Date.parse(r.measuredAt.date)) || null,
-          action: { label: "Copy cd", copy: `cd ${list.projects.find((p) => p.name === r.project)?.path ?? r.project}` },
+          action: { label: "Copy cd", copy: `cd ${list?.projects.find((p) => p.name === r.project)?.path ?? r.project}` },
           source: `structure guard at ${at}`,
         });
       }
@@ -515,8 +566,18 @@ export async function readHome(): Promise<HomeResponse> {
       unread.push({ id: `rules:${r.project}`, what: `Could not measure ${r.project}'s structure`, source: `structure guard: ${r.reason.slice(0, 160)}` });
     }
   }
+  if (structureReading) {
+    unread.push({
+      id: "rules-reading",
+      what: "Still measuring structure; the next refresh shows rule breaks",
+      source: `structure guard: no answer within ${budgetMs / 1000} s`,
+      reading: true,
+    });
+  }
   const structureSource: HomeSource =
-    list.status !== "ok"
+    !list
+      ? { status: "reading", label: "structure guard", detail: `still measuring after ${budgetMs / 1000} s; the next refresh shows the result` }
+      : list.status !== "ok"
       ? { status: "could-not-read", label: "structure guard registry", detail: list.reason }
       : results.length === 0
         ? { status: "none", label: "structure guard registry", detail: "no project has a design" }
@@ -535,7 +596,7 @@ export async function readHome(): Promise<HomeResponse> {
     id: "new-breaks",
     label: "New rule breaks",
     state: structureSource.status === "ok" ? (newBreaks > 0 ? "bad" : "ok") : structureSource.status === "none" ? "ok" : "unknown",
-    value: structureSource.status === "ok" || structureSource.status === "partial" ? String(newBreaks) : "not measured",
+    value: structureSource.status === "ok" || structureSource.status === "partial" ? String(newBreaks) : structureReading ? "still measuring" : "not measured",
     note: structureSource.status === "none" ? "No project has a design, so nothing is checked." : "Imports added since the baseline that the design does not allow.",
     source: structureSource.detail ? `${structureSource.label}: ${structureSource.detail}` : structureSource.label,
   });
@@ -543,7 +604,7 @@ export async function readHome(): Promise<HomeResponse> {
     id: "allowed-breaks",
     label: "Allowed rule breaks",
     state: measured ? "ok" : "unknown",
-    value: measured ? String(allowed) : "not measured",
+    value: measured ? String(allowed) : structureReading ? "still measuring" : "not measured",
     note: "Known imports the design does not allow yet, kept in the baseline until fixed.",
     source: structureSource.label,
   });
@@ -560,7 +621,7 @@ export async function readHome(): Promise<HomeResponse> {
     source: notes.source.label,
   });
   const sourceList = { sessions: sessionsSource, prs: prsSource, structure: structureSource, notes: notes.source };
-  const unreadable = Object.entries(sourceList).filter(([, s]) => s.status === "could-not-read" || s.status === "partial" || s.status === "not-measured");
+  const unreadable = Object.entries(sourceList).filter(([, s]) => s.status === "could-not-read" || s.status === "partial" || s.status === "not-measured" || s.status === "reading");
   metrics.push({
     id: "sources",
     label: "Sources read",

@@ -395,9 +395,16 @@ function setHome(next: HomeResponse | null, failed = false) {
   if (currentView === "home" && !loading) renderMain();
 }
 
+/** A load that came back with sources still reading asks again soon, not in a minute (#61). */
+let homeRetry: ReturnType<typeof setTimeout> | null = null;
+const HOME_READING_RETRY_MS = 5_000;
+
 async function loadHome() {
   try {
-    setHome(await api.home());
+    const home = await api.home();
+    setHome(home);
+    if (homeRetry) clearTimeout(homeRetry);
+    homeRetry = needsCount(home).reading > 0 ? setTimeout(loadHome, HOME_READING_RETRY_MS) : null;
   } catch (err) {
     console.error("Failed to load /api/home:", err);
     setHome(null, true);

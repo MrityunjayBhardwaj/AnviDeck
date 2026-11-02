@@ -2645,6 +2645,7 @@ button:focus-visible {
 .hs-st { color: var(--text-2); }
 .hs-st.st-ok, .hs-st.st-none { color: var(--green); }
 .hs-st.st-partial, .hs-st.st-not-measured { color: var(--yellow); }
+.hs-st.st-reading { color: var(--text-1); font-style: italic; }
 .hs-st.st-could-not-read { color: var(--text-1); text-decoration: underline dashed; }
 .home-agents { border: 1px solid var(--border); border-radius: 10px; background: var(--bg-1); padding: 12px 14px; display: flex; flex-direction: column; }
 .ha-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
