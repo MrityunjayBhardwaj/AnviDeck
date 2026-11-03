@@ -340,6 +340,13 @@ function cdTargets(cmd: string): string[] {
 }
 
 const GIT_COMMIT_RE = /\bgit\b(?:\s+-C\s+\S+)?[^;&|]*?\bcommit\b/;
+/**
+ * `git commit` as the command actually run: `git`, then only global options, then the
+ * `commit` subcommand, at the start of a command. GIT_COMMIT_RE above also matches
+ * `--no-commit-id` or a test name; that is harmless where time and repo must also
+ * match a real commit, but not for claiming a commit went missing (#65).
+ */
+export const GIT_COMMIT_RUN_RE = /(?:^|[;&|(\n]|\b(?:then|do|else)\s)\s*git(?:\s+(?:-C\s+\S+|-c\s+\S+|--no-pager|--git-dir=\S+|--work-tree=\S+))*\s+commit(?=\s|$)/;
 
 // ─── Process helpers (read-only git/gh) ─────────────────────────────────────
 
@@ -766,8 +773,24 @@ export async function readReplay(sessionId: string, opts: ReplayOptions = {}): P
   const allCommits = new Map<string, CommitInfo & { store: string }>();
   if (tPath && Number.isFinite(gitFrom) && Number.isFinite(gitTo)) {
     const stores = new Map<string, string>(); // store → a toplevel to run git in
+    const goneCache = new Map<string, { top: string; store: string } | null>();
+    const goneNoted = new Set<string>();
     for (const d of repoHints) {
       if (!existsSync(d)) {
+        const gone = removedWorktree(d, goneCache);
+        if (gone) {
+          // Commits are read from the repository the worktree was made from; repoDir
+          // stays the worktree's own path, so its files keep the names the session used.
+          // Same store spelling as the live dirs use, so one store is logged once.
+          const store = [...stores.keys()].find((k) => realOr(k) === gone.store) ?? gone.store;
+          repoOf.set(d, { top: gone.worktree, store });
+          if (!stores.has(store)) stores.set(store, gone.top);
+          if (!goneNoted.has(gone.worktree)) {
+            goneNoted.add(gone.worktree);
+            dirStatus.push({ dir: gone.worktree, status: "not-found", detail: `worktree removed; its commits are read from the repository it was made from, ${gone.top}` });
+          }
+          continue;
+        }
         repoOf.set(d, null);
         // Worth saying for where the session ran or cd'd into (worktrees), not every file's parent.
         if (cdDirs.has(d) || cwdHints.has(d))
@@ -887,6 +910,17 @@ export async function readReplay(sessionId: string, opts: ReplayOptions = {}): P
     } else {
       res.unattributedCommits.push(info);
     }
+  }
+  // A `git commit` the session ran in the window that matched no commit on any branch
+  // means its commit could not be found (its branch deleted after a squash merge, or
+  // the commit failed) — never "this window has no commits" (#65).
+  const unmatchedCommitSteps = commitSteps.filter((s) => inWin(s.sortMs) && !usedSteps.has(s) && GIT_COMMIT_RUN_RE.test(s.command!)).length;
+  const g = res.sources.git;
+  if (unmatchedCommitSteps && (g.status === "ok" || g.status === "none")) {
+    g.missingCommits = unmatchedCommitSteps;
+    const why = `the session ran git commit ${unmatchedCommitSteps} time(s) in this window with no matching commit on any branch (its branch may have been deleted after a squash merge, or the commit may have failed)`;
+    g.detail = g.detail ? `${g.detail}; ${why}` : why;
+    if (g.status === "none") g.status = "not-found";
   }
   timings.git = Math.round(performance.now() - tGit);
 
@@ -1067,11 +1101,41 @@ function realOr(p: string): string {
 }
 
 /**
+ * A path inside a removed Claude Code worktree, `<repo>/.claude/worktrees/<name>/…`,
+ * whose repository `<repo>` still exists. Such a worktree is made from the repository
+ * that contains it, so its commits are still in that repository's object store and
+ * its files keep their repo-relative names. Only this layout is trusted: any other
+ * gone directory stays unresolved rather than guessed from a parent (#65).
+ */
+export function removedWorktree(
+  absPath: string,
+  cache = new Map<string, { top: string; store: string } | null>()
+): { worktree: string; top: string; store: string; rel: string } | null {
+  const m = absPath.match(/^(.+?)\/\.claude\/worktrees\/([^/]+)(?:\/(.*))?$/);
+  if (!m) return null;
+  const [, repoDir, name, rel = ""] = m;
+  const worktree = `${repoDir}/.claude/worktrees/${name}`;
+  if (existsSync(worktree) || !existsSync(repoDir)) return null;
+  const real = realOr(repoDir);
+  let repo = cache.get(real);
+  if (repo === undefined) {
+    const r = run(["git", "-C", real, "rev-parse", "--show-toplevel", "--path-format=absolute", "--git-common-dir"], undefined, 3000);
+    const [top, store] = r.ok ? r.out.trim().split("\n") : [];
+    // The containing folder must be the repository's own top, not a folder inside one.
+    repo = top && store && realOr(top) === real ? { top: realOr(top), store: realOr(store) } : null;
+    cache.set(real, repo);
+  }
+  return repo ? { worktree, ...repo, rel } : null;
+}
+
+/**
  * "<object store>\0<repo-relative path>" for an absolute file path, or null when it
  * is not inside a git repository. A worktree and its main checkout share one store,
  * so the same file reached through either gets the same key (#29).
  */
 export function repoFileKey(absPath: string, cache = new Map<string, { store: string; top: string } | null>()): string | null {
+  const gone = removedWorktree(absPath, cache);
+  if (gone) return gone.rel ? `${gone.store}\0${gone.rel}` : null;
   let dir = dirname(absPath);
   const rest = [basename(absPath)];
   while (!existsSync(dir) && dir !== dirname(dir)) {
