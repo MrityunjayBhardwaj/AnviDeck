@@ -41,6 +41,8 @@ bun run dev          # builds the UI, then starts the server
 
 `bun run dev` runs a single esbuild pass (`build.ts`) and launches the [Hono](https://hono.dev) server. Set `PORT` to override the default `4000`. Requires [Bun](https://bun.sh).
 
+AnviDeck serves your session transcripts, memory and catalogues, so it answers only this machine's own browser: it listens on `127.0.0.1`, and it refuses requests from other web pages (including their WebSockets) and requests naming any host other than this machine. Set `HOST=0.0.0.0` only if you really want other machines on your network to reach it; other web pages are still refused.
+
 ## 🔭 The six views
 
 | View | What it shows |

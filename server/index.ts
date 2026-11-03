@@ -1,16 +1,17 @@
 import { Hono } from "hono";
-import { cors } from "hono/cors";
 import { websocket } from "hono/bun";
 import { join } from "node:path";
 import api from "./routes/api";
 import ws, { broadcast } from "./routes/ws";
 import { watchGlobal } from "./watchers/file-watcher";
 import { watchHookLogs } from "./watchers/hook-logger";
+import { bindHost, isLoopback, localOnly } from "./access";
 
 const app = new Hono();
 
-// CORS for local development
-app.use("/*", cors());
+// Only this machine's own browser may read AnviDeck: no other host, no other web page.
+const hostname = bindHost();
+app.use("/*", localOnly(hostname));
 
 // Mount API routes
 app.route("/api/structure", (await import("./routes/structure")).default);
@@ -75,10 +76,14 @@ process.on("SIGINT", () => {
 });
 
 const port = parseInt(process.env.PORT ?? "4000", 10);
-console.log(`AnviDeck server running at http://localhost:${port}`);
+const shown = hostname.includes(":") ? `[${hostname}]` : hostname;
+console.log(isLoopback(hostname)
+  ? `AnviDeck server running at http://${shown}:${port} (this machine only; set HOST to listen elsewhere)`
+  : `AnviDeck server running at http://${shown}:${port} (HOST=${hostname}: other machines on the network can reach it)`);
 
 export default {
   port,
+  hostname,
   fetch: app.fetch,
   websocket,
 };
