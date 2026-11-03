@@ -190,7 +190,7 @@ function refreshList(project: string): void {
       S.lists.set(project, prev?.status === "ok" ? { ...prev, refreshError: error } : { status: "error", error });
       return true;
     })
-    .then((changed) => changed && paint());
+    .then((changed) => changed && repaint());
 }
 
 /** When live status was last read (ISO, UTC); printed beside the ranking. */
@@ -207,7 +207,7 @@ function loadLive(): void {
       liveRequested = false;
       liveReadAt = new Date().toISOString();
       refreshRunning();
-      paint();
+      repaint();
     });
 }
 
@@ -302,7 +302,7 @@ function fetchReplay(key: string): void {
       })
       .then((changed) => {
         replaysInFlight.delete(key);
-        if (changed) paint();
+        if (changed) repaint();
       })
   );
   pump();
@@ -787,7 +787,7 @@ function shellList(shells: ReplayStep[]): string {
   return `<h4>Shell commands that may have edited project files · ${shells.length} <span class="ag-note">(guessed from command text)</span></h4>
     ${shells
       .map(
-        (s) => `<details class="ag-shell"><summary>${utc(s.ts)} · ${esc(s.mayEditFiles!.reason)}</summary><pre class="mono">${esc(s.command ?? "")}</pre></details>`
+        (s) => `<details class="ag-shell" data-keep="shell:${esc(s.ts)}"><summary>${utc(s.ts)} · ${esc(s.mayEditFiles!.reason)}</summary><pre class="mono">${esc(s.command ?? "")}</pre></details>`
       )
       .join("")}`;
 }
@@ -801,7 +801,7 @@ function noteItem(n: NoteUsed): string {
       ? ` · <span class="ag-cnr-t">full text file could not be read</span>`
       : " · full text loaded from its saved file"
     : "";
-  return `<details class="ag-noteitem" data-noteid="${n.id}"${S.openNote === n.id ? " open" : ""}>
+  return `<details class="ag-noteitem" data-noteid="${n.id}" data-keep="note:${n.id}"${S.openNote === n.id ? " open" : ""}>
     <summary><span class="ag-time">${utc(n.ts)}</span> · <b>${esc(n.hookName)}</b> · ${bytes(n.size)}</summary>
     <div class="ag-note">${srcTag("transcript", `line ${n.line}`)} line ${n.line} · ${meter}${persisted}</div>
     <pre class="ag-notetext">${esc(n.text ?? n.preview)}</pre>
@@ -888,7 +888,56 @@ function rightPanel(ranked: Ranked[], sel: Ranked | undefined, load: Load<Replay
 
 // ── paint ─────────────────────────────────────────────────────────────────
 
+// ── background repaints (#60) ───────────────────────────────────────────────
+
+/** Set when a background repaint was held back because the user is in the window form. */
+let repaintHeld = false;
+
+/**
+ * A repaint caused by data arriving, not by the user. It must not take away what the user
+ * is doing: while focus is in the window form it waits (a half-typed datetime field reports
+ * an empty value, so it cannot be saved and put back), and otherwise it carries over typed but
+ * unapplied times, which details are open and the side panel's scroll.
+ */
+function repaint(): void {
+  if (!root || !root.isConnected) return;
+  const active = document.activeElement;
+  if (active && root.querySelector(".ag-window")?.contains(active)) {
+    repaintHeld = true;
+    return;
+  }
+  const typed = new Map<string, string>();
+  root.querySelectorAll<HTMLInputElement>(".ag-window input[name]").forEach((i) => {
+    if (i.value !== i.defaultValue) typed.set(i.name, i.value);
+  });
+  const open = new Map<string, boolean>();
+  root.querySelectorAll<HTMLDetailsElement>("details[data-keep]").forEach((d) => open.set(d.dataset.keep!, d.open));
+  const panelScroll = root.querySelector<HTMLElement>(".ag-panel")?.scrollTop ?? 0;
+
+  paint();
+
+  root.querySelectorAll<HTMLInputElement>(".ag-window input[name]").forEach((i) => {
+    const v = typed.get(i.name);
+    if (v !== undefined) i.value = v;
+  });
+  root.querySelectorAll<HTMLDetailsElement>("details[data-keep]").forEach((d) => {
+    const was = open.get(d.dataset.keep!);
+    if (was !== undefined) d.open = was;
+  });
+  const panel = root.querySelector<HTMLElement>(".ag-panel");
+  if (panel) panel.scrollTop = panelScroll;
+}
+
+/** Leaving the window form lets a held-back repaint through. */
+function onFocusOut(e: FocusEvent): void {
+  if (!repaintHeld) return;
+  const form = root?.querySelector(".ag-window");
+  if (form && e.relatedTarget instanceof Node && form.contains(e.relatedTarget)) return;
+  setTimeout(repaint, 0); // after focus has moved, so repaint() sees where it went
+}
+
 function paint(): void {
+  repaintHeld = false;
   if (!root || !root.isConnected) return;
   writeHash();
   const header = `<div class="ag-head"><h2>Agents</h2><span class="ag-sub">Read-only. What each session did, what anvi told it, and what it changed. Times in UTC.</span></div>`;
@@ -1015,6 +1064,7 @@ export function AgentsView(projectNames: string[], route?: AgentsRoute | null): 
   root.addEventListener("click", onClick);
   root.addEventListener("change", onChange);
   root.addEventListener("submit", onSubmit);
+  root.addEventListener("focusout", onFocusOut);
   loadLive(); // and, once read, re-reads running sessions' replays (#40)
   if (S.project) loadList(S.project);
   startPolling();
