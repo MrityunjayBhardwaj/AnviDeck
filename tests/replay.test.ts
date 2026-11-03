@@ -1,6 +1,9 @@
 import { describe, test, expect, beforeAll } from "bun:test";
-import { findTranscript, readReplay, shellWriteReason, shellWriteScope, listReplaySessions, mergeEvidence, repoFileKey, joinMeter, judgementRowFor } from "../server/readers/replay";
+import { findTranscript, readReplay, shellWriteReason, shellWriteScope, listReplaySessions, mergeEvidence, repoFileKey, joinMeter, judgementRowFor, removedWorktree, GIT_COMMIT_RUN_RE } from "../server/readers/replay";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import replayRoutes from "../server/routes/replay";
 import type { ReplayResponse } from "../shared/replay-types";
 
@@ -257,7 +260,24 @@ describe("routes", () => {
 // edited replay.ts with Edit at 18:41:33Z, committed 441b653 at 18:42:26Z, and
 // changed replay-types.ts and replay.test.ts only through python (shell).
 const FIX_SID = "dba8cb1e-5edb-4121-9d58-bd839b9c077c";
-describe.skipIf(!findTranscript(FIX_SID))("tool edits before the window or by another path (#29)", () => {
+// The session worked in a worktree since removed; its commit 441b653 can be read only
+// while some branch still reaches it (squash-merged branches get deleted) (#65).
+const onBranch = (sha: string) => {
+  try { return execFileSync("git", ["-C", join(import.meta.dir, ".."), "branch", "-a", "--contains", sha], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() !== ""; } catch { return false; }
+};
+const fixCommitOnBranch = onBranch("441b653");
+if (findTranscript(FIX_SID) && !fixCommitOnBranch) console.warn("SKIP #29 controls: commit 441b653 is on no branch (its branch was deleted); checking the honest 'missing' report instead");
+describe.skipIf(!findTranscript(FIX_SID) || fixCommitOnBranch)("a session's commit that is on no branch any more (#65)", () => {
+  test("says the commit is missing, not that the window has none", async () => {
+    const r = await readReplay(FIX_SID, { from: "2026-10-30T18:41:40Z", to: "2026-10-30T18:43:30Z", github: false, fullText: false });
+    expect(r.sources.git.status).toBe("not-found");
+    expect(r.sources.git.missingCommits).toBe(1);
+    expect(r.sources.git.detail).toContain("no matching commit on any branch");
+    // the removed worktree is resolved to the repository it was made from
+    expect(r.sources.git.dirs?.some((d) => d.dir.endsWith("/.claude/worktrees/agent-ad7f9578ad471a66f") && /read from the repository it was made from/.test(d.detail ?? ""))).toBe(true);
+  }, 60000);
+});
+describe.skipIf(!findTranscript(FIX_SID) || !fixCommitOnBranch)("tool edits before the window or by another path (#29)", () => {
   test("a file edited with Edit just before the window is not called shell-only", async () => {
     const r = await readReplay(FIX_SID, { from: "2026-10-30T18:41:40Z", to: "2026-10-30T18:42:40Z", github: false, fullText: false });
     const f = (end: string) => r.changes.files.find((x) => x.path.endsWith(end) && x.sha?.startsWith("441b653"));
@@ -320,4 +340,54 @@ describe("session list includes sessions started in a worktree (#30)", () => {
     const a = listReplaySessions("anvi");
     expect(a.searched.some((d) => d.includes("scratchpad"))).toBe(false);
   });
+});
+
+// must-not-match on a real session: 08:23–08:24 UTC on 2026-11-03 ran only
+// `git diff-tree --no-commit-id`, which names "commit" but commits nothing.
+const WORD_ONLY_SID = "19516d75-b2f2-4d30-b6dc-42783378d6bc";
+test.skipIf(!findTranscript(WORD_ONLY_SID))("a window whose commands only mention 'commit' claims no missing commit (#65)", async () => {
+  const r = await readReplay(WORD_ONLY_SID, { from: "2026-11-03T08:23:00Z", to: "2026-11-03T08:24:00Z", github: false, fullText: false });
+  expect(r.steps.some((s) => s.command?.includes("--no-commit-id"))).toBe(true);
+  expect(r.sources.git.missingCommits).toBeUndefined();
+  expect(r.sources.git.status).toBe("none");
+}, 60000);
+
+describe("git commit as the command run, not the word (#65)", () => {
+  const must = ["git commit -m x", "cd /a && git commit -q -F - <<'EOF'", "git -C /tmp/r commit -m x", "git -c user.name=a commit --amend", "(git commit -m x)", "x; git commit", "if true; then git commit -m x; fi", "git add a\ngit commit -m x"];
+  const mustNot = ["git diff-tree --cc --no-commit-id HEAD", "git log --format=%H commit", "echo '(fail) … an Edit made after the commit does not explain the commit'", "gh pr merge 66 --squash", "git show HEAD # commit", "mygit commit", "git commit-tree abc"];
+  for (const c of must) test(`matches: ${c}`, () => expect(GIT_COMMIT_RUN_RE.test(c)).toBe(true));
+  for (const c of mustNot) test(`does not match: ${c}`, () => expect(GIT_COMMIT_RUN_RE.test(c)).toBe(false));
+});
+
+describe("a removed Claude Code worktree resolves to its repository (#65)", () => {
+  const git = (cwd: string, ...a: string[]) => execFileSync("git", ["-C", cwd, ...a], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "anvideck-wt-")));
+  const repo = join(root, "repo");
+  mkdirSync(join(repo, "src"), { recursive: true });
+  writeFileSync(join(repo, "src", "a.ts"), "a\n");
+  git(root, "init", "-q", repo);
+  git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "add", ".");
+  git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "a");
+  const wt = join(repo, ".claude", "worktrees", "gone");
+  git(repo, "worktree", "add", "-q", "-b", "gone-branch", wt);
+  const liveWt = join(repo, ".claude", "worktrees", "live");
+  git(repo, "worktree", "add", "-q", "-b", "live-branch", liveWt);
+  git(repo, "worktree", "remove", "--force", wt);
+
+  test("a path in the removed worktree maps to the repository and keeps its repo-relative name", () => {
+    const r = removedWorktree(join(wt, "src", "a.ts"));
+    expect(r?.worktree).toBe(wt);
+    expect(r?.top).toBe(repo);
+    expect(r?.rel).toBe("src/a.ts");
+    expect(repoFileKey(join(wt, "src", "a.ts"))).toBe(repoFileKey(join(repo, "src", "a.ts")));
+    expect(repoFileKey(join(wt, "src", "a.ts"))).not.toBeNull();
+  });
+  test("must-not-match: a live worktree, another gone folder, a gone repository", () => {
+    expect(removedWorktree(join(liveWt, "src", "a.ts"))).toBeNull(); // still there: read it directly
+    expect(removedWorktree(join(repo, "scratch", "gone", "a.ts"))).toBeNull(); // not the worktree layout
+    expect(removedWorktree(join(root, "nope", ".claude", "worktrees", "x", "a.ts"))).toBeNull(); // repository gone too
+    // the folder holding .claude/worktrees must be the repository's top, not a folder inside it
+    expect(removedWorktree(join(repo, "src", ".claude", "worktrees", "x", "a.ts"))).toBeNull();
+  });
+  test("cleanup", () => { rmSync(root, { recursive: true, force: true }); });
 });

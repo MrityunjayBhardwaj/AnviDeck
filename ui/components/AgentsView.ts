@@ -582,18 +582,21 @@ function sourcesLine(r: ReplayResponse): string {
   // For the hook log and the hook meter, "not-found" means the file is simply not there (/tmp is
   // cleared on reboot; a session may predate the meter): absence, not a failure to read (#51).
   // For git it means no repository could be resolved, i.e. we could not look, so it stays red.
-  const part = (name: string, st: ReadStatus, ok: string, detail?: string, absentMeansNone = false) => {
+  const part = (name: string, st: ReadStatus, ok: string, detail?: string, absentMeansNone = false, missing = "") => {
     const absent = absentMeansNone && st === "not-found";
-    const cnr = isCouldNotRead(st) && !absent;
+    const cnr = (isCouldNotRead(st) && !absent) || !!missing;
     return `<span class="ag-srcline ${cnr ? "ag-cnr-t" : st === "none" || absent ? "ag-none-t" : ""}" title="${esc(detail ?? "")}">${esc(name)}: ${
-      cnr ? "could not read" : absent ? "not present" : st === "none" ? "nothing in window" : st === "skipped" ? "not checked" : ok
-    }</span>`;
+      missing && st !== "ok" ? missing : cnr && st !== "ok" ? "could not read" : absent ? "not present" : st === "none" ? "nothing in window" : st === "skipped" ? "not checked" : ok
+    }${missing && st === "ok" ? `; ${missing}` : ""}</span>`;
   };
+  // The session ran `git commit` but the commit is on no branch any more (#65).
+  const m = r.sources.git.missingCommits;
+  const gitMissing = m ? `could not find ${m} commit${m === 1 ? "" : "s"} the session made` : "";
   return `<div class="ag-srcs">
     ${part("Transcript", t.status, `${t.count ?? 0} records in window`, t.detail ?? t.path)}
     ${part("Hook meter", r.sources.hookMeter.status, `${r.sources.hookMeter.count ?? 0} rows`, r.sources.hookMeter.detail ?? r.sources.hookMeter.path, true)}
     ${part("Hook log", r.sources.hookLog.status, `${r.sources.hookLog.count ?? 0} rows`, r.sources.hookLog.detail ?? r.sources.hookLog.path, true)}
-    ${part("Git", r.sources.git.status, `${r.sources.git.count ?? 0} commit${r.sources.git.count === 1 ? "" : "s"}`, r.sources.git.detail)}
+    ${part("Git", r.sources.git.status, `${r.sources.git.count ?? 0} commit${r.sources.git.count === 1 ? "" : "s"}`, r.sources.git.detail, false, gitMissing)}
     ${part("GitHub", r.sources.github.status, `${r.sources.github.count ?? 0} PRs`, r.sources.github.detail)}
   </div>`;
 }

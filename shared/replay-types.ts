@@ -222,7 +222,11 @@ export interface ReplayResponse {
   sources: {
     hookMeter: SourceStatus & { informed?: number; refused?: number; silent?: number };
     hookLog: SourceStatus;
-    git: SourceStatus & { dirs?: { dir: string; status: ReadStatus; detail?: string }[] };
+    git: SourceStatus & {
+      dirs?: { dir: string; status: ReadStatus; detail?: string }[];
+      /** `git commit` steps in the window that matched no commit on any branch. */
+      missingCommits?: number;
+    };
     github: SourceStatus;
   };
   steps: ReplayStep[];
