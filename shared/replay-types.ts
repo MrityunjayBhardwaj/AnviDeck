@@ -94,6 +94,8 @@ export interface ChangedFile {
   deletions?: number;
   sha?: string;
   pr?: number;
+  /** The commit was read from GitHub, not the local repository (#67). */
+  commitFrom?: CommitSource;
   /**
    * Only via shell/commit: no Edit/Write tool call on this file (same repository
    * store and repo-relative path, at or before the commit, anywhere in the session).
@@ -117,6 +119,20 @@ export interface CommitInfo {
   files: { status: string; path: string; oldPath?: string }[];
   /** The Bash step whose `git commit` this commit was matched to, if any. */
   matchedStepSeq?: number;
+  /**
+   * Set when the commit is on no branch of the local repository and was read
+   * from GitHub through a PR the session linked (#67). Absent: read with git log.
+   */
+  from?: CommitSource;
+}
+
+/** Where a commit was read when the local repository no longer reaches it (#67). */
+export interface CommitSource {
+  source: "github";
+  pr: number;
+  repo: string;
+  /** Its files could not be read from GitHub; `files` is empty, not "changed nothing". */
+  filesUnread?: string;
 }
 
 export interface PrInfo {
@@ -224,8 +240,10 @@ export interface ReplayResponse {
     hookLog: SourceStatus;
     git: SourceStatus & {
       dirs?: { dir: string; status: ReadStatus; detail?: string }[];
-      /** `git commit` steps in the window that matched no commit on any branch. */
+      /** `git commit` steps in the window that matched no commit, local or on GitHub. */
       missingCommits?: number;
+      /** Of the attributed commits, how many were read from GitHub because no local branch reaches them (#67). */
+      fromGitHub?: number;
     };
     github: SourceStatus;
   };

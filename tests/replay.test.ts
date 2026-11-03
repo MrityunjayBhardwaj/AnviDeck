@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll } from "bun:test";
-import { findTranscript, readReplay, shellWriteReason, shellWriteScope, listReplaySessions, mergeEvidence, repoFileKey, joinMeter, judgementRowFor, removedWorktree, GIT_COMMIT_RUN_RE } from "../server/readers/replay";
+import { findTranscript, readReplay, shellWriteReason, shellWriteScope, listReplaySessions, mergeEvidence, repoFileKey, joinMeter, judgementRowFor, removedWorktree, GIT_COMMIT_RUN_RE, attributeCommits, githubRepoOf } from "../server/readers/replay";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -266,20 +266,47 @@ const onBranch = (sha: string) => {
   try { return execFileSync("git", ["-C", join(import.meta.dir, ".."), "branch", "-a", "--contains", sha], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() !== ""; } catch { return false; }
 };
 const fixCommitOnBranch = onBranch("441b653");
-if (findTranscript(FIX_SID) && !fixCommitOnBranch) console.warn("SKIP #29 controls: commit 441b653 is on no branch (its branch was deleted); checking the honest 'missing' report instead");
-describe.skipIf(!findTranscript(FIX_SID) || fixCommitOnBranch)("a session's commit that is on no branch any more (#65)", () => {
-  test("says the commit is missing, not that the window has none", async () => {
+// Off-branch, the commit is read from GitHub through PR #24 (#67), when gh can reach it.
+const ghHasFixPr = (() => {
+  try { return execFileSync("gh", ["pr", "view", "24", "--repo", "MrityunjayBhardwaj/AnviDeck", "--json", "number"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 20000 }).includes("24"); } catch { return false; }
+})();
+const fixReadable = fixCommitOnBranch || ghHasFixPr;
+const fixGithub = !fixCommitOnBranch; // ask GitHub only when no local branch has it
+if (findTranscript(FIX_SID) && !fixReadable) console.warn("SKIP #29/#67 controls: commit 441b653 is on no branch and GitHub (gh) cannot read PR #24");
+describe.skipIf(!findTranscript(FIX_SID) || fixCommitOnBranch)("a session's commit that is on no branch any more (#65, #67)", () => {
+  test("with GitHub off: says the commit is missing, not that the window has none", async () => {
     const r = await readReplay(FIX_SID, { from: "2026-10-30T18:41:40Z", to: "2026-10-30T18:43:30Z", github: false, fullText: false });
     expect(r.sources.git.status).toBe("not-found");
     expect(r.sources.git.missingCommits).toBe(1);
     expect(r.sources.git.detail).toContain("no matching commit on any branch");
+    expect(r.sources.git.detail).toContain("GitHub was not asked");
+    expect(r.commits).toHaveLength(0);
     // the removed worktree is resolved to the repository it was made from
     expect(r.sources.git.dirs?.some((d) => d.dir.endsWith("/.claude/worktrees/agent-ad7f9578ad471a66f") && /read from the repository it was made from/.test(d.detail ?? ""))).toBe(true);
   }, 60000);
+  test.skipIf(!ghHasFixPr)("with GitHub on: reads the commit through the PR the session linked (#67)", async () => {
+    const r = await readReplay(FIX_SID, { from: "2026-10-30T18:41:40Z", to: "2026-10-30T18:43:30Z", fullText: false });
+    expect(r.sources.git.status).toBe("ok");
+    expect(r.sources.git.missingCommits).toBeUndefined();
+    expect(r.sources.git.fromGitHub).toBe(1);
+    expect(r.commits.map((c) => c.sha.slice(0, 7))).toEqual(["441b653"]);
+    const c = r.commits[0];
+    expect(c.from).toEqual({ source: "github", pr: 24, repo: "MrityunjayBhardwaj/AnviDeck" });
+    expect(c.subject.startsWith("🧹 fix: say where a guessed shell write lands")).toBe(true);
+    expect(c.files.map((f) => f.status + " " + f.path).sort()).toEqual(["M server/readers/replay.ts", "M shared/replay-types.ts", "M tests/replay.test.ts"]);
+    const step = r.steps.find((s) => s.kind === "commit");
+    expect(String(step?.detail?.from)).toContain("PR #24");
+    const f = r.changes.files.find((x) => x.path.endsWith("shared/replay-types.ts") && x.sha?.startsWith("441b653"));
+    expect(f?.pr).toBe(24);
+    expect(f?.commitFrom?.pr).toBe(24);
+    expect(f?.designRules).toContain("PR #24");
+    // must-not-claim: PR #24's other commits fall outside this window and are not listed
+    expect(r.unattributedCommits).toHaveLength(0);
+  }, 60000);
 });
-describe.skipIf(!findTranscript(FIX_SID) || !fixCommitOnBranch)("tool edits before the window or by another path (#29)", () => {
+describe.skipIf(!findTranscript(FIX_SID) || !fixReadable)("tool edits before the window or by another path (#29)", () => {
   test("a file edited with Edit just before the window is not called shell-only", async () => {
-    const r = await readReplay(FIX_SID, { from: "2026-10-30T18:41:40Z", to: "2026-10-30T18:42:40Z", github: false, fullText: false });
+    const r = await readReplay(FIX_SID, { from: "2026-10-30T18:41:40Z", to: "2026-10-30T18:42:40Z", github: fixGithub, fullText: false });
     const f = (end: string) => r.changes.files.find((x) => x.path.endsWith(end) && x.sha?.startsWith("441b653"));
     expect(f("server/readers/replay.ts")?.viaShell).toBe(false);
     expect(f("server/readers/replay.ts")?.toolEdit?.ts).toBe("2026-10-30T18:41:33.982Z");
@@ -288,10 +315,51 @@ describe.skipIf(!findTranscript(FIX_SID) || !fixCommitOnBranch)("tool edits befo
     expect(f("tests/replay.test.ts")?.viaShell).toBe(true);
   }, 60000);
   test("an Edit made after the commit does not explain the commit", async () => {
-    const r = await readReplay(FIX_SID, { from: "2026-10-30T18:41:40Z", to: "2026-10-30T18:43:30Z", github: false, fullText: false });
+    const r = await readReplay(FIX_SID, { from: "2026-10-30T18:41:40Z", to: "2026-10-30T18:43:30Z", github: fixGithub, fullText: false });
     const f = r.changes.files.find((x) => x.path.endsWith("shared/replay-types.ts") && x.sha?.startsWith("441b653"));
     expect(f?.viaShell).toBe(true);
   }, 60000);
+});
+
+describe("attributeCommits: one rule for local and GitHub commits (#67)", () => {
+  const repoOf = new Map<string, { top: string; store: string } | null>([
+    ["/w/a", { top: "/w/a", store: "/s/A" }],
+    ["/w/b", { top: "/w/b", store: "/s/B" }],
+  ]);
+  const at = (iso: string) => Date.parse(iso);
+  test("a commit just after a git commit step is that step's", () => {
+    const steps = [{ sortMs: at("2026-01-01T00:00:00Z"), command: "cd /w/a && git commit -m x" }];
+    const [h] = attributeCommits([{ committedAt: "2026-01-01T00:00:03Z", stores: ["/s/A", "/s/B"] }], steps, new Set(), repoOf);
+    expect(h.step).toBe(steps[0]);
+    expect(h.top).toBe("/w/a");
+    expect(h.store).toBe("/s/A");
+  });
+  test("must-not-match: another repository, too late, or before the step", () => {
+    const step = { sortMs: at("2026-01-01T00:00:00Z"), command: "cd /w/a && git commit -m x" };
+    expect(attributeCommits([{ committedAt: "2026-01-01T00:00:03Z", stores: ["/s/B"] }], [step], new Set(), repoOf)[0].step).toBeNull();
+    expect(attributeCommits([{ committedAt: "2026-01-01T00:05:01Z", stores: ["/s/A"] }], [step], new Set(), repoOf)[0].step).toBeNull();
+    expect(attributeCommits([{ committedAt: "2025-12-31T23:59:57Z", stores: ["/s/A"] }], [step], new Set(), repoOf)[0].step).toBeNull();
+  });
+  test("a step explains one commit only; the nearest wins", () => {
+    const step = { sortMs: at("2026-01-01T00:00:00Z"), command: "git commit -m x" };
+    const hs = attributeCommits(
+      [{ committedAt: "2026-01-01T00:01:00Z", stores: ["/s/A"] }, { committedAt: "2026-01-01T00:00:02Z", stores: ["/s/A"] }],
+      [step], new Set(), repoOf);
+    expect(hs.map((h) => [h.commit.committedAt, !!h.step])).toEqual([["2026-01-01T00:00:02Z", true], ["2026-01-01T00:01:00Z", false]]);
+  });
+});
+
+describe("githubRepoOf", () => {
+  test("ssh, https and ssh:// remotes", () => {
+    expect(githubRepoOf("git@github.com:MrityunjayBhardwaj/AnviDeck.git")).toBe("MrityunjayBhardwaj/AnviDeck");
+    expect(githubRepoOf("https://github.com/o/r")).toBe("o/r");
+    expect(githubRepoOf("https://token@github.com/o/r.git")).toBe("o/r");
+    expect(githubRepoOf("ssh://git@github.com/o/r.git")).toBe("o/r");
+  });
+  test("must-not-match: other hosts and lookalikes", () => {
+    for (const u of ["git@gitlab.com:o/r.git", "https://github.com.evil.com/o/r", "https://evilgithub.com/o/r", "https://mirror.example.com/https://github.com/o/r", "/local/path/r.git", "https://github.com/o"])
+      expect(githubRepoOf(u)).toBeNull();
+  });
 });
 
 describe("repoFileKey: one file, one key, whatever path names it (#29)", () => {
