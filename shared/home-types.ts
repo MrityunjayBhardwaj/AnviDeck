@@ -3,8 +3,11 @@
 // Every row and every metric names where it came from (`source`). A source that could
 // not be read says so (`could-not-read`) and is never shown as "nothing to decide".
 
-/** How a source answered. `none` = read fine, nothing there. */
-export type HomeSourceStatus = "ok" | "none" | "partial" | "could-not-read" | "not-measured";
+/**
+ * How a source answered. `none` = read fine, nothing there. `reading` = still being read when
+ * Home had to answer; the next load picks it up (#61).
+ */
+export type HomeSourceStatus = "ok" | "none" | "partial" | "could-not-read" | "not-measured" | "reading";
 
 export interface HomeSource {
   status: HomeSourceStatus;
@@ -37,6 +40,8 @@ export interface UnreadItem {
   id: string;
   what: string;
   source: string;
+  /** Not failed: still being read when Home had to answer (#61). */
+  reading?: true;
 }
 
 /**

@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { needsCount, headlineText, badgeText, stripText } from "../ui/home-count";
-import { groupFailedPrs, orderQueue, parseAuthoredPrs, prLinkFromLine, prLinksIn, prVerdict, readNotesCurrency, resetAuthoredSearch, searchAuthoredPrs, splitAuthoredPrs } from "../server/readers/home";
+import { byDeadline, deadlineIn, STILL_READING, groupFailedPrs, orderQueue, parseAuthoredPrs, prLinkFromLine, prLinksIn, prVerdict, readNotesCurrency, resetAuthoredSearch, searchAuthoredPrs, splitAuthoredPrs } from "../server/readers/home";
 import type { HomeResponse, QueueItem } from "../shared/home-types";
 
 const TMP = "/private/tmp/claude-501/ui18/test-fixtures";
@@ -12,12 +12,15 @@ function item(kind: QueueItem["kind"], id: string, since: number | null): QueueI
   return { kind, id, what: id, why: "", dueBy: null, since, action: { label: "x", href: "https://example.invalid" }, source: "fixture" };
 }
 
-function fixture(queue: QueueItem[], opts: { unread?: number; prs?: HomeResponse["sources"]["prs"]["status"] } = {}): HomeResponse {
+function fixture(queue: QueueItem[], opts: { unread?: number; reading?: number; prs?: HomeResponse["sources"]["prs"]["status"] } = {}): HomeResponse {
   const ok = { status: "ok" as const, label: "fixture" };
   return {
     generatedAt: "2026-10-31T00:00:00Z",
     queue,
-    unread: Array.from({ length: opts.unread ?? 0 }, (_, i) => ({ id: `u${i}`, what: "could not check", source: "fixture" })),
+    unread: [
+      ...Array.from({ length: opts.unread ?? 0 }, (_, i) => ({ id: `u${i}`, what: "could not check", source: "fixture" })),
+      ...Array.from({ length: opts.reading ?? 0 }, (_, i) => ({ id: `r${i}`, what: "still reading", source: "fixture", reading: true as const })),
+    ],
     olderPrs: [],
     metrics: [],
     agents: [
@@ -31,7 +34,7 @@ function fixture(queue: QueueItem[], opts: { unread?: number; prs?: HomeResponse
 }
 
 const firstNumber = (s: string) => Number(/(\d+)/.exec(s)?.[1]);
-const needYouNumber = (s: string) => Number(/(\d+)\?? needs? you/.exec(s)?.[1]);
+const needYouNumber = (s: string) => Number(/(\d+)[?…]? needs? you/.exec(s)?.[1]);
 
 describe("one count drives the headline, the badge and the live strip", () => {
   for (const n of [0, 1, 3, 15]) {
@@ -64,6 +67,23 @@ describe("one count drives the headline, the badge and the live strip", () => {
     const unreadRows = needsCount(fixture([item("pr-review", "p", 1)], { unread: 2 }));
     expect(unreadRows.n).toBe(1); // unread rows are shown, never counted
     expect(badgeText(unreadRows)).toBe("1?");
+
+    // Still reading (#61): neither the all-clear nor a failure, and never counted.
+    const reading = needsCount(fixture([item("pr-review", "p", 1)], { prs: "reading", reading: 2 }));
+    expect(reading.state).toBe("reading");
+    expect(reading.n).toBe(1);
+    expect(reading.unread).toBe(0);
+    expect(reading.reading).toBe(3);
+    expect(headlineText(reading)).toBe("1 thing needs you so far; still reading some sources");
+    expect(badgeText(reading)).toBe("1…");
+    expect(needYouNumber(stripText(reading))).toBe(1);
+    const readingNone = needsCount(fixture([], { reading: 1 }));
+    expect(headlineText(readingNone)).not.toMatch(/^Nothing needs you/);
+    expect(headlineText(readingNone)).not.toContain("could not be read");
+    // A real failure beside a slow source still says "could not be read".
+    const both = needsCount(fixture([], { prs: "could-not-read", reading: 1 }));
+    expect(both.state).toBe("partial");
+    expect(headlineText(both)).toContain("could not be read");
 
     const failed = needsCount(null, true);
     expect(headlineText(failed)).toBe("Could not read what needs you");
@@ -253,5 +273,28 @@ describe("notes currency snapshot", () => {
     expect(r.value).toMatchObject({ date: "2026-10-02", examined: 15, red: 1, yellow: 2, projects: 2, unmeasured: ["c"] });
     writeFileSync(join(d, "health-2026-10-03.json"), "{ broken");
     expect(readNotesCurrency(d).source.status).toBe("could-not-read");
+  });
+});
+
+describe("Home answers within a budget (#61)", () => {
+  test("a read that beats the deadline gives its answer; a slow one gives STILL_READING and still finishes", async () => {
+    const d = deadlineIn(40);
+    let slowDone = false;
+    const fast = byDeadline(Promise.resolve("fast"), d);
+    const slow = byDeadline(new Promise<string>((r) => setTimeout(() => ((slowDone = true), r("slow")), 120)), d);
+    expect(await fast).toBe("fast");
+    expect(await slow).toBe(STILL_READING);
+    expect(slowDone).toBe(false);
+    await new Promise((r) => setTimeout(r, 120));
+    expect(slowDone).toBe(true); // the read kept running, so its cache fills for the next load
+    d.cancel();
+  });
+
+  test("one deadline is shared: a read started late gets only the time left", async () => {
+    const d = deadlineIn(60);
+    await new Promise((r) => setTimeout(r, 40));
+    const late = byDeadline(new Promise<string>((r) => setTimeout(() => r("late"), 50)), d);
+    expect(await late).toBe(STILL_READING);
+    d.cancel();
   });
 });
