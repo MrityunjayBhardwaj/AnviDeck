@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { needsCount, headlineText, badgeText, stripText } from "../ui/home-count";
-import { byDeadline, deadlineIn, STILL_READING, groupFailedPrs, orderQueue, parseAuthoredPrs, prLinkFromLine, prLinksIn, prVerdict, readNotesCurrency, resetAuthoredSearch, searchAuthoredPrs, splitAuthoredPrs } from "../server/readers/home";
+import { byDeadline, deadlineIn, STILL_READING, groupFailedPrs, orderQueue, parseAuthoredPrs, prLinkFromLine, prLinksIn, prVerdict, readNotesCurrency, resetAuthoredSearch, searchAuthoredPrs, splitAuthoredPrs, answersFromSearch } from "../server/readers/home";
 import type { HomeResponse, QueueItem } from "../shared/home-types";
 
 const TMP = "/private/tmp/claude-501/ui18/test-fixtures";
@@ -296,5 +296,26 @@ describe("Home answers within a budget (#61)", () => {
     const late = byDeadline(new Promise<string>((r) => setTimeout(() => r("late"), 50)), d);
     expect(await late).toBe(STILL_READING);
     d.cancel();
+  });
+});
+
+describe("linked PRs answered by the open-PR search (#46)", () => {
+  const pr = (repo: string, number: number, isDraft = false) => ({
+    key: `${repo}#${number}`, number, repo, title: `t${number}`, url: `https://github.com/${repo}/pull/${number}`, isDraft, createdAt: 0, updatedAt: 0,
+  });
+  const search = { ok: true as const, prs: [pr("o/r", 1), pr("o/r", 2, true)], at: 0, cached: true };
+  test("a linked PR the search lists is judged from it, draft flag included", () => {
+    const m = answersFromSearch(["o/r#1", "o/r#2"], search);
+    expect(prVerdict(m.get("o/r#1")!)).toBe("review");
+    expect(prVerdict(m.get("o/r#2")!)).toBe("draft");
+    expect(m.get("o/r#1")!.url).toBe("https://github.com/o/r/pull/1");
+  });
+  test("repository names match whatever their case", () => {
+    expect(answersFromSearch(["O/R#1"], search).has("O/R#1")).toBe(true);
+  });
+  test("must-not-answer: a PR the search does not list, another repo, or no usable search", () => {
+    expect(answersFromSearch(["o/r#3", "o/x#1", "o/r#11"], search).size).toBe(0);
+    expect(answersFromSearch(["o/r#1"], null).size).toBe(0);
+    expect(answersFromSearch(["o/r#1"], { ok: false, err: "gh: not logged in" }).size).toBe(0);
   });
 });
