@@ -77,7 +77,7 @@ process.on("SIGINT", () => {
   console.log("\nShutting down...");
   stopWatching();
   stopHookLogs();
-  agents.host.stopAll("AnviDeck shut down");
+  agents.stopAll("AnviDeck shut down");
   process.exit(0);
 });
 

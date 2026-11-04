@@ -1,12 +1,12 @@
 import { describe, expect, test, afterAll } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { AgentHost, HostError, MessageQueue, type HostEvent, type QueryFn } from "../server/agents/host";
 import { AgentRegistry } from "../server/agents/registry";
 import { explainStartFailure, loginOnlyEnv, parseAuthStatus, type ClaudeBinary } from "../server/agents/login";
-import { agentRoutes, sameOriginWrites } from "../server/routes/agents";
+import { agentRoutes, createAgentHost, sameOriginWrites } from "../server/routes/agents";
 import { Hono } from "hono";
 
 const dirs: string[] = [];
@@ -399,5 +399,27 @@ describe("agent routes", () => {
     expect((await a.request("http://h/x", { headers: { host: "h" } })).status).toBe(200);
     expect((await a.request("http://h/x", { method: "POST", headers: { host: "h" } })).status).toBe(403);
     expect((await a.request("http://h/x", { method: "POST", headers: { host: "h", origin: "http://h" } })).status).toBe(200);
+  });
+});
+
+describe("an unreadable registry turns off only the agent host", () => {
+  test("the agent routes answer 503 with the reason, other routes still answer, and the file is untouched", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agent-host-bad-"));
+    const file = join(dir, "agents.json");
+    writeFileSync(file, "{ not json");
+    const agents = createAgentHost(() => {}, () => new AgentHost({ query: (() => { throw new Error("unused"); }) as unknown as QueryFn, registry: new AgentRegistry(dir) }));
+    expect(agents.host).toBeNull();
+    const app = new Hono();
+    app.route("/api/agents", agents.api);
+    app.route("/", agents.page);
+    app.get("/api/projects", (c) => c.json({ ok: true }));
+    const r = await app.request("/api/agents");
+    expect(r.status).toBe(503);
+    expect((await r.json()).error).toContain("registry could not be read");
+    expect((await app.request("/agent-host")).status).toBe(503);
+    expect((await app.request("/api/projects")).status).toBe(200);
+    expect(() => agents.stopAll("shut down")).not.toThrow();
+    expect(readFileSync(file, "utf8")).toBe("{ not json");
+    rmSync(dir, { recursive: true, force: true });
   });
 });

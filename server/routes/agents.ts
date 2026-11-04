@@ -77,11 +77,30 @@ export function agentRoutes(host: AgentHost, login: () => Promise<LoginStatus>):
 }
 
 /** The single host this server runs, its routes, and a minimal page to watch it (until #82). */
-export function createAgentHost(broadcast: (msg: string) => void) {
-  const host = new AgentHost({
-    query: query as unknown as QueryFn,
-    emit: (e: HostEvent) => broadcast(JSON.stringify(e)),
-  });
+export function createAgentHost(
+  broadcast: (msg: string) => void,
+  makeHost: () => AgentHost = () =>
+    new AgentHost({
+      query: query as unknown as QueryFn,
+      emit: (e: HostEvent) => broadcast(JSON.stringify(e)),
+    }),
+) {
+  let host: AgentHost;
+  try {
+    host = makeHost();
+  } catch (e) {
+    // A registry that cannot be read turns the agent host off, not the whole server: every
+    // other screen stays up. Nothing is written, so the damaged file is left as it was.
+    const reason = `the agent host is off: its registry could not be read (${(e as Error).message}). AnviDeck has not changed it; fix or move the file and restart.`;
+    console.error("[agents]", reason);
+    const api = new Hono();
+    api.all("/*", (c) => c.json({ error: reason }, 503));
+    // The page router is mounted at "/": answer only the agent-host paths, never the rest.
+    const page = new Hono();
+    page.get("/agent-host", (c) => c.text(reason, 503));
+    page.get("/agent-host.js", (c) => c.text(reason, 503));
+    return { host: null, api, page, stopAll: (_why: string) => {} };
+  }
   // `claude auth status` takes ~1s; read it once a minute at most.
   let cached: { at: number; value: Promise<LoginStatus> } | null = null;
   const login = () => {
@@ -104,5 +123,5 @@ export function createAgentHost(broadcast: (msg: string) => void) {
     return new Response(f, { headers: { "content-type": "application/javascript" } });
   });
 
-  return { host, api: agentRoutes(host, login), page };
+  return { host, api: agentRoutes(host, login), page, stopAll: (why: string) => host.stopAll(why) };
 }
