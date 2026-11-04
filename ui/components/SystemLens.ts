@@ -7,7 +7,7 @@ import type {
   HookLogSession,
   ContributionRow,
   ContributionCell,
-  EntryDate,
+  EntryDates,
 } from "../../shared/types";
 
 interface LensState {
@@ -15,7 +15,7 @@ interface LensState {
   selectedProject: string | null;
   projectState: ProjectState | null;
   hookSessions: HookLogSession[];
-  entryDates: Record<string, EntryDate>;
+  entryDates: EntryDates;
   rows: ContributionRow[];
   collapsedGroups: Set<string>;
   loading: boolean;
@@ -111,7 +111,7 @@ function buildRows(): void {
         }
       }
 
-      const dates = state.entryDates[entry.id];
+      const dates = state.entryDates[catalogue.name]?.[entry.id];
 
       rows.push({
         entryId: entry.id,

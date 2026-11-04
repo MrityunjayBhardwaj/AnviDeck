@@ -24,7 +24,7 @@ import { discoverProjects, type DiscoveredProject } from "../readers/projects";
 import { resolveDir } from "../../shared/anvi-paths";
 import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { execSync } from "node:child_process";
-import type { ProjectSummary, ProjectState, HookLogEntry, EntryDate, ReadReport } from "../../shared/types";
+import type { ProjectSummary, ProjectState, HookLogEntry, EntryDates, ReadReport } from "../../shared/types";
 import type { Context } from "hono";
 import { errText, isAbsent, report } from "../readers/read-status";
 
@@ -658,7 +658,8 @@ api.get("/hook-logs", (c) => {
 });
 
 // GET /api/project/:name/entry-dates — per-entry dates for catalogue entries.
-// Body: { [entryId]: { created, lastModified, dateSource } } where dateSource
+// Body: { [catalogue]: { [entryId]: { created, lastModified, dateSource } } }
+// (EntryDates — keyed by catalogue, since an ID can recur across catalogues), where dateSource
 // says how each date was obtained ("entry" | "file" | "none", see
 // readEntryDatesForFile). A catalogue file that exists but cannot be read
 // answers 503 rather than an empty map.
@@ -668,7 +669,7 @@ api.get("/project/:name/entry-dates", async (c) => {
   if (!proj) return c.json({ error: "Project not found" }, 404);
   if (!proj.decoded) return c.json(unresolvedBody(proj), 404);
 
-  const dates: Record<string, EntryDate> = {};
+  const dates: EntryDates = {};
   const anviDir = findAnviDir(proj.decoded);
   if (!anviDir) return c.json(dates);
 
@@ -680,8 +681,7 @@ api.get("/project/:name/entry-dates", async (c) => {
       continue; // this catalogue does not exist: nothing to date
     }
     try {
-      const perEntry = await readEntryDatesForFile(filePath);
-      for (const [id, d] of Object.entries(perEntry)) dates[id] ??= d;
+      dates[file.replace(/\.md$/, "")] = await readEntryDatesForFile(filePath);
     } catch (e) {
       return c.json({ error: `could not read ${filePath}: ${(e as Error).message}`, status: "unreadable" }, 503);
     }
@@ -856,7 +856,7 @@ api.get("/project/:name/github-trace", async (c) => {
     try {
       const perEntry = await readEntryDatesForFile(cat.path);
       for (const [id, d] of Object.entries(perEntry)) {
-        if (d.dateSource === "entry" && d.created && !entryDatesMap[id]) entryDatesMap[id] = d.created;
+        if (d.dateSource === "entry" && d.created) entryDatesMap[`${cat.name}/${id}`] = d.created;
       }
     } catch {
       // unreadable catalogue: no temporal bonus for its entries
@@ -873,7 +873,7 @@ api.get("/project/:name/github-trace", async (c) => {
       if (keywords.length === 0) continue;
 
       const artifacts: GitHubArtifact[] = [];
-      const entryCreated = entryDatesMap[entry.id] ?? null;
+      const entryCreated = entryDatesMap[`${cat.name}/${entry.id}`] ?? null;
 
       // Score issues
       for (const issue of issues) {

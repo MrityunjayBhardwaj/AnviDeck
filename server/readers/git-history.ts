@@ -1,6 +1,6 @@
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, relative } from "node:path";
-import { entryIdFromHeader, ENTRY_HEADER_LINE } from "../../shared/parser";
+import { announcesContinuation, entryIdFromHeader, ENTRY_HEADER_LINE } from "../../shared/parser";
 import type { TimelinePoint, EntryDate } from "../../shared/types";
 
 export const CLAUDE_GIT_DIR = `${process.env.HOME ?? "/Users/mrityunjaybhardwaj"}/.claude`;
@@ -163,15 +163,23 @@ export async function readEntryDatesForFile(
   const lines = readFileSync(real, "utf8").split("\n");
 
   // Current entries and the line span of each.
-  const spans: { id: string; start: number; end: number }[] = [];
+  const spans: { id: string; start: number; end: number; announced: boolean }[] = [];
   for (let i = 0; i < lines.length; i++) {
     const h = lines[i]!.match(ENTRY_HEADER_LINE);
     if (!h) continue;
     if (spans.length) spans[spans.length - 1]!.end = i;
     const parsed = entryIdFromHeader(h[2]!.trim());
-    spans.push({ id: parsed ? parsed.id : "", start: i, end: lines.length });
+    spans.push({ id: parsed ? parsed.id : "", start: i, end: lines.length, announced: announcesContinuation(h[2]!.trim()) });
   }
-  const entrySpans = spans.filter((s) => s.id);
+  // One span per ID: the entry's own heading, chosen as the parser chooses it
+  // (the first heading, unless it announces an update and a later one does not).
+  const chosen = new Map<string, (typeof spans)[number]>();
+  for (const s of spans) {
+    if (!s.id) continue;
+    const kept = chosen.get(s.id);
+    if (!kept || (kept.announced && !s.announced)) chosen.set(s.id, s);
+  }
+  const entrySpans = [...chosen.values()];
 
   const fileDates = (): Record<string, EntryDate> => {
     const out: Record<string, EntryDate> = {};
@@ -238,7 +246,6 @@ export async function readEntryDatesForFile(
 
   const out: Record<string, EntryDate> = {};
   for (const s of entrySpans) {
-    if (out[s.id]) continue; // repeated header (e.g. an UPDATE sub-section): first wins
     let newest: number | null = null;
     for (let i = s.start; i < s.end && i < lineTime.length; i++) {
       const t = lineTime[i];

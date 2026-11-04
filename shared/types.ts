@@ -354,6 +354,15 @@ export interface EntryDate {
 }
 
 /**
+ * Per-entry dates for one project, keyed by catalogue name ("hetvabhasa",
+ * "vyapti", "krama", "dharana") and then by entry ID. Keyed by catalogue
+ * because an ID can name different entries in two catalogues (an invariant
+ * in vyapti and an alignment note in dharana sharing its ID); keyed by ID alone, the
+ * second one was given the first one's date.
+ */
+export type EntryDates = Record<string, Record<string, EntryDate>>;
+
+/**
  * What a reader could tell about its source, so "could not read" never looks
  * like "nothing found":
  *   ok         — items were read, nothing failed

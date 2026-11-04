@@ -11,7 +11,7 @@ import type {
   GitHubTrace as GitHubTraceT,
   EntryTrace,
   GitHubArtifact,
-  EntryDate,
+  EntryDates,
 } from "../../shared/types";
 import type { Nav } from "../app";
 
@@ -27,7 +27,7 @@ interface Selection {
 interface BrainState {
   projectName: string | null;
   project: ProjectState | null;
-  dates: Record<string, EntryDate>;
+  dates: EntryDates;
   githubTrace: GitHubTraceT | null;
   sessions: HookLogSession[];
   flowEvents: BrainFlowEvent[];
@@ -401,7 +401,7 @@ function renderProjectMode(project: ProjectState): HTMLElement {
   const dated: { ts: number; catalogue: string; id: string; tags: string[] }[] = [];
   for (const cat of project.catalogues) {
     for (const entry of cat.entries) {
-      const d = S.dates[entry.id];
+      const d = S.dates[cat.name]?.[entry.id];
       if (d?.created) dated.push({ ts: new Date(d.created).getTime(), catalogue: cat.name, id: entry.id, tags: entry.tags });
     }
   }
@@ -896,7 +896,7 @@ function renderSelectionBar(): HTMLElement | null {
     }
     const boundaryRefs = S.project ? buildBoundaryNodes(S.project).filter((n) => n.linkedEntries.includes(id)).map((n) => n.id).join(", ") : "";
     const fires = S.flowEvents.filter((e) => e.patterns.includes(id)).length;
-    const createdAt = S.dates[id]?.created;
+    const createdAt = S.dates[entryCat]?.[id]?.created;
     const created = createdAt ? new Date(createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "?";
     const ghLinks = S.githubTrace?.entries.find((e) => e.entryId === id)?.artifacts.slice(0, 3).map((a) => a.id).join(" ") ?? "";
 
