@@ -71,9 +71,9 @@ export function ProjectView(
     </div>
     <div class="card-body">
       <div class="grid-3">
-        <div class="stat">
+        <div class="stat" title="One per entry ID in each catalogue, as anvi's session-start count; later headings of an ID are updates on their entry, not entries (#72)">
           <span class="value accent">${catTotal}</span>
-          <span class="label">Catalogue Entries</span>
+          <span class="label">Catalogue Entries (one per ID)</span>
         </div>
         <div class="stat">
           <span class="value ${project.fatalitySignals > 0 ? "red" : "green"}">${project.fatalitySignals}</span>

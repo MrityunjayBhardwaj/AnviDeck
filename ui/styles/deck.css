@@ -2543,6 +2543,19 @@ button:focus-visible {
 .catalogue-filter-toggle.active .filter-count { color: var(--orange); }
 .catalogue-entry.entry-ungrounded { border-left: 2px solid var(--orange); padding-left: 6px; }
 .entry-ref-line { margin-top: 4px; }
+
+/* CatalogueTree: later headings of an ID, attached to the entry (#72) */
+.catalogue-filter { align-items: center; gap: 12px; }
+.catalogue-count-basis { font-size: 11px; color: var(--text-2); margin-right: auto; cursor: help; }
+.catalogue-header .cat-later { font-size: 11px; color: var(--text-2); margin-left: auto; }
+.catalogue-header .cat-later + .cat-count { margin-left: 8px; }
+.entry-continuations { font-size: 10px; color: var(--text-2); white-space: nowrap; }
+.entry-continuations.has-unmarked { color: var(--yellow); }
+.entry-continuation-list { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
+.entry-continuation { font-size: 11px; color: var(--text-1); padding: 1px 0; }
+.entry-continuation .cont-level { color: var(--text-2); }
+.entry-continuation .tag { margin-left: 4px; }
+.entry-continuation .cont-unmarked { color: var(--yellow); font-size: 10px; font-style: italic; }
 .ref-value { color: var(--cyan); font-size: 11px; }
 .ref-missing { color: var(--orange); font-size: 11px; font-style: italic; }
 
