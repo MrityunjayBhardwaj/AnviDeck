@@ -58,9 +58,9 @@ What the workspace adds is in `BUILD.md` under "The workspace". Six of today's v
 
 **Dark theme, monospace**: an engineering instrument (Grafana/Bloomberg), not Notion.
 
-**Selective DOM updates**: `ui/app.ts` keeps the header, sidebar and timeline across navigations; only the main content swaps. The new shell (#80) keeps this.
+**Selective DOM updates**: `ui/app.ts` keeps the frame (top bar, rail, timeline, activity strip) across navigations; only the main content swaps (#80).
 
-**Nav object for cross-linking**: components receive a `Nav` (`toHome`, `toProject`, `toTrace`, `toSystemLens`, `toCrossProject`, `toRouting`, `toBrain`, `toGitHubTrace`, `toSessions`, `render`). Agents and Map are addressed by URL hash (`#agents?…`, `#map?…`). The new shell (#80) moves every screen to URL hashes and a ⌘K palette.
+**Nav object for cross-linking**: components receive a `Nav` (`toHome`, `toProject`, `toTrace`, `toSystemLens`, `toCrossProject`, `toRouting`, `toBrain`, `toGitHubTrace`, `toSessions`, `render`). Every screen has a URL hash (`ui/shell/routes.ts`; `#agents?…`, `#map?…` carry their own params) and is in the ⌘K palette (#80).
 
 **Every figure says where it came from**: a reader that could not look reports `unreadable` or `partial`, never "nothing found" (`server/readers/read-status.ts`).
 

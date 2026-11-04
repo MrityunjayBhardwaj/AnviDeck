@@ -165,7 +165,8 @@ server/
   watchers/               file-watcher (global memory changes, logged to the console), hook-logger (/tmp anvi logs)
 shared/                   types, parser, anvi-paths (artifact resolver), home/replay/structure types
 ui/
-  app.ts                  shell: sidebar, selective re-render, Nav, timeline strip, WebSocket
+  app.ts                  shell (#80): rail, URL hash per screen, selective re-render, Nav, timeline strip, WebSocket
+  shell/                  routes (every screen and its hash), frame (top bar, rail, placeholders, strip), ⌘K palette
   api.ts, home-count.ts   API client; Home badge count
   components/             CommandCenter (Home), ProjectView, CatalogueTree, Timeline, DiffViewer,
                           LiveSessions, AgentsView, MapView (+ map-model), CognitiveTrace,
