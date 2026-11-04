@@ -4,6 +4,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { AgentHost, HostError, type HostEvent, type QueryFn } from "../agents/host";
 import { loginOnlyEnv, readLogin, resolveClaude, type LoginStatus } from "../agents/login";
 import { sameOriginWrites, withWriteToken } from "../guard";
+import { FromIssue } from "../agents/from-issue";
 
 // The full write guard (same origin + this server's token) and the action log are installed
 // on the whole app (installGuard in server/guard.ts), so every /api write route is covered.
@@ -11,7 +12,7 @@ import { sameOriginWrites, withWriteToken } from "../guard";
 export { sameOriginWrites };
 
 /** The /api/agents routes over one host. Exported as a factory so tests drive a fake query(). */
-export function agentRoutes(host: AgentHost, login: () => Promise<LoginStatus>): Hono {
+export function agentRoutes(host: AgentHost, login: () => Promise<LoginStatus>, fromIssue: FromIssue = new FromIssue(host)): Hono {
   const r = new Hono();
   r.use("/*", sameOriginWrites);
 
@@ -53,6 +54,10 @@ export function agentRoutes(host: AgentHost, login: () => Promise<LoginStatus>):
     const b = await body(c);
     return c.json(host.start({ cwd: b.cwd, prompt: b.prompt, issue: b.issue }), 201);
   });
+  // Start an agent from an issue, in its own worktree (#78). The GET says what it would do, or
+  // why it would refuse, without making anything; the POST does it.
+  r.get("/from-issue/plan", async (c) => c.json(await fromIssue.plan(c.req.query())));
+  r.post("/from-issue", async (c) => c.json(await fromIssue.start(await body(c)), 201));
   r.post("/:id/stop", (c) => c.json(host.stop(c.req.param("id"))));
   r.post("/:id/resume", async (c) => {
     const b = await body(c);

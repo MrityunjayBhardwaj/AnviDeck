@@ -125,12 +125,44 @@ startBtn.onclick = async () => {
   }
 };
 
+// Start an agent from an issue (#78): its own worktree and branch, with .anvi and ref linked.
+const fiProject = el("input", { id: "fi-project", size: "18", placeholder: "project" });
+const fiIssue = el("input", { id: "fi-issue", size: "6", placeholder: "issue #" });
+const fiNote = el("input", { id: "fi-note", size: "50", placeholder: "optional note for this run" });
+const fiBtn = el("button", { id: "fi-start" }, "Start agent on issue");
+const fiMsg = el("div", { id: "fi-msg" });
+fiBtn.onclick = async () => {
+  fiMsg.className = "k";
+  fiMsg.textContent = "making the worktree…";
+  try {
+    const r = (await call("POST", "/from-issue", { project: fiProject.value, issue: fiIssue.value, note: fiNote.value || undefined })) as {
+      agent: Agent; worktree: string; branch: string;
+      links: { kind: string; state: string; resolves: boolean; resolvesTo?: string; note: string }[];
+      board: { state: string; board?: string; reason?: string };
+    };
+    fiMsg.className = "ok";
+    fiMsg.replaceChildren(
+      el("div", {}, `started ${r.agent.id} in ${r.worktree} on ${r.branch}`),
+      ...r.links.map((l) => el("div", { "data-kind": l.kind, "data-resolves": String(l.resolves), class: l.resolves ? "ok" : "err" },
+        `${l.kind}: ${l.state}, ${l.resolves ? `resolves to ${l.resolvesTo}` : "does not resolve"} (${l.note})`)),
+      el("div", { class: "k" }, `board: ${r.board.state}${r.board.board ? ` ${r.board.board}` : ""}${r.board.reason ? ` (${r.board.reason})` : ""}`),
+    );
+    agents.set(r.agent.id, r.agent);
+    void select(r.agent.id);
+  } catch (e) {
+    fiMsg.className = "err";
+    fiMsg.textContent = (e as Error).message;
+  }
+};
+
 root.append(
   css,
   el("h1", {}, "Agent host"),
   el("div", { class: "note" }, "Temporary page (#75). The Agents screen (#82) replaces it."),
   loginBox,
   el("div", { class: "box" }, el("div", {}, "Folder ", cwdIn, "  Issue ", issueIn), el("div", {}, promptIn), startBtn, " ", msg),
+  el("div", { class: "box", id: "from-issue" }, el("div", {}, el("b", {}, "From an issue"), el("span", { class: "k" }, "  its own worktree and branch, .anvi and ref linked (#78)")),
+    el("div", {}, "Project ", fiProject, "  Issue ", fiIssue, "  ", fiNote, " ", fiBtn), fiMsg),
   listBox,
   detailBox,
   actionsBox,

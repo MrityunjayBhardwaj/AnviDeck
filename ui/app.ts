@@ -15,6 +15,7 @@ import { AgentsView, parseAgentsHash } from "./components/AgentsView";
 import { needsCount, badgeText, stripText, type NeedsCount } from "./home-count";
 import type { HomeResponse } from "../shared/home-types";
 import { MapView } from "./components/MapView";
+import { createStartAgent } from "./shell/start-agent";
 import { parseRoute, screen, type Route, type ScreenId } from "./shell/routes";
 import type { AgentsRead, StripAgent } from "./shell/activity";
 import { paletteEntries, screenHash, type PaletteEntry } from "./shell/palette-model";
@@ -343,10 +344,17 @@ function paletteData(): PaletteEntry[] {
   });
 }
 
+// "Start an agent on an issue" (#78): its dialog, opened from the palette.
+const startAgent = createStartAgent({
+  projects: () => sortedProjects().map((p) => p.name),
+  started: () => void loadAgents(),
+});
+
 const palette = createPalette({
   entries: paletteData,
   choose: (e) => {
-    if (e.project) setProject(e.project);
+    if (e.command === "start-from-issue") startAgent.open(currentProjectName);
+    else if (e.project) setProject(e.project);
     else if (e.hash) go(e.hash);
     else if (e.href) location.href = e.href;
   },

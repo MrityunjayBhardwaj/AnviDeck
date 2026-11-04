@@ -132,3 +132,16 @@ button.sh-pal-item:hover, button.sh-pal-item.sel { background: rgba(124, 140, 24
   .sh-search { display: none; }
   .sh-older-list { grid-template-columns: 1fr; }
 }
+
+/* "Start an agent on an issue" (#78), opened from ⌘K */
+.sh-sa { width: min(640px, 94vw); background: var(--bg-1); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 30px 80px rgba(0, 0, 0, .6); padding: 14px 16px; color: var(--text-0); font-size: 13px; }
+.sh-sa-h { font-weight: 600; margin-bottom: 10px; }
+.sh-sa-row { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+.sh-sa select, .sh-sa input, .sh-sa textarea { background: var(--bg-0); color: var(--text-0); border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; font: 12.5px var(--font-mono); }
+.sh-sa textarea { width: 100%; box-sizing: border-box; }
+.sh-sa select { max-width: 380px; }
+.sh-sa-out { font: 12px var(--font-mono); word-break: break-all; }
+.sh-sa-out > div { padding: 2px 0; }
+.sh-sa-ok { color: var(--green); }
+.sh-sa-err { color: var(--red); }
+.sh-sa-out a { color: var(--accent); }

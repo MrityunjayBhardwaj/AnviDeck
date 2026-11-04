@@ -74,9 +74,14 @@ The prototype's frame replaces today's sidebar:
 - **Runs on your Claude Code login, never an API key:** `pathToClaudeCodeExecutable` is the installed `claude` (found on PATH, shown on screen); `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL` and the Bedrock/Vertex switches are removed from each agent's environment; an agent whose init message reports an `apiKeySource` other than `none` is stopped at once and never shown as running; the screen shows the login method and plan from `claude auth status` (not the email). A start that fails while Claude Code is replacing its binary says "Claude Code was updating, try again".
 - Spike 2026-11-05 (recorded in #75): SDK 0.3.318 with CLI 2.1.318 under Bun ran on the existing login with `apiKeySource: none`; both SessionStart hooks fired; the permission callback received a Write request and a deny stopped it.
 
-### Starting an agent from an issue (#78, planned)
+### Starting an agent from an issue (#78, on main)
 
-**Start agent** on an issue (Work, Home, ⌘K): creates a worktree and branch named after the issue; links the project's `.anvi` and `ref` into it (the links anvi's hooks say a worktree needs); starts the agent with a prompt built from the issue plus the workflow (issue → branch → fix → test and observe → PR → self-review; agents never merge). Refuses, saying why, if the worktree already exists or the issue is closed. Moves the issue to In Progress if the project has a board.
+**Start agent** on an issue (⌘K "Start an agent on an issue", and a box on `/agent-host`; the Work and Home buttons come with #85 and #81): `POST /api/agents/from-issue { project | repo, issue, note? }`, previewed without writing by `GET /api/agents/from-issue/plan` (`server/agents/from-issue.ts`, `worktree.ts`, `issue-prompt.ts`, `board.ts`).
+- Creates the worktree `<main checkout>/.claude/worktrees/issue-<n>` (beside Claude Code's own) on a new branch `feat|fix|chore/<n>-<slug>` (fix for a `bug` label, chore for `chore` or `documentation`, else feat), from the local default branch.
+- Links `.anvi` and `ref` into it, each to where the main checkout's resolves (what anvi's `worktreeLinkGap` says a linked worktree needs). A tracked `ref` stays the branch's own copy. A link the repo does not already ignore is added to its `info/exclude`. Each link is read back, and anvi's own `worktreeLinkGap` is asked what is still missing.
+- Starts the agent with a prompt built from the issue (repo, number, title, body) plus the workflow (issue → branch → fix → test and observe → PR → self-review; agents never merge) and `PR_SECTIONS_INSTRUCTIONS`. An optional note comes last and wins where it differs.
+- Refuses, saying why (409/404 with `refusal`): unknown project or repo, no GitHub origin, no such issue, issue closed, worktree or branch (local or origin's) already exists, or the main checkout is on the base branch with uncommitted changes to tracked files; and, before anything is made, the agent cap. If the agent cannot start, the fresh worktree and branch are removed.
+- Moves the issue to In Progress on the one board linked to the repository (ids derived each time). Says "no board" when none is linked, and does not guess between several.
 
 ### Evidence and self-review (#83, planned)
 
