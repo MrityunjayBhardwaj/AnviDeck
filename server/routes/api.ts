@@ -28,8 +28,12 @@ import { execSync } from "node:child_process";
 import type { ProjectSummary, ProjectState, HookLogEntry, EntryDates, ReadReport } from "../../shared/types";
 import type { Context } from "hono";
 import { errText, isAbsent, report } from "../readers/read-status";
+import prEvidence from "./pr-evidence";
 
 const api = new Hono();
+
+// PR-body Evidence and Self-review sections (#83)
+api.route("/pr-evidence", prEvidence);
 
 /**
  * Answer an array endpoint so "could not read" never looks like "nothing
