@@ -31,7 +31,8 @@ import {
  * Refusals, each with its reason (HostError, `refusal` names which):
  *   unknown-project  the project or repo is not one AnviDeck knows (from its project list)
  *   no-repo          the project's folder is not a git checkout with a GitHub remote
- *   no-issue         GitHub has no such issue in that repo (or could not be asked)
+ *   no-issue         GitHub answered that there is no such issue in that repo
+ *   github-unread    GitHub could not be asked, or its answer could not be read (502): not "no issue"
  *   closed           the issue is closed
  *   worktree-exists  the issue's worktree folder already exists
  *   branch-exists    the issue's branch already exists (locally or as origin's)
@@ -82,7 +83,7 @@ export interface Started extends Plan {
   prompt: string;
 }
 
-const refuse = (status: 400 | 404 | 409, refusal: string, why: string, detail: Record<string, unknown> = {}) =>
+const refuse = (status: 400 | 404 | 409 | 502, refusal: string, why: string, detail: Record<string, unknown> = {}) =>
   new HostError(status, why, { refusal, ...detail });
 
 /** AnviDeck's project list (the same discovery GET /api/projects uses): name and resolved path. */
@@ -159,13 +160,17 @@ export class FromIssue {
   private async readIssue(repo: string, n: number): Promise<IssueInfo> {
     const r = await this.run("gh", ["issue", "view", String(n), "--repo", repo, "--json", "number,title,body,state,url,labels"]);
     if (r.code !== 0) {
-      throw refuse(404, "no-issue", `could not read issue #${n} of ${repo}: ${(r.stderr || r.stdout).trim().slice(0, 300) || `gh exited ${r.code}`}`);
+      const said = (r.stderr || r.stdout).trim().slice(0, 300) || `gh exited ${r.code}`;
+      // Only GitHub's own "no such issue" answer is a missing issue; no auth, no network or no gh
+      // is a read that failed, and must not read as "there is no issue".
+      if (/Could not resolve to an? (issue|Issue)/.test(said)) throw refuse(404, "no-issue", `${repo} has no issue #${n}`);
+      throw refuse(502, "github-unread", `could not ask GitHub for issue #${n} of ${repo}: ${said}`);
     }
     try {
       const j = JSON.parse(r.stdout) as { number: number; title: string; body: string | null; state: string; url: string; labels?: { name: string }[] };
       return { number: j.number, title: j.title, body: j.body ?? "", state: j.state, url: j.url, labels: (j.labels ?? []).map((l) => l.name) };
     } catch {
-      throw refuse(404, "no-issue", `GitHub's answer for issue #${n} of ${repo} could not be read`);
+      throw refuse(502, "github-unread", `GitHub's answer for issue #${n} of ${repo} could not be read`);
     }
   }
 
@@ -246,8 +251,18 @@ export class FromIssue {
       await this.run("git", ["-C", p.main, "branch", "-D", p.branch]);
       throw e;
     }
-    const anviCheck = await this.linkCheck(this.run, p.worktree);
-    const board = await this.board(this.run, p.repo, p.issue.url);
+    // The agent is running from here on: a later step that fails is reported in its own field,
+    // never as a failed start (the POST must not answer an error while an agent works).
+    const anviCheck: AnviLinkCheck = await this.linkCheck(this.run, p.worktree).catch((e: unknown) => ({
+      state: "not checked" as const,
+      reason: `the link check failed: ${(e as Error).message}`,
+      missing: [],
+      differs: [],
+    }));
+    const board: BoardResult = await this.board(this.run, p.repo, p.issue.url).catch((e: unknown) => ({
+      state: "not moved" as const,
+      reason: `the board step failed after the agent started: ${(e as Error).message}`,
+    }));
     return { ...p, agent, links, anviCheck, board, prompt };
   }
 }

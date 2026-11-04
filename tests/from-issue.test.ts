@@ -422,3 +422,46 @@ describe("the board", () => {
     h.stopAll("test over");
   });
 });
+
+describe("review follow-ups: a started agent is never reported as a failed start, and a failed read is not 'no issue'", () => {
+  test("a board step or link check that throws after the agent started is reported in its own field", async () => {
+    const r = await repo();
+    const { run } = runner([OPEN]);
+    const { h } = host();
+    const fi = new FromIssue(h, {
+      run,
+      projects: () => [{ name: "widget", path: r.main }],
+      linkCheck: async () => { throw new Error("hooks gone"); },
+      board: async () => { throw new Error("b.field.options is undefined"); },
+    });
+    const out = await fi.start({ project: "widget", issue: 7 });
+    expect(out.agent.id).toBeTruthy();
+    expect(out.board.state).toBe("not moved");
+    expect((out.board as { reason: string }).reason).toContain("after the agent started");
+    expect(out.anviCheck.state).toBe("not checked");
+    expect(out.anviCheck.reason).toContain("hooks gone");
+    h.stopAll("test over");
+  });
+
+  test("a board whose Status field has no options is 'not moved', not an exception", async () => {
+    const run: Run = async (_c, args) =>
+      args[0] === "api"
+        ? { code: 0, stdout: JSON.stringify({ data: { repository: { projectsV2: { nodes: [{ id: "P", number: 3, title: "B", owner: { login: "acme" }, field: {} }] } } } }), stderr: "" }
+        : { code: 1, stdout: "", stderr: "unexpected" };
+    const res = await moveToInProgress(run, "acme/widget", "https://github.com/acme/widget/issues/7");
+    expect(res.state).toBe("not moved");
+  });
+
+  test("gh failing for another reason (no auth, offline) answers 502 github-unread, never 404 no-issue", async () => {
+    const r = await repo();
+    const { run } = runner([OPEN], (args) => (args[0] === "issue" ? { code: 1, stdout: "", stderr: "error connecting to api.github.com" } : null));
+    const { h } = host();
+    const fi = new FromIssue(h, { run, projects: () => [{ name: "widget", path: r.main }], linkCheck: noCheck, board: noBoard });
+    const e = await refusal(fi.start({ project: "widget", issue: 7 }));
+    expect([e.status, e.detail?.refusal]).toEqual([502, "github-unread"]);
+    const bad = runner([OPEN], (args) => (args[0] === "issue" ? { code: 0, stdout: "not json" } : null));
+    const fi2 = new FromIssue(h, { run: bad.run, projects: () => [{ name: "widget", path: r.main }], linkCheck: noCheck, board: noBoard });
+    const e2 = await refusal(fi2.start({ project: "widget", issue: 7 }));
+    expect([e2.status, e2.detail?.refusal]).toEqual([502, "github-unread"]);
+  });
+});

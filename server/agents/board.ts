@@ -43,7 +43,7 @@ export async function moveToInProgress(run: Run, repo: string, issueUrl: string)
   }
   const b = boards[0]!;
   const label = `#${b.number} ${b.title}`;
-  if (!b.field) return { state: "not moved", reason: `board ${label} has no single-select Status field` };
+  if (!b.field || !Array.isArray(b.field.options)) return { state: "not moved", reason: `board ${label} has no single-select Status field` };
   const option = b.field.options.find((o) => o.name === IN_PROGRESS);
   if (!option) {
     return { state: "not moved", reason: `board ${label} has no Status column named "${IN_PROGRESS}" (its columns: ${b.field.options.map((o) => o.name).join(", ")})` };

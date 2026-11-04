@@ -39,7 +39,7 @@ export type QueryFn = (params: {
 
 export class HostError extends Error {
   /** `detail` is sent beside `error` in the response body (e.g. `resumable` on a refused message). */
-  constructor(readonly status: 400 | 404 | 409 | 429 | 503, message: string, readonly detail?: Record<string, unknown>) {
+  constructor(readonly status: 400 | 404 | 409 | 429 | 502 | 503, message: string, readonly detail?: Record<string, unknown>) {
     super(message);
   }
 }
