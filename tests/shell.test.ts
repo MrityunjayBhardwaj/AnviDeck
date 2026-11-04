@@ -117,14 +117,17 @@ describe("activity strip", () => {
 
 describe("guards indicator", () => {
   test("says Guards on only when every listed guard is on", () => {
-    expect(guardsLabel(GUARDS).text).toBe("Guards: 2 of 4 on");
-    expect(guardsLabel(GUARDS).state).toBe("partial");
+    expect(guardsLabel(GUARDS).text).toBe("Guards on");
+    expect(guardsLabel(GUARDS).state).toBe("on");
+    expect(guardsLabel(GUARDS.map((g, i) => ({ ...g, on: i !== 0 })))).toEqual({ text: "Guards: 3 of 4 on", state: "partial" });
     expect(guardsLabel(GUARDS.map((g) => ({ ...g, on: true })))).toEqual({ text: "Guards on", state: "on" });
   });
 
   test("the guards it calls on exist in the server code it names", () => {
-    expect(readFileSync("server/access.ts", "utf8").length).toBeGreaterThan(0);
-    expect(readFileSync("server/routes/agents.ts", "utf8")).toContain("export const sameOriginWrites");
+    for (const g of GUARDS.filter((x) => x.on)) {
+      expect(g.code).toBeDefined();
+      expect(readFileSync(g.code!.file, "utf8")).toContain(g.code!.has);
+    }
     for (const g of GUARDS.filter((x) => !x.on)) expect(g.where).toMatch(/#\d+/);
   });
 });

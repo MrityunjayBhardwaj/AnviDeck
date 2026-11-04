@@ -1,15 +1,16 @@
 /**
  * The "Guards" indicator (#80): what protects this server today, and what is still to come.
- * It states only guards that are on `main`; each names the code that enforces it. The token
- * on every write and the action log are #76's, so the pill does not say "Guards on" until
- * they are in.
+ * It states only guards that are on `main`; each names the file and the code that enforce it,
+ * and a test reads that file, so a guard cannot be called on after its code moves or goes.
  */
 
 export interface Guard {
   what: string;
   on: boolean;
-  /** Where it is enforced, or the issue that builds it. */
+  /** Where it is enforced (or the issue that builds it), as shown to the reader. */
   where: string;
+  /** For a guard that is on: the file and the text in it that enforces it. */
+  code?: { file: string; has: string };
 }
 
 export const GUARDS: readonly Guard[] = [
@@ -17,14 +18,26 @@ export const GUARDS: readonly Guard[] = [
     what: "Answers only this machine: Host must be a loopback name, a foreign Origin is refused",
     on: true,
     where: "server/access.ts (#66)",
+    code: { file: "server/access.ts", has: "export function localOnly" },
   },
   {
-    what: "Agent actions only from AnviDeck's own pages: a write must carry this server's Origin",
+    what: "Writes only from AnviDeck's own pages: a write must carry this server's Origin",
     on: true,
-    where: "sameOriginWrites in server/routes/agents.ts (#75)",
+    where: "writeGuard in server/guard.ts (#75, #76)",
+    code: { file: "server/guard.ts", has: "export function writeGuard" },
   },
-  { what: "A per-server token on every write", on: false, where: "arrives with #76" },
-  { what: "Every action written to an action log", on: false, where: "arrives with #76" },
+  {
+    what: "A per-server token on every write, placed in AnviDeck's own pages",
+    on: true,
+    where: "writeGuard and withWriteToken in server/guard.ts (#76)",
+    code: { file: "server/guard.ts", has: "export function withWriteToken" },
+  },
+  {
+    what: "Every write written to an action log, refused ones included",
+    on: true,
+    where: "logWrites in server/guard.ts, ActionLog in server/action-log.ts (#76)",
+    code: { file: "server/action-log.ts", has: "export class ActionLog" },
+  },
 ];
 
 /** The pill's words: never "Guards on" while a planned guard is still off. */
