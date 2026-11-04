@@ -14,6 +14,7 @@ import {
   showAtCommit,
   diffCommits,
   readEntryDatesForFile,
+  readEntryDatesForStore,
   CLAUDE_GIT_DIR,
   isRevision,
 } from "../readers/git-history";
@@ -661,33 +662,23 @@ api.get("/hook-logs", (c) => {
 // Body: { [catalogue]: { [entryId]: { created, lastModified, dateSource } } }
 // (EntryDates — keyed by catalogue, since an ID can recur across catalogues), where dateSource
 // says how each date was obtained ("entry" | "file" | "none", see
-// readEntryDatesForFile). A catalogue file that exists but cannot be read
-// answers 503 rather than an empty map.
+// readEntryDatesForFile). It answers within about a second (#34): catalogues
+// whose git history is still being read come back as 202 { status: "pending" }
+// with the finished ones in `dates`, and the read carries on in the background.
+// A catalogue git could not answer for is 503 { status: "failed" }; a catalogue
+// file that cannot be read is 503 { status: "unreadable" }. Never an empty map.
+const ENTRY_DATES_WAIT_MS = 500;
 api.get("/project/:name/entry-dates", async (c) => {
   const name = c.req.param("name");
   const proj = findProject(name);
   if (!proj) return c.json({ error: "Project not found" }, 404);
   if (!proj.decoded) return c.json(unresolvedBody(proj), 404);
 
-  const dates: EntryDates = {};
   const anviDir = findAnviDir(proj.decoded);
-  if (!anviDir) return c.json(dates);
+  if (!anviDir) return c.json({} satisfies EntryDates);
 
-  for (const file of ["hetvabhasa.md", "vyapti.md", "krama.md", "dharana.md"]) {
-    const filePath = join(anviDir, file);
-    try {
-      statSync(filePath);
-    } catch {
-      continue; // this catalogue does not exist: nothing to date
-    }
-    try {
-      dates[file.replace(/\.md$/, "")] = await readEntryDatesForFile(filePath);
-    } catch (e) {
-      return c.json({ error: `could not read ${filePath}: ${(e as Error).message}`, status: "unreadable" }, 503);
-    }
-  }
-
-  return c.json(dates);
+  const answer = await readEntryDatesForStore(anviDir, ENTRY_DATES_WAIT_MS);
+  return c.json(answer.body, answer.code);
 });
 
 // ---- GitHub Trace ----

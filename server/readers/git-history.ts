@@ -1,7 +1,13 @@
 import { readFileSync, realpathSync, statSync } from "node:fs";
-import { dirname, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { announcesContinuation, entryIdFromHeader, ENTRY_HEADER_LINE } from "../../shared/parser";
-import type { TimelinePoint, EntryDate } from "../../shared/types";
+import type {
+  TimelinePoint,
+  EntryDate,
+  EntryDates,
+  EntryDatesPending,
+  EntryDatesFailed,
+} from "../../shared/types";
 
 export const CLAUDE_GIT_DIR = `${process.env.HOME ?? "/Users/mrityunjaybhardwaj"}/.claude`;
 
@@ -126,39 +132,201 @@ export async function listAtCommit(
 
 // ---- Per-entry dates ----------------------------------------------------
 
-/** Run git with an explicit -C; never throws. */
+/**
+ * Run git with an explicit -C; never throws. With `timeoutMs`, a git that has
+ * not finished by then is stopped and the read answers ok: false, so a read
+ * that cannot finish is a failure, never a short answer (#34).
+ */
 async function gitIn(
   dir: string,
-  args: string[]
+  args: string[],
+  timeoutMs?: number
 ): Promise<{ ok: boolean; out: string; err: string }> {
   try {
-    const proc = Bun.spawn(["git", "-C", dir, ...args], { stdout: "pipe", stderr: "pipe" });
+    // env given explicitly: Bun otherwise looks git up on the PATH the process
+    // started with, and the tests put a stand-in git first on PATH.
+    const proc = Bun.spawn(["git", "-C", dir, ...args], { stdout: "pipe", stderr: "pipe", env: process.env });
+    let timedOut = false;
+    const timer = timeoutMs
+      ? setTimeout(() => {
+          timedOut = true;
+          proc.kill();
+        }, timeoutMs)
+      : undefined;
     const [out, err] = await Promise.all([
       new Response(proc.stdout).text(),
       new Response(proc.stderr).text(),
     ]);
     const code = await proc.exited;
+    clearTimeout(timer);
+    if (timedOut) {
+      return { ok: false, out: "", err: `git ${args[0]} did not finish within ${timeoutMs! / 1000} s and was stopped` };
+    }
     return { ok: code === 0, out, err: err.trim() };
   } catch (e) {
     return { ok: false, out: "", err: (e as Error).message };
   }
 }
 
-const dateCache = new Map<string, { key: string; value: Record<string, EntryDate> }>();
+/** Git could not answer for a catalogue's history (failed, or ran too long). */
+export class EntryDatesGitError extends Error {}
+
+/** How long one `git log -p` or `git blame` may run before the read fails. */
+let datesGitTimeoutMs = Number(process.env.ANVIDECK_DATES_GIT_TIMEOUT_MS) || 180_000;
+/** For tests: change the limit above; returns the previous one. */
+export function setDatesGitTimeoutMs(ms: number): number {
+  const prev = datesGitTimeoutMs;
+  datesGitTimeoutMs = ms;
+  return prev;
+}
+
+/** A failed read is reported for this long before a request may try again. */
+const FAILURE_HOLD_MS = 30_000;
+
+const dateCache = new Map<
+  string,
+  { key: string; mtimeMs: number; size: number; value: Record<string, EntryDate> }
+>();
+/** One read per catalogue file at a time: later requests join it (#34). */
+const inFlight = new Map<string, Promise<Record<string, EntryDate>>>();
+const lastFailure = new Map<string, { at: number; err: string }>();
+let jobsStarted = 0;
+
+/** For tests: how many date reads have been started (joins do not count). */
+export function datesJobsStarted(): number {
+  return jobsStarted;
+}
+
+/** The running read for `real`, or a new one. Never leaves a rejection unhandled. */
+function datesJob(real: string): Promise<Record<string, EntryDate>> {
+  const running = inFlight.get(real);
+  if (running) return running;
+  jobsStarted++;
+  const job = computeEntryDates(real).finally(() => inFlight.delete(real));
+  inFlight.set(real, job);
+  job.then(
+    () => lastFailure.delete(real),
+    (e) => {
+      if (e instanceof EntryDatesGitError) lastFailure.set(real, { at: Date.now(), err: e.message });
+    }
+  );
+  return job;
+}
 
 /**
- * Per-entry created / lastModified dates for one catalogue file.
- *
- * Reads the history of the file's REAL location (symlinks resolved), so a
- * project's `.anvi -> ~/.anvideck/projects/<p>/.anvi` link is dated from the
- * central store's own repo rather than the project's. Read-only: only
- * `git rev-parse`, `ls-files`, `log` and `blame`. Throws only if the file
- * itself cannot be read (the caller reports that as unreadable).
+ * Per-entry created / lastModified dates for one catalogue file. Waits for
+ * the whole read. Throws EntryDatesGitError when git could not answer (a
+ * failed or stopped `git log`/`git blame`), and a plain Error when the file
+ * itself cannot be read; it never answers a failed read with "no dates".
  */
 export async function readEntryDatesForFile(
   filePath: string
 ): Promise<Record<string, EntryDate>> {
+  return datesJob(realpathSync(filePath));
+}
+
+export type DatesPeek =
+  | { state: "ready"; value: Record<string, EntryDate> }
+  | { state: "pending" }
+  | { state: "failed"; err: string };
+
+/**
+ * Like readEntryDatesForFile, but waits at most `waitMs`: a read still running
+ * then answers "pending" and carries on in the background, so the next request
+ * finds it done (#34). Throws only when the file itself cannot be read.
+ */
+export async function peekEntryDatesForFile(filePath: string, waitMs: number): Promise<DatesPeek> {
   const real = realpathSync(filePath);
+  const failed = lastFailure.get(real);
+  if (failed && !inFlight.has(real) && Date.now() - failed.at < FAILURE_HOLD_MS) {
+    return { state: "failed", err: failed.err };
+  }
+  const job = datesJob(real);
+  // Dates already read for the file as it is now are answered at once, while
+  // the read started above checks in the background whether a new commit
+  // changed them. Without this, a request on a busy machine could spend its
+  // whole wait on that check (rev-parse alone took ~2 s at load 95) and a
+  // warm cache would still answer "pending".
+  const cached = dateCache.get(real);
+  if (cached) {
+    try {
+      const st = statSync(real);
+      if (cached.mtimeMs === st.mtimeMs && cached.size === st.size) return { state: "ready", value: cached.value };
+    } catch {
+      // fall through: the read itself reports the file
+    }
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const waited = new Promise<"waited">((r) => (timer = setTimeout(() => r("waited"), waitMs)));
+  try {
+    const v = await Promise.race([job, waited]);
+    return v === "waited" ? { state: "pending" } : { state: "ready", value: v };
+  } catch (e) {
+    if (e instanceof EntryDatesGitError) return { state: "failed", err: e.message };
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export const CATALOGUE_FILES = ["hetvabhasa.md", "vyapti.md", "krama.md", "dharana.md"] as const;
+
+export type StoreDatesAnswer =
+  | { code: 200; body: EntryDates }
+  | { code: 202; body: EntryDatesPending }
+  | { code: 503; body: EntryDatesFailed | { status: "unreadable"; error: string } };
+
+/**
+ * Per-entry dates for every catalogue in one `.anvi` folder, answering within
+ * about `waitMs`. 200: all read. 202: some still being read in the background
+ * (`dates` holds the ones that are done). 503: git could not answer for a
+ * catalogue ("failed"), or a catalogue file could not be read ("unreadable").
+ * A catalogue that does not exist is simply absent.
+ */
+export async function readEntryDatesForStore(anviDir: string, waitMs: number): Promise<StoreDatesAnswer> {
+  const present = CATALOGUE_FILES.filter((file) => {
+    try {
+      statSync(join(anviDir, file));
+      return true;
+    } catch {
+      return false; // this catalogue does not exist: nothing to date
+    }
+  });
+  let peeks: { cat: string; peek: DatesPeek }[];
+  try {
+    peeks = await Promise.all(
+      present.map(async (file) => ({
+        cat: file.replace(/\.md$/, ""),
+        peek: await peekEntryDatesForFile(join(anviDir, file), waitMs),
+      }))
+    );
+  } catch (e) {
+    return { code: 503, body: { status: "unreadable", error: `could not read a catalogue in ${anviDir}: ${(e as Error).message}` } };
+  }
+  const dates: EntryDates = {};
+  const pending: string[] = [];
+  const failed: string[] = [];
+  const errors: string[] = [];
+  for (const { cat, peek } of peeks) {
+    if (peek.state === "ready") dates[cat] = peek.value;
+    else if (peek.state === "pending") pending.push(cat);
+    else {
+      failed.push(cat);
+      errors.push(`${cat}: ${peek.err}`);
+    }
+  }
+  if (failed.length) return { code: 503, body: { status: "failed", error: errors.join("; "), failed, pending, dates } };
+  if (pending.length) return { code: 202, body: { status: "pending", pending, dates } };
+  return { code: 200, body: dates };
+}
+
+/**
+ * Reads the history of the file's REAL location (symlinks resolved), so a
+ * project's `.anvi -> ~/.anvideck/projects/<p>/.anvi` link is dated from the
+ * central store's own repo rather than the project's. Read-only: only
+ * `git rev-parse`, `ls-files`, `log` and `blame`.
+ */
+async function computeEntryDates(real: string): Promise<Record<string, EntryDate>> {
   const st = statSync(real);
   const lines = readFileSync(real, "utf8").split("\n");
 
@@ -193,22 +361,35 @@ export async function readEntryDatesForFile(
     return out;
   };
 
-  const top = await gitIn(dirname(real), ["rev-parse", "--show-toplevel"]);
-  if (!top.ok) return fileDates(); // not inside a git repo
+  const top = await gitIn(dirname(real), ["rev-parse", "--show-toplevel"], datesGitTimeoutMs);
+  if (!top.ok) {
+    if (/not a git repository/i.test(top.err)) return fileDates();
+    throw new EntryDatesGitError(`git could not find the repository of ${real}: ${top.err}`);
+  }
   const root = top.out.trim();
   const rel = relative(root, real);
-  const head = await gitIn(root, ["rev-parse", "HEAD"]);
+  const head = await gitIn(root, ["rev-parse", "--verify", "HEAD"], datesGitTimeoutMs);
+  if (!head.ok && !/needed a single revision|unknown revision|ambiguous argument/i.test(head.err)) {
+    throw new EntryDatesGitError(`git could not read HEAD in ${root}: ${head.err}`);
+  }
   const cacheKey = `${head.out.trim()}|${st.mtimeMs}|${st.size}`;
   const cached = dateCache.get(real);
   if (cached && cached.key === cacheKey) return cached.value;
 
-  const tracked = await gitIn(root, ["ls-files", "--error-unmatch", "--", rel]);
+  const tracked = await gitIn(root, ["ls-files", "--error-unmatch", "--", rel], datesGitTimeoutMs);
   if (!tracked.ok) return fileDates(); // in a repo but never committed
+  if (!head.ok) return fileDates(); // added, but the repo has no commit yet
 
-  // created: the first commit whose diff adds the entry's header line.
-  const log = await gitIn(root, [
-    "log", "--reverse", "--no-color", "-U0", "--format=@@COMMIT@@ %H %aI", "-p", "--", rel,
+  // The two long reads run side by side; either one failing fails the read.
+  const [log, blame] = await Promise.all([
+    // created: the first commit whose diff adds the entry's header line.
+    gitIn(root, ["log", "--reverse", "--no-color", "-U0", "--format=@@COMMIT@@ %H %aI", "-p", "--", rel], datesGitTimeoutMs),
+    // lastModified: newest author-time over the entry's current lines.
+    gitIn(root, ["blame", "--line-porcelain", "--", rel], datesGitTimeoutMs),
   ]);
+  if (!log.ok) throw new EntryDatesGitError(`git log of ${rel} failed: ${log.err || "no reason given"}`);
+  if (!blame.ok) throw new EntryDatesGitError(`git blame of ${rel} failed: ${blame.err || "no reason given"}`);
+
   const firstSeen = new Map<string, { commit: string; date: string }>();
   let firstCommit = "";
   let cur = { commit: "", date: "" };
@@ -226,21 +407,17 @@ export async function readEntryDatesForFile(
     if (parsed && !firstSeen.has(parsed.id)) firstSeen.set(parsed.id, cur);
   }
 
-  // lastModified: newest author-time over the entry's current lines.
-  const blame = await gitIn(root, ["blame", "--line-porcelain", "--", rel]);
   const lineTime: (number | null)[] = [];
-  if (blame.ok) {
-    let t: number | null = null;
-    let uncommitted = false;
-    for (const line of blame.out.split("\n")) {
-      if (/^[0-9a-f]{40} /.test(line)) {
-        uncommitted = /^0{40} /.test(line);
-        t = null;
-      } else if (line.startsWith("author-time ")) {
-        t = uncommitted ? null : Number(line.slice(12)) * 1000;
-      } else if (line.startsWith("\t")) {
-        lineTime.push(t);
-      }
+  let t: number | null = null;
+  let uncommitted = false;
+  for (const line of blame.out.split("\n")) {
+    if (/^[0-9a-f]{40} /.test(line)) {
+      uncommitted = /^0{40} /.test(line);
+      t = null;
+    } else if (line.startsWith("author-time ")) {
+      t = uncommitted ? null : Number(line.slice(12)) * 1000;
+    } else if (line.startsWith("\t")) {
+      lineTime.push(t);
     }
   }
 
@@ -257,6 +434,6 @@ export async function readEntryDatesForFile(
     else if (seen.commit === firstCommit) out[s.id] = { created: seen.date, lastModified, dateSource: "file" };
     else out[s.id] = { created: seen.date, lastModified, dateSource: "entry" };
   }
-  dateCache.set(real, { key: cacheKey, value: out });
+  dateCache.set(real, { key: cacheKey, mtimeMs: st.mtimeMs, size: st.size, value: out });
   return out;
 }

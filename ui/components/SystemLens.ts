@@ -16,6 +16,8 @@ interface LensState {
   projectState: ProjectState | null;
   hookSessions: HookLogSession[];
   entryDates: EntryDates;
+  /** Where the per-entry dates stand (#34): still being read, failed, or done. */
+  datesStatus: { state: "idle" | "pending" | "ready" | "failed"; pending: string[]; error: string };
   rows: ContributionRow[];
   collapsedGroups: Set<string>;
   loading: boolean;
@@ -27,6 +29,7 @@ const state: LensState = {
   projectState: null,
   hookSessions: [],
   entryDates: {},
+  datesStatus: { state: "idle", pending: [], error: "" },
   rows: [],
   collapsedGroups: new Set(),
   loading: false,
@@ -140,16 +143,14 @@ async function loadProject(name: string): Promise<void> {
   state.selectedProject = name;
   renderCb?.();
 
+  state.entryDates = {};
+  state.datesStatus = { state: "pending", pending: [], error: "" };
   try {
-    const [projectState, hookData, entryDates] = await Promise.all([
-      api.project(name),
-      api.hookLogs(),
-      api.entryDates(name),
-    ]);
-
+    // The matrix does not wait for the dates: they can take a while to read
+    // from git, and arrive below as they are ready (#34).
+    const [projectState, hookData] = await Promise.all([api.project(name), api.hookLogs()]);
     state.projectState = projectState;
     state.hookSessions = hookData.sessions;
-    state.entryDates = entryDates;
     buildRows();
   } catch (err) {
     console.error("Failed to load system lens data:", err);
@@ -157,6 +158,35 @@ async function loadProject(name: string): Promise<void> {
 
   state.loading = false;
   renderCb?.();
+  await loadDates(name);
+}
+
+/** Ask for the dates until every catalogue is read, or the read fails. */
+let datesRun = 0;
+async function loadDates(name: string): Promise<void> {
+  const run = ++datesRun; // a newer load (another project, or a reload) takes over
+  for (;;) {
+    let next: LensState["datesStatus"];
+    try {
+      const r = await api.entryDatesRead(name);
+      if (run !== datesRun) return;
+      state.entryDates = r.dates;
+      next =
+        r.status === "ready"
+          ? { state: "ready", pending: [], error: "" }
+          : r.status === "pending"
+            ? { state: "pending", pending: r.pending, error: "" }
+            : { state: "failed", pending: r.pending, error: r.error };
+    } catch (err) {
+      if (run !== datesRun) return;
+      next = { state: "failed", pending: [], error: (err as Error).message };
+    }
+    state.datesStatus = next;
+    buildRows();
+    renderCb?.();
+    if (next.state !== "pending") return;
+    await new Promise((ok) => setTimeout(ok, 1000));
+  }
 }
 
 function toggleGroup(catalogue: string): void {
@@ -359,11 +389,25 @@ function renderEntryTimeline(): HTMLElement {
   header.className = "section-header";
   container.appendChild(header);
 
+  // Say where the dates stand, so "still reading" or "git failed" is never
+  // shown as "no dates" (#34).
+  const ds = state.datesStatus;
+  if (ds.state === "pending" || ds.state === "failed") {
+    const status = document.createElement("div");
+    status.className = ds.state === "failed" ? "dates-status error-state" : "dates-status trace-empty";
+    status.textContent =
+      ds.state === "failed"
+        ? `Entry dates could not be read from git: ${ds.error}`
+        : `Reading entry dates from git${ds.pending.length ? ` (${ds.pending.join(", ")})` : ""}… dates appear as each catalogue is read.`;
+    container.appendChild(status);
+  }
+
   const withDates = state.rows
     .filter((r) => r.created)
     .sort((a, b) => (b.created ?? "").localeCompare(a.created ?? ""));
 
   if (withDates.length === 0) {
+    if (ds.state !== "ready") return container;
     const empty = document.createElement("div");
     empty.className = "trace-empty";
     empty.textContent = "No creation date data available (requires git history).";

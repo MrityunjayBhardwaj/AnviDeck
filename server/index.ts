@@ -84,6 +84,11 @@ console.log(isLoopback(hostname)
 export default {
   port,
   hostname,
+  // Bun.serve closes a request that sends nothing for 10 s by default, and the
+  // browser then gets an empty body, not an error it can show (#34). Some reads
+  // (the GitHub trace, git history on a busy machine) take longer than that.
+  // 255 s is the most Bun allows.
+  idleTimeout: 255,
   fetch: app.fetch,
   websocket,
 };
