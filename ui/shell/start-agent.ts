@@ -66,6 +66,8 @@ export function createStartAgent(deps: StartAgentDeps): { open: (project: string
     try {
       const res = await fetch(`/api/agents/from-issue/plan?project=${encodeURIComponent(q.project)}&issue=${encodeURIComponent(q.issue)}`);
       const j = (await res.json().catch(() => ({}))) as Plan & { error?: string; refusal?: string };
+      // A read that failed (GitHub unreachable) is not a refusal: say it could not be checked.
+      if (res.status === 502) return say("sh-sa-err", `Could not check: ${j.error ?? "GitHub could not be read"}`);
       if (!res.ok) return say("sh-sa-err", `Would refuse${j.refusal ? ` (${j.refusal})` : ""}: ${j.error ?? `status ${res.status}`}`);
       out.replaceChildren(el("div", { class: "sh-dim" }, "Nothing has been made yet. Start agent would make:"), ...planLines(j));
     } catch (e) {
