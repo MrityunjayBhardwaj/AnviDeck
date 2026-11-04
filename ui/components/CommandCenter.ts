@@ -14,8 +14,14 @@ import { headlineText, type NeedsCount } from "../home-count";
 const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
-// The status line's open/closed state survives the 60 s refresh.
-let statusOpen = false;
+// Every panel's open/closed state survives the 60 s refresh, which rebuilds the page (#46).
+const openPanels = new Set<string>();
+/** Keep a panel open or closed across refreshes, under `key`; `force` opens it regardless. */
+function keepOpen(d: HTMLDetailsElement, key: string, force = false): void {
+  d.dataset.panel = key;
+  d.open = force || openPanels.has(key);
+  d.addEventListener("toggle", () => (d.open ? openPanels.add(key) : openPanels.delete(key)));
+}
 let queueExpanded = false;
 const QUEUE_SHOWN = 5;
 
@@ -109,6 +115,7 @@ function queueEl(home: HomeResponse | null, count: NeedsCount): HTMLElement {
 function olderPrsEl(prs: HomeResponse["olderPrs"]): HTMLElement {
   const d = document.createElement("details");
   d.className = "hq-older";
+  keepOpen(d, "older-prs");
   const oldest = prs[0].updatedAt.slice(0, 10);
   d.innerHTML = `<summary><span class="hq-dot hollow"></span>${prs.length} older open PR${prs.length > 1 ? "s" : ""} you authored, not updated in 30 days (oldest last updated ${esc(oldest)}) · not counted</summary>
     <ul>${prs.map((p) => `<li><a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.repo)}#${p.number}</a> ${esc(p.title)} <span class="hq-src">updated ${esc(p.updatedAt.slice(0, 10))}</span></li>`).join("")}</ul>
@@ -170,8 +177,7 @@ function statusEl(home: HomeResponse | null, failed: boolean): HTMLElement {
   const d = document.createElement("details");
   d.className = "home-status";
   // `#status` in the address opens it, so the details can be linked to (and screenshotted).
-  d.open = statusOpen || location.hash === "#status";
-  d.addEventListener("toggle", () => (statusOpen = d.open));
+  keepOpen(d, "status", location.hash === "#status");
   if (!home) {
     d.innerHTML = `<summary><span class="hq-dot" style="background:var(--text-2)"></span><b>${failed ? "Could not read health" : "Checking health…"}</b></summary>`;
     return d;
@@ -251,6 +257,7 @@ function agentRow(a: HomeAgent): HTMLElement {
 function cataloguesEl(all: ProjectSummary[], nav: Nav): HTMLElement {
   const d = document.createElement("details");
   d.className = "home-more";
+  keepOpen(d, "notes");
   // Totals count each notes store once: a project sharing another's store carries its notes (#36).
   const owners = all.filter((p) => !p.sharesNotesWith);
   const entries = (p: ProjectSummary) => Object.values(p.catalogueCounts).reduce((a, b) => a + b, 0);

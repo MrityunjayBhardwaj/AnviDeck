@@ -399,7 +399,17 @@ function setHome(next: HomeResponse | null, failed = false) {
 let homeRetry: ReturnType<typeof setTimeout> | null = null;
 const HOME_READING_RETRY_MS = 5_000;
 
+/**
+ * Home's count shows in the header on every view, so it is re-read every minute while the
+ * tab is visible. A hidden tab asks nothing (each read asks GitHub); it catches up as soon
+ * as it is shown again (#46).
+ */
+const HOME_REFRESH_MS = 60_000;
+let homeLoadedAt = 0;
+const tabHidden = () => document.visibilityState === "hidden";
+
 async function loadHome() {
+  homeLoadedAt = Date.now();
   try {
     const home = await api.home();
     setHome(home);
@@ -436,7 +446,12 @@ async function init() {
   }
   connectWebSocket();
   loadHome();
-  setInterval(loadHome, 60_000);
+  setInterval(() => {
+    if (!tabHidden()) loadHome();
+  }, HOME_REFRESH_MS);
+  document.addEventListener("visibilitychange", () => {
+    if (!tabHidden() && Date.now() - homeLoadedAt >= HOME_REFRESH_MS) loadHome();
+  });
 }
 
 init();

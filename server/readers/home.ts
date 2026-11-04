@@ -186,6 +186,23 @@ export function splitAuthoredPrs(prs: AuthoredPr[], linked: Set<string>, now: nu
   return out;
 }
 
+/**
+ * Linked PRs the search already answers for (#46). `gh search prs --state=open` lists only
+ * open PRs, with their draft flag, title and URL, which is all prVerdict needs. So a linked
+ * PR it lists needs no `gh pr view`; one it does not list (merged, closed, someone else's, or
+ * past the search limit) is still asked about.
+ */
+export function answersFromSearch(keys: string[], search: SearchAnswer | null): Map<string, PrAnswer> {
+  const out = new Map<string, PrAnswer>();
+  if (!search?.ok) return out;
+  const open = new Map(search.prs.map((p) => [p.key.toLowerCase(), p]));
+  for (const k of keys) {
+    const p = open.get(k.toLowerCase());
+    if (p) out.set(k, { state: "OPEN", isDraft: p.isDraft, title: p.title, url: p.url });
+  }
+  return out;
+}
+
 export type SearchAnswer =
   | {
       ok: true; prs: AuthoredPr[]; at: number; cached: boolean;
@@ -332,6 +349,8 @@ function ago(ms: number, now: number): string {
 export const HOME_BUDGET_MS = 5000;
 
 export const STILL_READING = Symbol("still reading");
+/** How long a Home read waits for the open-PR search before asking about each linked PR (#46). */
+const SEARCH_WAIT_MS = 300;
 export type Deadline = { at: Promise<typeof STILL_READING>; cancel: () => void };
 
 /** One deadline shared by every slow read of a load. */
@@ -415,9 +434,26 @@ export async function readHome(budgetMs = HOME_BUDGET_MS): Promise<HomeResponse>
   }
   timings.transcripts = Math.round(performance.now() - tPr);
   const entries = [...links.values()];
-  const answers = await Promise.all(entries.map((e) => byDeadline(ghPrView(e.link.number, e.link.repo), deadline)));
+  // The search is cached after the first read; when it is ready, it answers for the linked
+  // PRs it lists and only the rest are asked one by one. Not ready: ask them all, as before,
+  // rather than wait for it and leave the PR reads less of the budget (#46).
+  const searchWait = deadlineIn(SEARCH_WAIT_MS);
+  const early = await byDeadline(searchP, searchWait);
+  searchWait.cancel();
+  const fromSearch = answersFromSearch(
+    entries.map((e) => `${e.link.repo}#${e.link.number}`),
+    early === STILL_READING ? null : early
+  );
+  const searchedAgo = early !== STILL_READING && early.ok ? ago(early.at, now) : "";
+  type ViewAnswer = Awaited<ReturnType<typeof ghPrView>> | { ok: true; out: string; err: string; cached: boolean; search: true };
+  const answers = await Promise.all(
+    entries.map((e): Promise<ViewAnswer | typeof STILL_READING> => {
+      const a = fromSearch.get(`${e.link.repo}#${e.link.number}`);
+      return a ? Promise.resolve({ ok: true, out: JSON.stringify(a), err: "", cached: false, search: true }) : byDeadline(ghPrView(e.link.number, e.link.repo), deadline);
+    })
+  );
   timings.github = Math.round(performance.now() - tPr) - timings.transcripts;
-  const tally = { review: 0, draft: 0, merged: 0, closed: 0, other: 0, failed: 0, cached: 0, reading: 0 };
+  const tally = { review: 0, draft: 0, merged: 0, closed: 0, other: 0, failed: 0, cached: 0, reading: 0, search: 0 };
   const openBySession = new Map<string, number[]>();
   const failedPrs: { key: string; reason: string }[] = [];
   entries.forEach((e, i) => {
@@ -427,6 +463,8 @@ export async function readHome(budgetMs = HOME_BUDGET_MS): Promise<HomeResponse>
       return;
     }
     if (r.cached) tally.cached++;
+    const viaSearch = "search" in r;
+    if (viaSearch) tally.search++;
     const key = `${e.link.repo}#${e.link.number}`;
     let a: PrAnswer | null = null;
     if (r.ok) {
@@ -455,7 +493,9 @@ export async function readHome(budgetMs = HOME_BUDGET_MS): Promise<HomeResponse>
       dueBy: null,
       since: e.link.first || null,
       action: { label: "Open on GitHub", href: a.url ?? `https://github.com/${e.link.repo}/pull/${e.link.number}` },
-      source: `pr-link in ${e.sessions.length === 1 ? "this session's transcript" : `${e.sessions.length} transcripts`} + gh pr view (state OPEN, not a draft)`,
+      source: `pr-link in ${e.sessions.length === 1 ? "this session's transcript" : `${e.sessions.length} transcripts`} + ${
+        viaSearch ? `gh search prs (open, not a draft; searched ${searchedAgo} ago)` : "gh pr view (state OPEN, not a draft)"
+      }`,
     });
   });
   unread.push(...groupFailedPrs(failedPrs));
@@ -527,6 +567,7 @@ export async function readHome(budgetMs = HOME_BUDGET_MS): Promise<HomeResponse>
       (tally.other ? `, ${tally.other} other` : "") +
       (tally.failed ? `, ${tally.failed} could not be checked` : "") +
       (tally.reading ? `, ${tally.reading} still being read` : "") +
+      (tally.search ? `; ${tally.search} judged from the open-PR search, not asked one by one` : "") +
       (tally.cached ? `; ${tally.cached} answers from cache` : "") +
       (scanErrors.length ? `; ${scanErrors.length} transcript(s) unreadable` : "") +
       `. ${searchDetail}`,
