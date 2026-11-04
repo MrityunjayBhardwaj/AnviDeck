@@ -64,6 +64,12 @@ export function agentRoutes(host: AgentHost, login: () => Promise<LoginStatus>):
     const b = await body(c);
     return c.json(host.message(c.req.param("id"), b), 202);
   });
+  // Answer a parked permission request (#77): { decision: "allow" } or { decision: "deny", message? }.
+  // 200 with the agent; 409 when the request is no longer waiting (answered, or withdrawn).
+  r.post("/:id/permissions/:requestId", async (c) => {
+    const b = await body(c);
+    return c.json(host.answer(c.req.param("id"), c.req.param("requestId"), b));
+  });
 
   return r;
 }

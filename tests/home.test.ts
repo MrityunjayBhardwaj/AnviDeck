@@ -106,7 +106,9 @@ describe("one count drives the headline, the badge and the live strip", () => {
     const offenders = files.filter((f) => f !== join("ui", "home-count.ts") && QUEUE_COUNT.test(readFileSync(f, "utf8")));
     expect(offenders).toEqual([]);
     const app = readFileSync("ui/app.ts", "utf8");
-    expect(app).toContain("count = needsCount(home, failed)");
+    expect(app).toContain("count = needsCount(home, failed, hostAsks())");
+    // Every recount passes the host's parked requests (#131): no needsCount(home) call without them.
+    expect(app.match(/needsCount\(home, [^)]*\)/g)?.every((c) => c.includes("hostAsks()"))).toBe(true);
     expect(app).toContain("badgeText(count)");
     expect(app).toContain("stripText(count)");
     expect(app).toContain("CommandCenter(projects, nav, home, count)");
@@ -317,5 +319,35 @@ describe("linked PRs answered by the open-PR search (#46)", () => {
     expect(answersFromSearch(["o/r#3", "o/x#1", "o/r#11"], search).size).toBe(0);
     expect(answersFromSearch(["o/r#1"], null).size).toBe(0);
     expect(answersFromSearch(["o/r#1"], { ok: false, err: "gh: not logged in" }).size).toBe(0);
+  });
+});
+
+describe("agents' permission requests count toward what needs you (#131)", () => {
+  test("one parked request with an empty Home queue: headline and badge say 1", () => {
+    const c = needsCount(fixture([]), false, { state: "ok", requests: 1, unreadable: 0 });
+    expect(c.n).toBe(1);
+    expect(c.waiting).toBe(1);
+    expect(headlineText(c)).toBe("1 thing needs you");
+    expect(badgeText(c)).toBe("1");
+  });
+
+  test("requests add to the Home queue", () => {
+    const c = needsCount(fixture([item("pr-review", "p", 1)]), false, { state: "ok", requests: 2, unreadable: 0 });
+    expect(c.n).toBe(3);
+  });
+
+  test("agents that could not be read are unread, never 'Nothing needs you'", () => {
+    for (const asks of [{ state: "failed" as const }, { state: "off" as const }]) {
+      const c = needsCount(fixture([]), false, asks);
+      expect(c.state).toBe("partial");
+      expect(headlineText(c)).not.toBe("Nothing needs you");
+    }
+    const odd = needsCount(fixture([]), false, { state: "ok", requests: 0, unreadable: 1 });
+    expect(odd.state).toBe("partial");
+  });
+
+  test("agents not read yet change nothing", () => {
+    expect(needsCount(fixture([]), false, undefined)).toEqual(needsCount(fixture([])));
+    expect(headlineText(needsCount(fixture([])))).toBe("Nothing needs you");
   });
 });

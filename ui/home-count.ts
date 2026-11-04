@@ -23,16 +23,26 @@ export interface NeedsCount {
   busy: number;
 }
 
-export function needsCount(home: HomeResponse | null, failed = false): NeedsCount {
+/**
+ * Permission requests parked by agents AnviDeck started (#77, #131), from GET /api/agents.
+ * ok: the agents were read; requests are counted, unreadable ones are unread, not zero.
+ * failed / off: the agent host could not be read, which is one unread source, never "none".
+ * undefined: not read yet.
+ */
+export type HostAsks = { state: "ok"; requests: number; unreadable: number } | { state: "failed" | "off" };
+
+export function needsCount(home: HomeResponse | null, failed = false, asks?: HostAsks): NeedsCount {
   if (!home) return { state: failed ? "failed" : "loading", n: 0, waiting: 0, unread: 0, reading: 0, live: 0, busy: 0 };
   const sources = Object.values(home.sources);
   const badSources = sources.filter((s) => s.status === "could-not-read" || s.status === "partial" || s.status === "not-measured").length;
-  const unread = home.unread.filter((u) => !u.reading).length + badSources;
+  const asked = asks?.state === "ok" ? asks.requests : 0;
+  const asksUnread = asks === undefined ? 0 : asks.state === "ok" ? asks.unreadable : 1;
+  const unread = home.unread.filter((u) => !u.reading).length + badSources + asksUnread;
   const reading = home.unread.filter((u) => u.reading).length + sources.filter((s) => s.status === "reading").length;
   return {
     state: unread ? "partial" : reading ? "reading" : "ok",
-    n: home.queue.length,
-    waiting: home.queue.filter((q) => q.kind === "agent-waiting").length,
+    n: home.queue.length + asked,
+    waiting: home.queue.filter((q) => q.kind === "agent-waiting").length + asked,
     unread,
     reading,
     live: home.agents.length,

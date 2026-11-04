@@ -104,7 +104,8 @@ describe("activity strip", () => {
     expect(activityCounts(agents)).toEqual({ total: 5, working: 2, waiting: 1 });
     expect(activityText({ state: "ok", agents })).toBe("5 agents · 2 working · 1 waiting on you");
     expect(activityText({ state: "ok", agents: [agent("a", "working")] })).toBe("1 agent · 1 working · 0 waiting on you");
-    expect(activityTitle({ state: "ok", agents })).toContain("#77");
+    expect(activityTitle({ state: "ok", agents })).toContain("answer them on Home");
+    expect(activityTitle({ state: "ok", agents })).not.toContain("arrives with");
   });
 
   test("could not look never reads as no agents", () => {

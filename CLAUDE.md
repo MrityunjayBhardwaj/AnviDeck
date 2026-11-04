@@ -32,7 +32,7 @@ AnviDeck started as an observability dashboard that only read the framework's fi
 | Every write endpoint requires the same origin **and** a per-server token placed in the page; anything else is refused (`server/guard.ts`, installed on the whole app before any route; pages write through `ui/write.ts`; `tests/write-guard.test.ts`) | On `main` (#76) |
 | Every action (what, target, result, time) is appended to the action log (`actions.jsonl` in the agent registry folder; `GET /api/actions`) and shown in History | Logged on `main` (#76); History planned (#90) |
 | Agents run on the installed Claude Code and its claude.ai login, never an API key: API-key and provider variables are removed from each agent's environment, and an agent whose init message reports an `apiKeySource` other than `none` is stopped at once | Planned (#75) |
-| Your normal permission rules apply, as in the terminal; only calls they don't cover come to AnviDeck. A request nobody answers keeps waiting, and a timeout never allows it | Planned (#77) |
+| Your normal permission rules apply, as in the terminal; only calls they don't cover come to AnviDeck, on Home and the agent's row of `/agent-host`, with Allow / Deny (`POST /api/agents/:id/permissions/:requestId`, `shared/permission-requests.ts`, `tests/permission-requests.test.ts`). A request nobody answers keeps waiting, and a timeout never allows it; if the agent stops it is withdrawn | On `main` (#77) |
 | Agents never merge; Merge is a button only you press | Planned (#78, #85) |
 | Deleting the old views needs the owner's go on the PR | Planned (#92) |
 
