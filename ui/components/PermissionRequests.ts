@@ -10,7 +10,7 @@
  */
 import { write, WriteError } from "../write";
 import type { AgentsRead } from "../shell/activity";
-import { askSummary, permissionQueue, type AskingAgent, type PendingPermission } from "../../shared/permission-requests";
+import { askSummary, permissionQueue, type AskingAgent, type PendingPermission, requestInputText } from "../../shared/permission-requests";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -50,10 +50,14 @@ export function requestCard(agent: AskingAgent, p: PendingPermission): HTMLEleme
   what.append("An agent asks to ", el("b", "", askSummary(p.toolName, p.input)));
   const meta = el("div", "perm-meta",
     `${p.toolName} · agent ${agent.id}${agent.issue ? ` · #${agent.issue}` : ""} · ${agent.cwd} · asked ${new Date(p.askedAt).toLocaleTimeString()}`);
-  const input = el("pre", "perm-input", JSON.stringify(p.input, null, 2).slice(0, 2000));
+  // The full input, never cut: Allow runs exactly this. Long inputs scroll, and say how long they are.
+  const shown = requestInputText(p.input);
+  const input = el("pre", "perm-input", shown.text);
+  input.title = `${shown.chars} characters; scroll to read all of it`;
   card.append(what, meta);
   if (p.decisionReason) card.append(el("div", "perm-meta", `Why it asks: ${p.decisionReason}`));
   card.append(input);
+  if (shown.chars > 600) card.append(el("div", "perm-meta", `Input is ${shown.chars} characters: scroll the box to read all of it before you answer.`));
 
   const allow = el("button", "perm-allow", "Allow");
   allow.dataset.act = "allow";

@@ -18,6 +18,7 @@ import {
   parsePermissionAnswer,
   permissionQueue,
   type AskingAgent,
+  requestInputText,
 } from "../shared/permission-requests";
 
 const dirs: string[] = [];
@@ -225,5 +226,23 @@ describe("the route", () => {
       [409, "failed", id],
     ]);
     expect(log[2].body).toEqual({ decision: "deny", message: "not now" });
+  });
+});
+
+describe("the card shows the whole input that Allow would run", () => {
+  test("a long command keeps its tail, and its length is stated", () => {
+    const cmd = "echo " + "x".repeat(2500) + " && rm -rf ~/TAIL_MARKER";
+    const r = requestInputText({ command: cmd });
+    expect(r.text).toContain("rm -rf ~/TAIL_MARKER");
+    expect(r.chars).toBe(r.text.length);
+    expect(r.chars).toBeGreaterThan(2500);
+  });
+
+  test("the card puts exactly that text in its input box and never shortens it", () => {
+    const src = readFileSync(new URL("../ui/components/PermissionRequests.ts", import.meta.url), "utf8");
+    expect(src).toMatch(/const shown = requestInputText\(p\.input\);/);
+    expect(src).toMatch(/el\("pre", "perm-input", shown\.text\)/);
+    expect(src).not.toMatch(/perm-input[^\n]*\.slice\(/);
+    expect(src).not.toMatch(/shown\.text\.slice|shown\.text\.substring/);
   });
 });

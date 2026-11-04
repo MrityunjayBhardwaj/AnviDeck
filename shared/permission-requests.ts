@@ -114,3 +114,12 @@ export function permissionQueue(agents: AskingAgent[]): { requests: QueuedReques
   requests.sort((a, b) => a.request.askedAt.localeCompare(b.request.askedAt) || a.request.requestId.localeCompare(b.request.requestId));
   return { requests, unreadable };
 }
+
+/**
+ * The whole input a request would run with, as the card shows it. Never shortened: Allow sends
+ * exactly this input, so every character of it must be on the card (the box scrolls instead).
+ */
+export function requestInputText(input: Record<string, unknown>): { text: string; chars: number } {
+  const text = JSON.stringify(input, null, 2) ?? "{}";
+  return { text, chars: text.length };
+}

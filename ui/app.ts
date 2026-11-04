@@ -12,7 +12,8 @@ import { BrainView, addBrainHookEvent, addBrainRouteEvent } from "./components/B
 import { GitHubTrace } from "./components/GitHubTrace";
 import { LiveSessions } from "./components/LiveSessions";
 import { AgentsView, parseAgentsHash } from "./components/AgentsView";
-import { needsCount, badgeText, stripText, type NeedsCount } from "./home-count";
+import { needsCount, badgeText, stripText, type HostAsks, type NeedsCount } from "./home-count";
+import { permissionQueue, type AskingAgent } from "../shared/permission-requests";
 import type { HomeResponse } from "../shared/home-types";
 import { MapView } from "./components/MapView";
 import { parseRoute, screen, type Route, type ScreenId } from "./shell/routes";
@@ -367,6 +368,7 @@ function upsertAgent(a: StripAgent) {
   if (i === -1) hostAgents.agents.unshift(a);
   else hostAgents.agents[i] = a;
   setPermissionAgents(hostAgents);
+  recountAsks();
   if (!prev || prev.status !== a.status) {
     const kind = a.status === "failed" ? "bad" : a.pendingPermissions.length ? "warn" : a.status === "done" ? "ok" : "info";
     pushEvent(kind, `${a.id} · ${a.pendingPermissions.length ? "waiting for permission" : a.status}`);
@@ -415,16 +417,35 @@ function connectWebSocket(): void {
   }
 }
 
+/** The host's parked requests, for the one Home count (#131): unread when the host could not be read. */
+function hostAsks(): HostAsks | undefined {
+  if (hostAgents.state === "loading") return undefined;
+  if (hostAgents.state !== "ok") return { state: hostAgents.state === "off" ? "off" : "failed" };
+  const q = permissionQueue(hostAgents.agents as unknown as AskingAgent[]);
+  return { state: "ok", requests: q.requests.length, unreadable: q.unreadable };
+}
+
+/** Re-derive Home's one count after the host's agents changed (a request parked or answered). */
+function recountAsks() {
+  if (!home) return;
+  const next = needsCount(home, false, hostAsks());
+  const changed = next.n !== count.n || next.state !== count.state || next.unread !== count.unread;
+  count = next;
+  renderRail();
+  if (changed && route.screen === "home" && !loading) renderMain();
+}
+
 async function loadAgents() {
   hostAgents = await api.agentsRead();
   setPermissionAgents(hostAgents);
+  recountAsks();
   renderStrip();
 }
 
 // Home (#18): the queue loads after the page, so a slow source never holds up the first paint.
 function setHome(next: HomeResponse | null, failed = false) {
   home = next;
-  count = needsCount(home, failed);
+  count = needsCount(home, failed, hostAsks());
   renderRail();
   renderStrip();
   if (route.screen === "home" && !loading) renderMain();
