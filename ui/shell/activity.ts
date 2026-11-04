@@ -2,8 +2,8 @@
  * The activity strip's counts (#80), from GET /api/agents: the agents AnviDeck started.
  * Pure, so tests check the wording and the counts.
  *
- * "Waiting on you" is an agent with a permission request parked by the host. Answering one
- * arrives with #77, so the strip says so beside a non-zero count.
+ * "Waiting on you" is an agent with a permission request parked by the host. They are answered
+ * on Home and on the agent's row of /agent-host (#77).
  */
 
 /** The fields of the host's AgentView this strip reads (server/agents/host.ts). */
@@ -57,5 +57,5 @@ export function activityTitle(read: AgentsRead): string {
   if (read.state === "failed") return `${src} The request failed: ${read.reason}`;
   if (read.state === "loading") return src;
   const c = activityCounts(read.agents);
-  return `${src} Waiting on you = agents with a permission request parked (${c.waiting} now); answering them arrives with #77.`;
+  return `${src} Waiting on you = agents with a permission request parked (${c.waiting} now); answer them on Home or on the agent's row at /agent-host.`;
 }

@@ -19,6 +19,7 @@ import { parseRoute, screen, type Route, type ScreenId } from "./shell/routes";
 import type { AgentsRead, StripAgent } from "./shell/activity";
 import { paletteEntries, screenHash, type PaletteEntry } from "./shell/palette-model";
 import { createPalette } from "./shell/palette";
+import { setPermissionAgents } from "./components/PermissionRequests";
 import {
   closePopoversOnOutsideClick,
   olderViews,
@@ -365,6 +366,7 @@ function upsertAgent(a: StripAgent) {
   const prev = i === -1 ? null : hostAgents.agents[i];
   if (i === -1) hostAgents.agents.unshift(a);
   else hostAgents.agents[i] = a;
+  setPermissionAgents(hostAgents);
   if (!prev || prev.status !== a.status) {
     const kind = a.status === "failed" ? "bad" : a.pendingPermissions.length ? "warn" : a.status === "done" ? "ok" : "info";
     pushEvent(kind, `${a.id} · ${a.pendingPermissions.length ? "waiting for permission" : a.status}`);
@@ -415,6 +417,7 @@ function connectWebSocket(): void {
 
 async function loadAgents() {
   hostAgents = await api.agentsRead();
+  setPermissionAgents(hostAgents);
   renderStrip();
 }
 

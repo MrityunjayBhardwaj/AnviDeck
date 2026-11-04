@@ -10,6 +10,9 @@ import type {
 import { AgentRegistry, LIVE_STATUSES, type AgentRecord, type AgentStatus, type TranscriptLine } from "./registry";
 import { explainStartFailure, loginOnlyEnv, resolveClaude, type AgentEnv, type ClaudeBinary } from "./login";
 import { messagesIn, parseMessageRequest, renderForAgent, type SentMessage } from "../../shared/agent-messages";
+import { parsePermissionAnswer, type PendingPermission } from "../../shared/permission-requests";
+
+export type { PendingPermission };
 
 /**
  * The agent host (#75): the only code in AnviDeck that runs agents. Each agent is a Claude Code
@@ -17,7 +20,9 @@ import { messagesIn, parseMessageRequest, renderForAgent, type SentMessage } fro
  *
  * Seams left for the issues that build on this:
  *  - permissions (#77): canUseTool parks every request the owner's own rules did not settle in
- *    `pending`; the agent shows "waiting" until answerPermission() settles it.
+ *    `pending`; the agent shows "waiting" until answer() settles it. Nothing else settles a
+ *    request except the run ending (stop, failure, exit) or Claude Code cancelling the call:
+ *    both withdraw it as a deny. There is no timeout (see shared/permission-requests.ts).
  *  - talking to an agent (#79): the prompt is a message stream (MessageQueue); message() adds to
  *    it while the agent runs, each message carrying its own uuid so Claude Code's reports name it
  *    (see deliveryIn). The stream is closed once a turn's result has arrived AND every message
@@ -113,15 +118,6 @@ export class MessageQueue implements AsyncIterable<SDKUserMessage> {
       },
     };
   }
-}
-
-export interface PendingPermission {
-  requestId: string;
-  toolName: string;
-  input: Record<string, unknown>;
-  decisionReason?: string;
-  blockedPath?: string;
-  askedAt: string;
 }
 
 interface Live {
@@ -328,13 +324,40 @@ export class AgentHost {
     return { agent: this.view(rec), message: { messageId, said, comment, text, sentAt: line.at, state: "queued" } };
   }
 
-  /** Settle a parked permission request (#77 builds on this). */
+  /**
+   * Answer a parked permission request from the owner (#77): `{ decision: "allow" }` lets the
+   * call run as asked; `{ decision: "deny", message? }` refuses it and the agent reads the message
+   * (it is not interrupted, so it can reply to it). 409 when the request is no longer waiting.
+   */
+  answer(id: string, requestId: string, body: Record<string, unknown>): AgentView {
+    const rec = this.agents.get(id);
+    if (!rec) throw new HostError(404, `no agent ${id}`);
+    const a = parsePermissionAnswer(body);
+    if ("error" in a) throw new HostError(400, a.error);
+    const p = this.live.get(id)?.pending.get(requestId);
+    if (!p) {
+      throw new HostError(409, `request ${requestId} is no longer waiting: it was answered already, or withdrawn because the agent stopped (${rec.status})`, {
+        status: rec.status,
+      });
+    }
+    const result: PermissionResult =
+      a.decision === "allow" ? { behavior: "allow", updatedInput: p.input } : { behavior: "deny", message: a.message };
+    this.answerPermission(id, requestId, result);
+    return this.view(rec);
+  }
+
+  /** Settle a parked permission request. */
   answerPermission(id: string, requestId: string, result: PermissionResult): boolean {
     const live = this.live.get(id);
     const p = live?.pending.get(requestId);
     if (!live || !p) return false;
     live.pending.delete(requestId);
-    this.record(id, "host", { event: "permission-answered", requestId, behavior: result.behavior });
+    this.record(id, "host", {
+      event: "permission-answered",
+      requestId,
+      behavior: result.behavior,
+      ...(result.behavior === "deny" ? { message: result.message } : {}),
+    });
     p.resolve(result);
     const rec = this.agents.get(id)!;
     if (live.pending.size === 0 && rec.status === "waiting") this.setStatus(rec, "working");
@@ -528,9 +551,11 @@ export class AgentHost {
       live.pending.set(requestId, p);
       opts.signal.addEventListener("abort", () => {
         if (live.pending.delete(requestId)) {
+          this.record(id, "host", { event: "permission-withdrawn", requestId, reason: "Claude Code cancelled the call" });
           resolve({ behavior: "deny", message: "request cancelled" });
           const rec = this.agents.get(id)!;
           if (live.pending.size === 0 && rec.status === "waiting") this.setStatus(rec, "working");
+          else this.changed(rec);
         }
       });
       this.record(id, "host", { event: "permission-asked", requestId, toolName, input, decisionReason: opts.decisionReason });
@@ -542,8 +567,7 @@ export class AgentHost {
   private endRun(id: string, live: Live, ending: { status: "stopped" | "failed"; reason: string }): void {
     if (live.ending) return;
     live.ending = ending;
-    for (const p of live.pending.values()) p.resolve({ behavior: "deny", message: ending.reason, interrupt: true });
-    live.pending.clear();
+    this.withdrawAll(id, live, ending.reason);
     live.input.end();
     const rec = this.agents.get(id)!;
     rec.status = ending.status;
@@ -561,8 +585,7 @@ export class AgentHost {
   private finish(rec: AgentRecord, live: Live, error: unknown): void {
     if (this.live.get(rec.id) !== live) return;
     this.live.delete(rec.id);
-    for (const p of live.pending.values()) p.resolve({ behavior: "deny", message: "agent ended", interrupt: true });
-    live.pending.clear();
+    this.withdrawAll(rec.id, live, "agent ended");
     live.input.end();
     const why = live.ending ? live.ending.reason : "the agent's run ended before it read the message";
     for (const u of live.undelivered) this.record(rec.id, "host", { event: "message-not-delivered", messageId: u, reason: why });
@@ -589,6 +612,15 @@ export class AgentHost {
       rec.reason = rec.reason ?? "Claude Code exited without a result";
     }
     this.changed(rec);
+  }
+
+  /** The run is ending: every request still parked is withdrawn (denied, never allowed) and recorded. */
+  private withdrawAll(id: string, live: Live, reason: string): void {
+    for (const p of live.pending.values()) {
+      this.record(id, "host", { event: "permission-withdrawn", requestId: p.requestId, reason });
+      p.resolve({ behavior: "deny", message: reason, interrupt: true });
+    }
+    live.pending.clear();
   }
 
   private setStatus(rec: AgentRecord, s: AgentStatus): void {

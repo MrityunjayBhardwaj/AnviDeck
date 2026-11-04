@@ -70,7 +70,7 @@ The prototype's frame replaces today's sidebar:
 - Stops an agent, and caps how many run at once.
 - Statuses: starting, working, waiting on you, done, failed, stopped. "Could not start" never shows as "done".
 - Feeds each agent through a stream of user messages, so a message or a diff comment (file, line, the line's text) arrives on its next turn, with delivery shown (#79, on main: `POST /api/agents/:id/message`; a stopped agent answers 409 with `resumable`).
-- Permission callback: a call your rules don't cover is parked on Home's queue and the agent's card with **Allow** / **Deny** (Deny takes an optional message). It survives a page reload, never times out to Allow, and is withdrawn if the agent stops (#77).
+- Permission callback: a call your rules don't cover is parked on Home's queue and the agent's card with **Allow** / **Deny** (Deny takes an optional message). It survives a page reload, never times out to Allow, and is withdrawn if the agent stops (#77, on main: `POST /api/agents/:id/permissions/:requestId` with `{ decision: "allow" }` or `{ decision: "deny", message? }`; 409 once the request is no longer waiting).
 - **Runs on your Claude Code login, never an API key:** `pathToClaudeCodeExecutable` is the installed `claude` (found on PATH, shown on screen); `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL` and the Bedrock/Vertex switches are removed from each agent's environment; an agent whose init message reports an `apiKeySource` other than `none` is stopped at once and never shown as running; the screen shows the login method and plan from `claude auth status` (not the email). A start that fails while Claude Code is replacing its binary says "Claude Code was updating, try again".
 - Spike 2026-11-05 (recorded in #75): SDK 0.3.318 with CLI 2.1.318 under Bun ran on the existing login with `apiKeySource: none`; both SessionStart hooks fired; the permission callback received a Write request and a deny stopped it.
 
@@ -91,7 +91,7 @@ Agents AnviDeck starts write two PR-body sections with a fixed shape: **Evidence
 | Every action (what, target, result, time) appended to an action log in AnviDeck's own store folder and shown in History | Planned (#76, #90) |
 | Readers can't act: a test fails if a reader imports the agent host or writes a file | Planned (#76) |
 | Agents on the Claude Code login only (see Agent host) | Planned (#75) |
-| Your permission rules apply as in the terminal; only uncovered calls reach AnviDeck; no timeout allows a call | Planned (#77) |
+| Your permission rules apply as in the terminal; only uncovered calls reach AnviDeck; no timeout allows a call | **Exists** (#77) |
 | Merge only by you, only the reviewed head; refused if the head moved after review | Planned (#85) |
 | Code-screen edits only to files no running agent is touching, each through the action log | Planned (#88) |
 
