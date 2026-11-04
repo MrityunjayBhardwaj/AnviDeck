@@ -2,11 +2,13 @@ import type { ProjectSummary } from "../../shared/types";
 import type { HomeAgent, HomeMetric, HomeResponse, HomeSource, QueueItem } from "../../shared/home-types";
 import type { Nav } from "../app";
 import { headlineText, type NeedsCount } from "../home-count";
+import { PermissionQueue } from "./PermissionRequests";
 
 /**
  * Home (#18): one decision queue, a one-line status, the agents. Everything else is one
  * click away. AnviDeck is read-only, so each row's one button is a deep link (open a PR) or
- * a command to copy (`cd <dir>`); nothing here acts.
+ * a command to copy (`cd <dir>`); nothing here acts. The one exception is the permission
+ * section (#77, ./PermissionRequests.ts), whose Allow / Deny answer an agent through write().
  *
  * The headline reads `count` (from needsCount in app.ts), never the queue's length itself.
  */
@@ -42,6 +44,9 @@ export function CommandCenter(
     <h1 class="home-h1">${esc(headlineText(count))}</h1>
     <span class="home-sub">soonest first · no source records a deadline${checked ? ` · checked ${checked}` : ""}</span>`;
   el.appendChild(head);
+
+  // ── agents asking permission (#77): its own live section, kept across rebuilds ──
+  el.appendChild(PermissionQueue());
 
   // ── the queue ──
   el.appendChild(queueEl(home, count));

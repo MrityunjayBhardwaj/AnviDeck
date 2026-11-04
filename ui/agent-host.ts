@@ -6,6 +6,8 @@
 import { write, type WriteMethod } from "./write";
 
 import { messagesIn, parseMessageRequest, renderForAgent } from "../shared/agent-messages";
+import type { PendingPermission } from "../shared/permission-requests";
+import { agentRequests, keepCardsOf, onAnswerSent } from "./components/PermissionRequests";
 
 interface Agent {
   id: string;
@@ -27,7 +29,7 @@ interface Agent {
   runs: number;
   messageCount: number;
   running: boolean;
-  pendingPermissions: { requestId: string; toolName: string }[];
+  pendingPermissions: PendingPermission[];
 }
 interface Line { seq: number; at: string; from: "sdk" | "host"; message: Record<string, unknown> }
 interface Overview {
@@ -217,6 +219,7 @@ function renderList(): void {
   const count = document.getElementById("running-count");
   if (count) count.textContent = String([...agents.values()].filter((a) => a.running).length);
   const rows = [...agents.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  keepCardsOf(rows);
   const table = el("table", {},
     el("tr", {}, ...["agent", "status", "apiKeySource", "folder", "prompt", "runs", "why", ""].map((h) => el("th", {}, h))));
   for (const a of rows) {
@@ -236,7 +239,9 @@ function renderList(): void {
     const tr = el("tr", { "data-id": a.id, class: a.id === selected ? "sel" : "" },
       el("td", {}, a.id),
       el("td", {}, el("span", { class: "status", style: `color:${STATUS_COLOR[a.status] ?? "inherit"}` },
-        a.status === "waiting" ? `waiting on you (${a.pendingPermissions.map((p) => p.toolName).join(", ")})` : a.status)),
+        a.status === "waiting" ? `waiting on you (${a.pendingPermissions.map((p) => p.toolName).join(", ")})` : a.status),
+        // Its parked permission requests (#77), each with Allow and Deny.
+        ...agentRequests(a)),
       el("td", { class: a.apiKeySource === undefined ? "k" : a.apiKeySource === "none" ? "ok" : "err" }, a.apiKeySource ?? "not reported yet"),
       el("td", {}, a.cwd),
       el("td", {}, a.prompt.slice(0, 60)),
@@ -422,4 +427,5 @@ function connect(): void {
   ws.onclose = () => setTimeout(connect, 2000);
 }
 
+onAnswerSent(() => void renderActions());
 connect();
