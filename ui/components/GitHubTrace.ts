@@ -105,8 +105,10 @@ function renderLoopDiagram(trace: GitHubTrace): HTMLElement {
 
 // ---- Forward view: entry → artifacts ----
 
-function renderArtifactChip(artifact: GitHubArtifact, entryId: string): HTMLElement {
-  const chipId = `${entryId}:${artifact.id}`;
+function renderArtifactChip(artifact: GitHubArtifact, entry: EntryTrace): HTMLElement {
+  // Catalogue and ID: one ID can be used in two catalogues, and expanding one
+  // entry's chip must not expand the other's.
+  const chipId = `${entry.catalogue}/${entry.entryId}:${artifact.id}`;
   const isExpanded = state.expandedId === chipId;
   const color = artifactTypeColor(artifact.type);
   const confidenceClass = artifact.confidence === "high" ? "high" : "medium";
@@ -241,7 +243,7 @@ function renderForwardRow(entry: EntryTrace): HTMLElement {
   artifactList.className = "trace-artifact-list";
 
   for (const artifact of entry.artifacts.slice(0, 8)) {
-    artifactList.appendChild(renderArtifactChip(artifact, entry.entryId));
+    artifactList.appendChild(renderArtifactChip(artifact, entry));
   }
 
   if (entry.artifacts.length > 8) {

@@ -235,6 +235,7 @@ export interface BrainBoundaryNode {
   name: string;
   patternCount: number;
   fatality: boolean;
+  /** "catalogue/id" keys: one ID can be used in two catalogues of a project. */
   linkedEntries: string[];
 }
 
