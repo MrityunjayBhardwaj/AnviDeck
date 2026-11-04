@@ -30,7 +30,7 @@ export function agentRoutes(host: AgentHost, login: () => Promise<LoginStatus>):
   r.use("/*", sameOriginWrites);
 
   r.onError((e, c) => {
-    if (e instanceof HostError) return c.json({ error: e.message }, e.status);
+    if (e instanceof HostError) return c.json({ ...e.detail, error: e.message }, e.status);
     console.error("[agents]", e);
     return c.json({ error: (e as Error).message }, 500);
   });
@@ -71,6 +71,12 @@ export function agentRoutes(host: AgentHost, login: () => Promise<LoginStatus>):
   r.post("/:id/resume", async (c) => {
     const b = await body(c);
     return c.json(host.resume(c.req.param("id"), b.prompt));
+  });
+  // Talk to a running agent (#79): { text } or { comment: { file, line, lineText, text } }.
+  // 202: queued, its delivery follows in the transcript. 409 { resumable }: not running.
+  r.post("/:id/message", async (c) => {
+    const b = await body(c);
+    return c.json(host.message(c.req.param("id"), b), 202);
   });
 
   return r;

@@ -4,6 +4,8 @@
  * All text from agents is set with textContent, never as HTML.
  */
 
+import { messagesIn, parseMessageRequest, renderForAgent } from "../shared/agent-messages";
+
 interface Agent {
   id: string;
   sessionId?: string;
@@ -48,14 +50,22 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Record<string,
   return e;
 }
 
+/** A refused request: its status and the whole JSON body (e.g. `resumable` on a 409). */
+class ApiError extends Error {
+  constructor(readonly status: number, readonly body: Record<string, unknown>) {
+    super(typeof body.error === "string" ? body.error : `request failed (${status})`);
+  }
+}
+
+/** Every request this page makes goes through here, so the write token (#76) is one line. */
 async function call(method: string, path: string, body?: unknown): Promise<unknown> {
   const res = await fetch(`/api/agents${path === "/" ? "" : path}`, {
     method,
     headers: body === undefined ? {} : { "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  const j = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((j as { error?: string }).error ?? `${res.status} ${res.statusText}`);
+  const j = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!res.ok) throw new ApiError(res.status, j && typeof j === "object" ? j : {});
   return j;
 }
 
@@ -80,6 +90,12 @@ const css = el("style", {}, `
   #agent-host .tx { max-height: 60vh; overflow: auto; white-space: pre-wrap; word-break: break-word; }
   #agent-host .tx div { border-bottom: 1px dotted var(--border); padding: 2px 0; }
   #agent-host .k { color: var(--text-2); }
+  #agent-host .compose { margin: 8px 0; padding: 8px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+  #agent-host .compose > div { margin-bottom: 6px; }
+  #agent-host .msgs div { padding: 2px 0; }
+  #agent-host .st-queued { color: var(--yellow); }
+  #agent-host .st-delivered { color: var(--green); }
+  #agent-host .st-not-delivered { color: var(--red); }
 `);
 
 const loginBox = el("div", { class: "box", id: "login" });
@@ -167,7 +183,11 @@ function renderList(): void {
 
 function summarize(m: Record<string, unknown>): string {
   const t = String(m.type ?? m.event ?? "?");
+  if (m.event === "message-sent") return `you → agent: ${m.text}`;
+  if (m.event === "message-delivered") return `message ${m.messageId} delivered (seen on ${m.by})`;
+  if (m.event === "message-not-delivered") return `message ${m.messageId} NOT delivered: ${m.reason}`;
   if (m.event) return JSON.stringify(m);
+  if (t === "command_lifecycle") return `Claude Code: message ${m.command_uuid} ${m.state}`;
   if (t === "system") {
     const sub = String(m.subtype);
     if (sub === "init") return `init · apiKeySource=${m.apiKeySource} · claude ${m.claude_code_version} · model ${m.model} · session ${m.session_id}`;
@@ -195,17 +215,84 @@ function lineEl(l: Line): HTMLElement {
   return el("div", { "data-seq": String(l.seq) }, el("span", { class: "k" }, `#${l.seq} ${l.at.slice(11, 19)} ${kind}  `), summarize(m));
 }
 
+// --- Talking to the selected agent (#79) -------------------------------------------------------
+// The compose box is built once and never re-rendered, so what you are typing survives the
+// agent's updates. A refused message (409) offers to resume the agent with the same words.
+const msgIn = el("textarea", { id: "message", rows: "2", cols: "60", placeholder: "message to the agent (arrives on its next turn)" });
+const msgBtn = el("button", { id: "send-message" }, "Send");
+const cFile = el("input", { id: "comment-file", size: "28", placeholder: "file" });
+const cLine = el("input", { id: "comment-line", size: "5", placeholder: "line" });
+const cLineText = el("input", { id: "comment-linetext", size: "40", placeholder: "the line's text" });
+const cText = el("input", { id: "comment-text", size: "50", placeholder: "your comment" });
+const cBtn = el("button", { id: "send-comment" }, "Send comment");
+const composeMsg = el("div", { id: "compose-msg" });
+const compose = el("div", { class: "compose", id: "compose" },
+  el("div", {}, msgIn, " ", msgBtn),
+  el("div", {}, el("span", { class: "k" }, "Line comment: "), cFile, " ", cLine, " ", cLineText, " ", cText, " ", cBtn),
+  composeMsg);
+
+async function sendToAgent(body: Record<string, unknown>, sent: () => void): Promise<void> {
+  const id = selected;
+  if (!id) return;
+  composeMsg.replaceChildren();
+  try {
+    await call("POST", `/${id}/message`, body);
+    sent();
+    composeMsg.className = "ok";
+    composeMsg.textContent = "Queued. It arrives on the agent's next turn; delivery shows below.";
+  } catch (e) {
+    composeMsg.className = "err";
+    composeMsg.append((e as Error).message);
+    const err = e as ApiError;
+    if (err.status === 409 && err.body?.resumable === true) {
+      // Resume with exactly what the agent would have read (a comment keeps its file and line).
+      const req = parseMessageRequest(body);
+      const prompt = "error" in req ? "" : renderForAgent(req);
+      const b = el("button", { id: "resume-with-message" }, "Resume with this message");
+      b.onclick = () => void act(async () => {
+        const a = await call("POST", `/${id}/resume`, { prompt });
+        sent();
+        composeMsg.className = "ok";
+        composeMsg.textContent = "Resumed with your message.";
+        return a;
+      });
+      composeMsg.append(" ", b);
+    }
+  }
+}
+msgBtn.onclick = () => void sendToAgent({ text: msgIn.value }, () => { msgIn.value = ""; });
+cBtn.onclick = () => void sendToAgent(
+  { comment: { file: cFile.value, line: Number(cLine.value), lineText: cLineText.value, text: cText.value } },
+  () => { cText.value = ""; },
+);
+
+const STATE_WORDS: Record<string, string> = { queued: "queued", delivered: "delivered", "not-delivered": "not delivered" };
+const detailHead = el("div", {});
+const msgsBox = el("div", { class: "msgs", id: "messages" });
 let txBox: HTMLElement | null = null;
+
+function renderMessages(): void {
+  const sent = messagesIn(transcript);
+  msgsBox.replaceChildren(...(sent.length ? [el("div", { class: "k" }, "Messages you sent:")] : []), ...sent.map((s) =>
+    el("div", { "data-message": s.messageId, "data-state": s.state },
+      el("span", { class: `st-${s.state}` }, `[${STATE_WORDS[s.state]}${s.reason ? `: ${s.reason}` : ""}] `),
+      s.comment ? el("span", { class: "k" }, `${s.comment.file}:${s.comment.line} `) : "",
+      s.said)));
+}
+
 function renderDetail(): void {
   const a = selected ? agents.get(selected) : undefined;
   if (!a) { detailBox.replaceChildren(el("div", { class: "k" }, "Select an agent to see its messages.")); txBox = null; return; }
-  txBox = el("div", { class: "tx", id: "transcript" }, ...transcript.map(lineEl));
-  detailBox.replaceChildren(
+  detailHead.replaceChildren(
     el("div", {}, el("b", {}, a.id), `  ${a.status}`, el("span", { class: "k" }, "  session "), a.sessionId ?? "—",
       el("span", { class: "k" }, "  apiKeySource "), el("span", { id: "detail-apikeysource", class: a.apiKeySource === "none" ? "ok" : "err" }, a.apiKeySource ?? "not reported yet")),
     el("div", { class: "k" }, `claude ${a.claudePath ?? "?"} → ${a.claudeRealPath ?? "?"} · v${a.claudeCodeVersion ?? "?"} · removed from env: ${a.strippedEnv?.length ? a.strippedEnv.join(", ") : "nothing"}${a.costEstimateUsd !== undefined ? ` · Claude Code usage estimate $${a.costEstimateUsd.toFixed(2)} (not a bill)` : ""}`),
-    txBox,
   );
+  renderMessages();
+  txBox = el("div", { class: "tx", id: "transcript" }, ...transcript.map(lineEl));
+  // The compose box is moved, never rebuilt: only the parts around it are replaced.
+  if (compose.parentElement !== detailBox) detailBox.replaceChildren(detailHead, compose, msgsBox, txBox);
+  else detailBox.replaceChild(txBox, detailBox.lastElementChild!);
   txBox.scrollTop = txBox.scrollHeight;
 }
 
@@ -257,6 +344,7 @@ function connect(): void {
       if (id !== selected || transcript.some((l) => l.seq === line.seq)) return;
       transcript.push(line);
       if (txBox) { txBox.append(lineEl(line)); txBox.scrollTop = txBox.scrollHeight; }
+      if (line.from === "host" && String(line.message?.event ?? "").startsWith("message-")) renderMessages();
     }
   };
   // After a reconnect (e.g. server restart) re-read everything: messages may have been missed.
