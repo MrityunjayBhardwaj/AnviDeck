@@ -16,8 +16,18 @@ export function writeToken(): string | null {
 export type WriteMethod = "POST" | "PUT" | "PATCH" | "DELETE";
 
 /**
- * Send one write. Resolves with the parsed JSON answer; throws an Error carrying the server's
- * own reason when it answers an error (a refusal included), so a page can show why.
+ * A write the server answered with an error. It carries the status and the whole JSON body,
+ * because some answers say what to do next (a 409 for a stopped agent says resumable: true).
+ */
+export class WriteError extends Error {
+  constructor(readonly status: number, readonly body: Record<string, unknown>) {
+    super(typeof body.error === "string" ? body.error : `request failed (${status})`);
+  }
+}
+
+/**
+ * Send one write. Resolves with the parsed JSON answer; throws a WriteError carrying the
+ * server's status, body and own reason when it answers an error (a refusal included).
  */
 export async function write<T = unknown>(method: WriteMethod, url: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {};
@@ -26,7 +36,8 @@ export async function write<T = unknown>(method: WriteMethod, url: string, body?
   if (token) headers[TOKEN_HEADER] = token;
   if (body !== undefined) headers["content-type"] = "application/json";
   const res = await fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
-  const j = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((j as { error?: string }).error ?? `${res.status} ${res.statusText}`);
+  const j = (await res.json().catch(() => ({}))) as unknown;
+  const obj = j && typeof j === "object" ? (j as Record<string, unknown>) : {};
+  if (!res.ok) throw new WriteError(res.status, obj);
   return j as T;
 }
