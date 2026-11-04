@@ -554,7 +554,9 @@ function stepWhat(st: ReplayStep, notes: Map<number, NoteUsed>): string {
     return `anvi note · ${esc(st.hookName ?? n?.hookName ?? "")}${n ? ` · ${bytes(n.size)}` : ""} ${typeof id === "number" ? `<button type="button" class="ag-link" data-note="${id}">show text</button>` : ""}`;
   }
   if (st.kind === "commit")
-    return `commit <span class="mono">${esc((st.sha ?? "").slice(0, 7))}</span> · ${esc(st.subject ?? "")}`;
+    return `commit <span class="mono">${esc((st.sha ?? "").slice(0, 7))}</span> · ${esc(st.subject ?? "")}${
+      (st.detail as any)?.from ? ` <span class="ag-note">(read from ${esc(String((st.detail as any).from))})</span>` : ""
+    }`;
   if (st.kind === "pr")
     return `linked PR ${st.repo && st.pr ? `<a href="${esc(prUrl(st.repo, st.pr))}" target="_blank" rel="noopener">#${st.pr}</a>` : `#${st.pr}`}`;
   if (st.kind === "hook-run") return `hook run · ${esc(st.hookName ?? "")}`;
@@ -592,11 +594,13 @@ function sourcesLine(r: ReplayResponse): string {
   // The session ran `git commit` but the commit is on no branch any more (#65).
   const m = r.sources.git.missingCommits;
   const gitMissing = m ? `could not find ${m} commit${m === 1 ? "" : "s"} the session made` : "";
+  // Commits no local branch reaches, read from GitHub through the session's PR (#67).
+  const fromGh = r.sources.git.fromGitHub ? ` (${r.sources.git.fromGitHub} from GitHub)` : "";
   return `<div class="ag-srcs">
     ${part("Transcript", t.status, `${t.count ?? 0} records in window`, t.detail ?? t.path)}
     ${part("Hook meter", r.sources.hookMeter.status, `${r.sources.hookMeter.count ?? 0} rows`, r.sources.hookMeter.detail ?? r.sources.hookMeter.path, true)}
     ${part("Hook log", r.sources.hookLog.status, `${r.sources.hookLog.count ?? 0} rows`, r.sources.hookLog.detail ?? r.sources.hookLog.path, true)}
-    ${part("Git", r.sources.git.status, `${r.sources.git.count ?? 0} commit${r.sources.git.count === 1 ? "" : "s"}`, r.sources.git.detail, false, gitMissing)}
+    ${part("Git", r.sources.git.status, `${r.sources.git.count ?? 0} commit${r.sources.git.count === 1 ? "" : "s"}${fromGh}`, r.sources.git.detail, false, gitMissing)}
     ${part("GitHub", r.sources.github.status, `${r.sources.github.count ?? 0} PRs`, r.sources.github.detail)}
   </div>`;
 }
@@ -750,7 +754,12 @@ function scopeSwitch(total: number): string {
 function fileSources(f: ChangedFile): string {
   const out: string[] = [];
   if (f.how.includes("tool")) out.push(srcTag("transcript", "an Edit/Write call"));
-  if (f.how.includes("commit")) out.push(srcTag(`commit ${(f.sha ?? "").slice(0, 7)}`, f.sha));
+  if (f.how.includes("commit"))
+    out.push(
+      f.commitFrom
+        ? srcTag(`commit ${(f.sha ?? "").slice(0, 7)} · from GitHub PR #${f.commitFrom.pr}`, `${f.sha}: no local branch reaches it${f.commitFrom.filesUnread ? `; ${f.commitFrom.filesUnread}` : ""}`)
+        : srcTag(`commit ${(f.sha ?? "").slice(0, 7)}`, f.sha)
+    );
   if (f.how.includes("pr")) out.push(srcTag(`PR #${f.pr} · GitHub`));
   return out.join("");
 }

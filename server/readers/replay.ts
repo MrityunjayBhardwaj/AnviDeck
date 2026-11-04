@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import type {
   ChangedFile,
   CommitInfo,
+  CommitSource,
   MergeEvidence,
   NoteUsed,
   PrInfo,
@@ -396,6 +397,45 @@ export async function ghPrView(number: number, repo: string): Promise<{ ok: bool
   return { ...r, cached: false };
 }
 
+/** "owner/repo" of a GitHub remote URL (ssh, https or ssh://), else null. */
+export function githubRepoOf(url: string): string | null {
+  const m = url.trim().match(/^(?:git@github\.com:|ssh:\/\/git@github\.com\/|https?:\/\/(?:[^@/]+@)?github\.com\/)([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/);
+  return m ? `${m[1]}/${m[2]}` : null;
+}
+
+/** A PR's commits, as `gh pr view --json state,mergedAt,commits` gives them; cached like ghPrView. */
+const prCommitsCache = new Map<string, { at: number; out: string }>();
+async function ghPrCommits(number: number, repo: string): Promise<{ ok: boolean; out: string; err: string }> {
+  const key = `${repo}#${number}`;
+  const hit = prCommitsCache.get(key);
+  if (hit) {
+    let state = "";
+    try {
+      state = JSON.parse(hit.out).state;
+    } catch {
+      /* treat as open */
+    }
+    if (state === "MERGED" || state === "CLOSED" || Date.now() - hit.at < PR_OPEN_TTL_MS) return { ok: true, out: hit.out, err: "" };
+  }
+  const r = await runAsync(["gh", "pr", "view", String(number), "--repo", repo, "--json", "state,mergedAt,commits"], 20000);
+  if (r.ok) prCommitsCache.set(key, { at: Date.now(), out: r.out });
+  return r;
+}
+
+/** One commit's subject and files from GitHub. A commit never changes, so a success is kept. */
+const commitFilesCache = new Map<string, string>();
+async function ghCommitFiles(sha: string, repo: string): Promise<{ ok: boolean; out: string; err: string }> {
+  const key = `${repo}@${sha}`;
+  const hit = commitFilesCache.get(key);
+  if (hit) return { ok: true, out: hit, err: "" };
+  const r = await runAsync(["gh", "api", `repos/${repo}/commits/${sha}`, "--jq", "{message: .commit.message, files: [.files[] | {filename, status, previous_filename}]}"], 20000);
+  if (r.ok) commitFilesCache.set(key, r.out);
+  return r;
+}
+
+/** GitHub's file status as the git name-status letter the local reader gives. */
+const GH_FILE_STATUS: Record<string, string> = { added: "A", modified: "M", removed: "D", renamed: "R", copied: "C", changed: "M", unchanged: "M" };
+
 // ─── Main reader ─────────────────────────────────────────────────────────────
 
 export interface ReplayOptions {
@@ -462,6 +502,9 @@ export async function readReplay(sessionId: string, opts: ReplayOptions = {}): P
   const raw: RawStep[] = [];
   const notes: NoteUsed[] = [];
   const prSeen = new Map<string, { number: number; repo: string; first: number; last: number; line: number }>();
+  // Every PR the session linked, in or out of the window: where its commits can be
+  // found on GitHub once no local branch reaches them (#67).
+  const prSession = new Map<string, { number: number; repo: string }>();
   const repoHints = new Set<string>(); // dirs whose git repos may hold this session's commits
   const cwdHints = new Set<string>(); // the records' own cwd values (a subset of repoHints)
   let sessionFirst = Infinity;
@@ -536,6 +579,8 @@ export async function readReplay(sessionId: string, opts: ReplayOptions = {}): P
               sessionToolEdits.push({ path: fp, ms: at, ts: iso(at), tool: String(c.name) });
           }
         }
+        if (r.type === "pr-link" && typeof r.prNumber === "number" && typeof r.prRepository === "string" && r.prRepository)
+          prSession.set(`${r.prRepository}#${r.prNumber}`, { number: r.prNumber, repo: r.prRepository });
         if (Number.isNaN(at) || !inWin(at)) continue;
         inWindowRecords++;
         if (!hasTs) {
@@ -771,8 +816,8 @@ export async function readReplay(sessionId: string, opts: ReplayOptions = {}): P
   const repoOf = new Map<string, { top: string; store: string } | null>(); // hint dir → repo
   const dirStatus: { dir: string; status: ReadStatus; detail?: string }[] = [];
   const allCommits = new Map<string, CommitInfo & { store: string }>();
+  const stores = new Map<string, string>(); // store → a toplevel to run git in
   if (tPath && Number.isFinite(gitFrom) && Number.isFinite(gitTo)) {
-    const stores = new Map<string, string>(); // store → a toplevel to run git in
     const goneCache = new Map<string, { top: string; store: string } | null>();
     const goneNoted = new Set<string>();
     for (const d of repoHints) {
@@ -864,62 +909,141 @@ export async function readReplay(sessionId: string, opts: ReplayOptions = {}): P
   }
 
   // Attribute: a commit is this session's when one of its `git commit` steps ran
-  // just before it, in the same object store. Others in the window are listed
-  // as unattributed (another agent may share the repo), never claimed.
+  // just before it, in the same object store (attributeCommits). Others in the
+  // window are listed as unattributed (another agent may share the repo), never claimed.
   const usedSteps = new Set<RawStep>();
   const matched = new Map<string, RawStep>();
   const storeOfSha = new Map<string, string>();
-  for (const c of [...allCommits.values()].sort((a, b) => a.committedAt.localeCompare(b.committedAt))) {
-    const cm = Date.parse(c.committedAt);
-    let best: RawStep | null = null;
-    let bestTop: string | null = null;
-    for (const s of commitSteps) {
-      if (usedSteps.has(s)) continue;
-      const d = cm - s.sortMs; // %cI is whole seconds: allow 2 s early
-      if (d < -2000 || d > 300000) continue;
-      const repos = cdTargets(s.command!).map((x) => repoOf.get(x)).filter((x): x is { top: string; store: string } => !!x);
-      let top: string | null = null;
-      if (repos.length) {
-        const hit = repos.find((x) => x.store === c.store);
-        if (!hit) continue;
-        top = hit.top;
-      }
-      if (!best || Math.abs(d) < Math.abs(cm - best.sortMs)) {
-        best = s;
-        bestTop = top;
-      }
-    }
-    const { store, ...info } = c;
+  const claim = (info: CommitInfo, step: RawStep) => {
+    const cm = Date.parse(info.committedAt);
+    res.commits.push(info);
+    matched.set(info.sha, step);
+    raw.push({
+      ts: info.committedAt,
+      placement: "timestamp",
+      placedAt: info.committedAt,
+      sortMs: Math.max(cm, step.sortMs) + 1, // just after the command that made it
+      kind: "commit",
+      source: "commit",
+      sha: info.sha,
+      subject: info.subject,
+      detail: {
+        repoDir: info.repoDir,
+        files: info.files.length,
+        order: "placed just after the command that made it",
+        ...(info.from ? { from: `GitHub, PR #${info.from.pr}: no local branch reaches it` } : {}),
+      },
+    });
+  };
+  const local = [...allCommits.values()].map((c) => ({ ...c, stores: [c.store] }));
+  for (const { commit, step, top } of attributeCommits(local, commitSteps, usedSteps, repoOf)) {
+    const { store, stores: _stores, ...info } = commit;
     storeOfSha.set(info.sha, store);
-    if (best) {
-      usedSteps.add(best);
-      if (bestTop) info.repoDir = bestTop; // the worktree it was made in
-      res.commits.push(info);
-      matched.set(info.sha, best);
-      raw.push({
-        ts: info.committedAt,
-        placement: "timestamp",
-        placedAt: info.committedAt,
-        sortMs: Math.max(cm, best.sortMs) + 1, // just after the command that made it
-        kind: "commit",
-        source: "commit",
-        sha: info.sha,
-        subject: info.subject,
-        detail: { repoDir: info.repoDir, files: info.files.length, order: "placed just after the command that made it" },
-      });
-    } else {
-      res.unattributedCommits.push(info);
+    if (step) {
+      if (top) info.repoDir = top; // the worktree it was made in
+      claim(info, step);
+    } else res.unattributedCommits.push(info);
+  }
+
+  // A `git commit` the session ran in the window that matched no local commit: its
+  // commit is on no branch here (branch deleted after a squash merge) or the commit
+  // failed (#65). GitHub keeps a merged PR's commits, so look there, read-only,
+  // through the PRs this session linked, in a repository the session worked in (#67).
+  const unmatchedSteps = () => commitSteps.filter((s) => inWin(s.sortMs) && !usedSteps.has(s) && GIT_COMMIT_RUN_RE.test(s.command!)).length;
+  const g = res.sources.git;
+  const ghPrOfSha = new Map<string, Pick<PrInfo, "number" | "merge">>();
+  let fromGitHub = 0;
+  let ghWhy = "";
+  if (unmatchedSteps() && (g.status === "ok" || g.status === "none")) {
+    if (opts.github === false) ghWhy = "GitHub was not asked (github=0)";
+    else {
+      const storesOfRepo = new Map<string, string[]>(); // "owner/repo" (lower case) → stores with that remote
+      for (const [store, top] of stores) {
+        const r = run(["git", "-C", top, "remote", "-v"], undefined, 3000);
+        if (!r.ok) continue;
+        for (const l of r.out.split("\n")) {
+          const gh = githubRepoOf(l.split(/\s+/)[1] ?? "")?.toLowerCase();
+          if (!gh) continue;
+          const a = storesOfRepo.get(gh) ?? storesOfRepo.set(gh, []).get(gh)!;
+          if (!a.includes(store)) a.push(store);
+        }
+      }
+      const prs = [...prSession.values()].filter((p) => storesOfRepo.has(p.repo.toLowerCase()));
+      if (!prs.length) {
+        ghWhy = prSession.size
+          ? "none of the PRs the session linked is in this repository's GitHub repository, so GitHub was not asked"
+          : "the session linked no PR, so GitHub was not asked";
+      } else {
+        const answers = await Promise.all(prs.map((p) => ghPrCommits(p.number, p.repo)));
+        const failed: string[] = [];
+        type Cand = { sha: string; committedAt: string; subject: string; stores: string[]; pr: number; repo: string; mergedAt: string | null };
+        const cands = new Map<string, Cand>();
+        prs.forEach((p, i) => {
+          const a = answers[i];
+          let j: any;
+          try {
+            if (!a.ok) throw new Error(a.err || "gh failed");
+            j = JSON.parse(a.out);
+          } catch (e) {
+            failed.push(`PR #${p.number}: ${(e as Error).message.slice(0, 160)}`);
+            return;
+          }
+          for (const c of Array.isArray(j.commits) ? j.commits : []) {
+            const ms = Date.parse(c?.committedDate);
+            if (typeof c?.oid !== "string" || Number.isNaN(ms) || !inWin(ms) || allCommits.has(c.oid) || cands.has(c.oid)) continue;
+            cands.set(c.oid, {
+              sha: c.oid,
+              committedAt: iso(ms),
+              subject: String(c.messageHeadline ?? ""),
+              stores: storesOfRepo.get(p.repo.toLowerCase())!,
+              pr: p.number,
+              repo: p.repo,
+              mergedAt: j.mergedAt || null,
+            });
+          }
+        });
+        // The same rule as local commits; a PR commit no step explains is not this session's to claim.
+        const hits = attributeCommits([...cands.values()], commitSteps, usedSteps, repoOf).filter((h) => h.step);
+        const files = await Promise.all(hits.map((h) => ghCommitFiles(h.commit.sha, h.commit.repo)));
+        hits.forEach((h, i) => {
+          const c = h.commit;
+          const from: CommitSource = { source: "github", pr: c.pr, repo: c.repo };
+          let subject = c.subject;
+          let fl: CommitInfo["files"] = [];
+          try {
+            const f = files[i];
+            if (!f.ok) throw new Error(f.err || "gh failed");
+            const j = JSON.parse(f.out);
+            subject = String(j.message ?? "").split("\n")[0] || subject;
+            fl = (Array.isArray(j.files) ? j.files : []).map((x: any) => ({
+              status: GH_FILE_STATUS[String(x.status)] ?? "M",
+              path: String(x.filename),
+              ...(x.previous_filename ? { oldPath: String(x.previous_filename) } : {}),
+            }));
+          } catch (e) {
+            from.filesUnread = `could not read its files from GitHub: ${(e as Error).message.slice(0, 200)}`;
+          }
+          storeOfSha.set(c.sha, h.store);
+          claim({ sha: c.sha, committedAt: c.committedAt, subject, repoDir: h.top ?? stores.get(h.store) ?? "", files: fl, from }, h.step!);
+          ghPrOfSha.set(c.sha, { number: c.pr, merge: mergeEvidence(c.pr, c.repo, c.mergedAt) });
+          fromGitHub++;
+        });
+        if (failed.length) ghWhy = `could not ask GitHub about ${failed.length} of ${prs.length} PR(s) (${failed.join("; ")})`;
+        else if (unmatchedSteps()) ghWhy = `not in the commits of the ${prs.length} PR(s) the session linked on GitHub either`;
+      }
     }
   }
-  // A `git commit` the session ran in the window that matched no commit on any branch
-  // means its commit could not be found (its branch deleted after a squash merge, or
-  // the commit failed) — never "this window has no commits" (#65).
-  const unmatchedCommitSteps = commitSteps.filter((s) => inWin(s.sortMs) && !usedSteps.has(s) && GIT_COMMIT_RUN_RE.test(s.command!)).length;
-  const g = res.sources.git;
-  if (unmatchedCommitSteps && (g.status === "ok" || g.status === "none")) {
-    g.missingCommits = unmatchedCommitSteps;
-    const why = `the session ran git commit ${unmatchedCommitSteps} time(s) in this window with no matching commit on any branch (its branch may have been deleted after a squash merge, or the commit may have failed)`;
-    g.detail = g.detail ? `${g.detail}; ${why}` : why;
+  const add = (why: string) => (g.detail = g.detail ? `${g.detail}; ${why}` : why);
+  if (fromGitHub) {
+    g.fromGitHub = fromGitHub;
+    g.count = (g.count ?? 0) + fromGitHub;
+    if (g.status === "none") g.status = "ok";
+    add(`${fromGitHub} commit(s) read from GitHub through the PR the session linked: no local branch reaches them (their branch was deleted after a squash merge)`);
+  }
+  const missing = unmatchedSteps();
+  if (missing && (g.status === "ok" || g.status === "none")) {
+    g.missingCommits = missing;
+    add(`the session ran git commit ${missing} time(s) in this window with no matching commit on any branch (its branch may have been deleted after a squash merge, or the commit may have failed)${ghWhy ? `; ${ghWhy}` : ""}`);
     if (g.status === "none") g.status = "not-found";
   }
   timings.git = Math.round(performance.now() - tGit);
@@ -1013,7 +1137,7 @@ export async function readReplay(sessionId: string, opts: ReplayOptions = {}): P
       if (k) (editsByKey.get(k) ?? editsByKey.set(k, []).get(k)!).push(e);
     }
     for (const c of res.commits) {
-      const pr = prOfSha.get(c.sha);
+      const pr: Pick<PrInfo, "number" | "merge"> | undefined = prOfSha.get(c.sha) ?? ghPrOfSha.get(c.sha);
       const prF = pr ? prFiles.get(pr.number) : undefined;
       const store = storeOfSha.get(c.sha);
       const cm = Date.parse(c.committedAt);
@@ -1033,6 +1157,10 @@ export async function readReplay(sessionId: string, opts: ReplayOptions = {}): P
         e.status = f.status;
         if (f.oldPath) e.oldPath = f.oldPath;
         e.sha = c.sha;
+        if (c.from) {
+          e.commitFrom = c.from;
+          e.pr = c.from.pr;
+        }
         const pf = prF?.find((x) => x.path === f.path);
         if (pr && pf) {
           e.how.push("pr");
@@ -1155,8 +1283,52 @@ export function repoFileKey(absPath: string, cache = new Map<string, { store: st
   return rel.startsWith("..") ? null : `${repo.store}\0${rel}`;
 }
 
+/**
+ * Give each commit to the session's `git commit` step that best explains it: a
+ * step from 2 s after to 5 min before the commit (%cI is whole seconds), nearest
+ * first, each step used once. When the step cd'd into known repositories, the
+ * commit must be in one of their object stores. A local commit has one store; a
+ * commit read from GitHub has every store whose remote is the PR's repository (#67).
+ */
+export function attributeCommits<C extends { committedAt: string; stores: string[] }, S extends { sortMs: number; command?: string }>(
+  commits: C[],
+  steps: S[],
+  used: Set<S>,
+  repoOf: Map<string, { top: string; store: string } | null>
+): { commit: C; step: S | null; top: string | null; store: string }[] {
+  const out: { commit: C; step: S | null; top: string | null; store: string }[] = [];
+  for (const c of [...commits].sort((a, b) => a.committedAt.localeCompare(b.committedAt))) {
+    const cm = Date.parse(c.committedAt);
+    let best: S | null = null;
+    let bestTop: string | null = null;
+    let bestStore = c.stores[0];
+    for (const s of steps) {
+      if (used.has(s)) continue;
+      const d = cm - s.sortMs;
+      if (d < -2000 || d > 300000) continue;
+      const repos = cdTargets(s.command ?? "").map((x) => repoOf.get(x)).filter((x): x is { top: string; store: string } => !!x);
+      let top: string | null = null;
+      let store = c.stores[0];
+      if (repos.length) {
+        const hit = repos.find((x) => c.stores.includes(x.store));
+        if (!hit) continue;
+        top = hit.top;
+        store = hit.store;
+      }
+      if (!best || Math.abs(d) < Math.abs(cm - best.sortMs)) {
+        best = s;
+        bestTop = top;
+        bestStore = store;
+      }
+    }
+    if (best) used.add(best);
+    out.push({ commit: c, step: best, top: bestTop, store: bestStore });
+  }
+  return out;
+}
+
 /** The design-rules label for a file changed only through the shell. */
-function designRulesLabel(pr: PrInfo | undefined): string {
+function designRulesLabel(pr: Pick<PrInfo, "number" | "merge"> | undefined): string {
   const notAtEdit = "checked at merge, not at edit";
   if (!pr) return "not checked at edit; no linked PR found, so no merge check can be shown";
   const m = pr.merge;

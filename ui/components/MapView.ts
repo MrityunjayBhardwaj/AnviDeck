@@ -879,7 +879,8 @@ function panelChat(): string {
       note ? `<pre class="map-pre prose">${esc((note.text ?? note.preview).slice(0, 3000))}</pre>` : ""
     }`;
   } else if (s.kind === "commit") {
-    what = `<div><b>Commit</b> ${mono(short(s.sha))}</div><div>${esc(s.subject ?? "")}</div>`;
+    const from = (s.detail as any)?.from;
+    what = `<div><b>Commit</b> ${mono(short(s.sha))}</div><div>${esc(s.subject ?? "")}</div>${from ? `<div class="dim">Read from ${esc(String(from))}.</div>` : ""}`;
   } else if (s.kind === "pr") {
     what = `<div><b>Pull request</b> ${mono(`#${s.pr}`)} ${s.repo ? mono(s.repo) : ""}</div><div class="dim">The transcript links this PR here.</div>`;
   } else {
