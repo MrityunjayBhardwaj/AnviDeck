@@ -3,6 +3,7 @@
  * plain; the Agents screen (#82) and the shell (#80) replace it. Served at /agent-host.
  * All text from agents is set with textContent, never as HTML.
  */
+import { write, type WriteMethod } from "./write";
 
 interface Agent {
   id: string;
@@ -49,7 +50,11 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Record<string,
 }
 
 async function call(method: string, path: string, body?: unknown): Promise<unknown> {
-  const res = await fetch(`/api/agents${path === "/" ? "" : path}`, {
+  const url = `/api/agents${path === "/" ? "" : path}`;
+  // Every write goes through the one write helper (token + reason on refusal), then the
+  // action list is re-read so the write shows up there, refused or not.
+  if (method !== "GET") return write(method as WriteMethod, url, body).finally(() => void renderActions());
+  const res = await fetch(url, {
     method,
     headers: body === undefined ? {} : { "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -86,6 +91,7 @@ const loginBox = el("div", { class: "box", id: "login" });
 const msg = el("div", { id: "msg" });
 const listBox = el("div", { class: "box", id: "agents" });
 const detailBox = el("div", { class: "box", id: "detail" });
+const actionsBox = el("div", { class: "box", id: "actions" });
 
 const cwdIn = el("input", { id: "cwd", size: "60", placeholder: "/absolute/folder" });
 const promptIn = el("textarea", { id: "prompt", rows: "2", cols: "60", placeholder: "prompt" });
@@ -111,7 +117,38 @@ root.append(
   el("div", { class: "box" }, el("div", {}, "Folder ", cwdIn, "  Issue ", issueIn), el("div", {}, promptIn), startBtn, " ", msg),
   listBox,
   detailBox,
+  actionsBox,
 );
+
+/** The last few writes from the action log (#76), refused ones included. History (#90) replaces this. */
+async function renderActions(): Promise<void> {
+  try {
+    const r = await fetch("/api/actions?limit=8");
+    const j = (await r.json()) as {
+      error?: string; file: string; total: number; unreadableLines: number; writeFailures: { count: number; last?: string };
+      actions: { at: string; method: string; path: string; target?: string; status: number; result: string; reason?: string }[];
+    };
+    if (!r.ok) throw new Error(j.error ?? `${r.status}`);
+    const table = el("table", {}, el("tr", {}, ...["time", "result", "status", "action", "target", "reason"].map((h) => el("th", {}, h))));
+    for (const a of j.actions) {
+      table.append(el("tr", { "data-result": a.result },
+        el("td", {}, a.at.slice(11, 19)),
+        el("td", { class: a.result === "accepted" ? "ok" : "err" }, a.result),
+        el("td", {}, String(a.status)),
+        el("td", {}, `${a.method} ${a.path}`),
+        el("td", {}, a.target ?? ""),
+        el("td", {}, a.reason ?? "")));
+    }
+    actionsBox.replaceChildren(
+      el("div", {}, el("b", {}, "Recent actions"), el("span", { class: "k" },
+        `  ${j.actions.length} newest of ${j.total} in ${j.file}${j.unreadableLines ? ` · ${j.unreadableLines} unreadable lines` : ""}`),
+        j.writeFailures.count ? el("span", { class: "err" }, `  · ${j.writeFailures.count} actions could not be logged (${j.writeFailures.last ?? ""})`) : ""),
+      j.actions.length ? table : el("div", { class: "k" }, "No actions yet."),
+    );
+  } catch (e) {
+    actionsBox.replaceChildren(el("div", { class: "err" }, `could not read the action log: ${(e as Error).message}`));
+  }
+}
 
 function renderLogin(o: Overview): void {
   loginBox.replaceChildren(
@@ -233,6 +270,7 @@ async function act(fn: () => Promise<unknown>): Promise<void> {
 }
 
 async function refresh(): Promise<void> {
+  void renderActions();
   const o = (await call("GET", "/")) as Overview;
   renderLogin(o);
   agents.clear();
