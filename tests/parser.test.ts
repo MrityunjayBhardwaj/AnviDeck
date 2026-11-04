@@ -94,6 +94,9 @@ Audit block.
     const entries = parseCatalogueEntries(md, "hetvabhasa");
     expect(entries).toHaveLength(1);
     expect(entries[0]!.title).toContain("The entry");
+    expect(entries[0]!.continuations).toEqual([
+      { level: 3, title: "— ORIGINAL FRAMING", announced: false, tags: [] },
+    ]);
   });
 
   test("announcesContinuation reads the word right after the ID, with no colon", () => {
@@ -104,6 +107,94 @@ Audit block.
     expect(announcesContinuation("X4: Update loop ordering")).toBe(false);
     expect(announcesContinuation("X3 — The entry")).toBe(false);
     expect(announcesContinuation("X1 UPDATED-LIST")).toBe(false);
+  });
+});
+
+// #72: a later heading of an ID, at EITHER level, continues the entry — as anvi's
+// own parser numbers it (occurrence > 1) — and is kept on the entry, not counted.
+describe("later headings of an ID are continuations, at either level (#72)", () => {
+  test("level-2 UPDATE headings after a level-3 entry are attached, not listed", () => {
+    // Shaped like the boundary map that listed one boundary as 24 entries.
+    const md = `# Dharana
+
+### X18: the boundary — TRACKED
+
+Body.
+
+### X19: next boundary
+
+Text.
+
+## X18 UPDATE 2026-08-01 — first note
+
+A.
+
+## X18 UPDATE 2026-08-02 — second note
+
+B.
+
+## X18 ADDENDUM — third note
+
+C.
+`;
+    const entries = parseCatalogueEntries(md, "dharana");
+    expect(entries.map((e) => e.id)).toEqual(["X18", "X19"]);
+    const x18 = entries[0]!;
+    expect(x18.title).toContain("the boundary");
+    expect(x18.continuations!.map((c) => [c.level, c.announced, c.title])).toEqual([
+      [2, true, "UPDATE 2026-08-01 — first note"],
+      [2, true, "UPDATE 2026-08-02 — second note"],
+      [2, true, "ADDENDUM — third note"],
+    ]);
+    expect(entries[1]!.continuations).toBeUndefined();
+  });
+
+  test("two level-2 headings with one ID make one entry; the second stays visible", () => {
+    // A genuine reuse of an ID looks like this too. It is not counted as a
+    // second entry, but it is kept, marked as not announcing itself.
+    const md = `## X20: Stale cache read
+
+Body.
+
+## X21: Something else
+
+Body.
+
+## X20: An unrelated failure that reused the ID
+
+Body.
+`;
+    const entries = parseCatalogueEntries(md, "hetvabhasa");
+    expect(entries.map((e) => e.id)).toEqual(["X20", "X21"]);
+    expect(entries[0]!.title).toBe("Stale cache read");
+    expect(entries[0]!.continuations).toEqual([
+      { level: 2, title: "An unrelated failure that reused the ID", announced: false, tags: [] },
+    ]);
+  });
+
+  test("an update written above its entry becomes the entry's first continuation", () => {
+    const entries = parseCatalogueEntries(UPDATE_FIRST, "dharana");
+    const x1 = entries[0]!;
+    expect(x1.title).toContain("the boundary itself");
+    expect(x1.continuations!.map((c) => c.title)).toEqual([
+      "UPDATE 2026-07-31 — the newest note",
+      "UPDATE 2026-07-31 — an older note",
+    ]);
+    expect(x1.continuations!.every((c) => c.level === 3 && c.announced)).toBe(true);
+  });
+
+  test("a continuation keeps the status tags of its own heading", () => {
+    const md = `### X22: invariant
+
+Body.
+
+### X22 UPDATE — now MISALIGNED
+
+Note.
+`;
+    const [x22] = parseCatalogueEntries(md, "vyapti");
+    expect(x22!.tags).toEqual([]);
+    expect(x22!.continuations![0]!.tags).toEqual(["MISALIGNED"]);
   });
 });
 

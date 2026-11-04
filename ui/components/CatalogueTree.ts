@@ -52,6 +52,7 @@ export function CatalogueTree(catalogues: Catalogue[]): HTMLElement {
   });
 
   renderToggle();
+  filterBar.appendChild(CountBasis(catalogues));
   filterBar.appendChild(toggle);
   el.appendChild(filterBar);
 
@@ -70,7 +71,8 @@ function CatalogueGroup(catalogue: Catalogue, expanded = false): HTMLElement {
   header.innerHTML = `
     <span class="arrow${expanded ? " open" : ""}">▸</span>
     <span class="cat-name">${catalogue.name}</span>
-    <span class="cat-count">${catalogue.entries.length}</span>
+    ${laterHeadingsNote(catalogue.entries)}
+    <span class="cat-count" title="${COUNT_BASIS_TITLE}">${catalogue.entries.length}</span>
   `;
 
   const entriesEl = document.createElement("div");
@@ -107,9 +109,16 @@ function EntryItem(entry: CatalogueEntry): HTMLElement {
     })
     .join("");
 
+  const conts = entry.continuations ?? [];
+  const unmarked = conts.filter((c) => !c.announced).length;
+  const contBadge = conts.length
+    ? `<span class="entry-continuations${unmarked ? " has-unmarked" : ""}" title="Later headings of ${entry.id} in this catalogue, attached here and not counted as entries${unmarked ? `; ${unmarked} of them say nothing marking them as an update: check whether ${entry.id} was reused for something else` : ""}">+${conts.length} ${conts.length === 1 ? "update" : "updates"}${unmarked ? ` · ${unmarked} unmarked` : ""}</span>`
+    : "";
+
   header.innerHTML = `
     <span class="entry-id">${entry.id}</span>
     <span class="entry-title">${entry.title}</span>
+    ${contBadge}
     <span class="entry-tags">${tagsHtml}</span>
   `;
 
@@ -142,6 +151,15 @@ function EntryItem(entry: CatalogueEntry): HTMLElement {
     detailHtml += `</div>`;
   }
 
+  if (conts.length) {
+    detailHtml += `<div class="entry-continuation-list"><div class="section-key">Later headings of ${entry.id} (${conts.length}, not counted as entries):</div>`;
+    for (const c of conts) {
+      const tags = c.tags.map((t) => `<span class="tag ${tagClass(t)}">${t}</span>`).join("");
+      detailHtml += `<div class="entry-continuation${c.announced ? "" : " unmarked"}"><span class="cont-level">${"#".repeat(c.level)} ${entry.id}</span> <span class="cont-title">${escapeHtml(c.title)}</span>${tags}${c.announced ? "" : ` <span class="cont-unmarked" title="Nothing in this heading marks it as an update (UPDATE, ADDENDUM, ...). It may be one, or ${entry.id} may have been reused for a different entry.">not marked as an update</span>`}</div>`;
+    }
+    detailHtml += `</div>`;
+  }
+
   detail.innerHTML = detailHtml;
 
   header.addEventListener("click", () => {
@@ -151,6 +169,36 @@ function EntryItem(entry: CatalogueEntry): HTMLElement {
   item.appendChild(header);
   item.appendChild(detail);
   return item;
+}
+
+/**
+ * What the entry counts count (#72). Stated on screen because anvi has two
+ * counters that disagree on catalogues with repeated IDs.
+ */
+const COUNT_BASIS_TITLE =
+  "Entries = distinct entry IDs in this catalogue: the first heading of each ID, as anvi's catalogue parser (parseEntries) numbers them and its session-start count counts them. " +
+  "Later headings of an ID (updates, addenda, recurrences) are attached to their entry, not counted. " +
+  "anvi's CLI catalogue-status counts every level-2 ID heading instead, so its number can differ.";
+
+function CountBasis(catalogues: Catalogue[]): HTMLElement {
+  const later = catalogues.reduce(
+    (s, c) => s + c.entries.reduce((t, e) => t + (e.continuations?.length ?? 0), 0),
+    0
+  );
+  const el = document.createElement("span");
+  el.className = "catalogue-count-basis";
+  el.title = COUNT_BASIS_TITLE;
+  el.textContent = `Counts: one per entry ID, as anvi's session-start count · ${later} later ${later === 1 ? "heading" : "headings"} of an ID attached to ${later === 1 ? "its entry" : "their entries"}, not counted`;
+  return el;
+}
+
+function laterHeadingsNote(entries: CatalogueEntry[]): string {
+  const later = entries.reduce((t, e) => t + (e.continuations?.length ?? 0), 0);
+  const unmarked = entries.reduce(
+    (t, e) => t + (e.continuations?.filter((c) => !c.announced).length ?? 0),
+    0
+  );
+  return `<span class="cat-later" title="Later headings of IDs already listed in this catalogue, attached to their entries">+${later} later ${later === 1 ? "heading" : "headings"}${unmarked ? ` (${unmarked} unmarked)` : ""}</span>`;
 }
 
 function tagClass(tag: string): string {

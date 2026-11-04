@@ -12,6 +12,29 @@ export interface CatalogueEntry {
   ref?: string;
   /** Whether entry is grounded (has REF to Ground Truth doc) */
   grounded: boolean;
+  /**
+   * Later headings of this entry's ID in the same catalogue, in document order:
+   * updates, addenda, recurrences, status flips — or, rarely, a genuine reuse of
+   * the ID for something unrelated. They are not entries of their own and are
+   * not counted (#72). Absent when the ID has one heading.
+   */
+  continuations?: EntryContinuation[];
+}
+
+/** A later heading of an entry's ID (see CatalogueEntry.continuations). */
+export interface EntryContinuation {
+  /** Heading level: 2 for `## …`, 3 for `### …`. */
+  level: 2 | 3;
+  /** The heading's title (text after the ID), as an entry title is parsed. */
+  title: string;
+  /**
+   * True when the heading names itself a continuation right after the ID
+   * ("X1 UPDATE …", "X1 ADDENDUM …"). False headings are still continuations,
+   * but nothing in them says so: the place to look for a reused ID.
+   */
+  announced: boolean;
+  /** Status tags this heading's own text carries. */
+  tags: string[];
 }
 
 export interface Catalogue {

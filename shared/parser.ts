@@ -1,4 +1,4 @@
-import type { CatalogueEntry, MemoryEntry } from "./types";
+import type { CatalogueEntry, EntryContinuation, MemoryEntry } from "./types";
 
 // Known tags to extract from entry content
 const KNOWN_TAGS = [
@@ -28,9 +28,9 @@ export function parseCatalogueEntries(
   // where a tag word is prose ("…IS A BLIND SPOT THE DAY…").
   const headerTags = !catalogueName || HEADER_STATUS_CATALOGUES.includes(catalogueName);
   const entries: CatalogueEntry[] = [];
-  // Where each ID's kept entry sits, and whether its heading announces itself
-  // as a continuation ("<id> UPDATE …") rather than the entry proper.
-  const seenIds = new Map<string, { index: number; announced: boolean }>();
+  // Where each ID's kept entry sits, and its own heading's level and whether
+  // that heading announces itself as a continuation ("<id> UPDATE …").
+  const seenIds = new Map<string, { index: number; level: 2 | 3; announced: boolean }>();
   // Split into entry blocks by h2 or h3 headers
   const entryPattern = /^(#{2,3})\s+(.+)$/gm;
   const headerMatches: { level: string; text: string; index: number }[] = [];
@@ -56,12 +56,22 @@ export function parseCatalogueEntries(
     );
 
     const entry = parseEntryBlock(header.text.trim(), body, headerTags);
-    // Fold an h3 sub-section that repeats an entry's ID back into that entry —
-    // e.g. an h3 "### SP107 — ORIGINAL FRAMING (SUPERSEDED)" audit block beneath
-    // the "## SP107:" entry is not a separate entry. Only h3 repeats are folded:
-    // two h2 headers sharing an ID are BOTH kept — that's a duplicate-ID data
-    // error the framework counts too, and the tree should surface it, not
-    // silently merge it away.
+    if (!entry) continue;
+    // ONE ENTRY PER ID. A later heading of an ID already listed in this
+    // catalogue, at either level, is a continuation of that entry — an update,
+    // addendum, recurrence, status flip — not an entry of its own (#72). This is
+    // anvi's own rule: its catalogue parser (parseEntries in hooks/currency.js)
+    // numbers every later heading of an ID as occurrence > 1, and its
+    // session-start count skips those. So AnviDeck's entry counts are counts of
+    // distinct IDs, matching that count — not anvi's CLI `catalogue-status`
+    // counter (countCatalogueEntries in bin/anvi-tools.cjs), which counts every
+    // `## <id>` heading and so counts each level-2 update again.
+    //
+    // A continuation is kept on its entry (`continuations`), not dropped: an ID
+    // genuinely reused for something unrelated still shows up there, under its
+    // own heading. Nothing in the text separates such a reuse from an update
+    // that names no update word, so the reader judges; the tree marks the
+    // headings that do not announce themselves.
     //
     // Which heading of a repeated ID is the entry: the first one, unless it
     // announces itself as a continuation and a later one does not. An update can
@@ -69,24 +79,39 @@ export function parseCatalogueEntries(
     // "### <id> UPDATE" headings on top of "### <id>: … fatality test TRIPPED");
     // keeping the first heading there kept an update's header and lost the
     // entry's own status.
-    if (entry) {
-      const announced = announcesContinuation(header.text.trim());
-      const seen = seenIds.get(entry.id);
-      if (!seen) {
-        seenIds.set(entry.id, { index: entries.length, announced });
-        entries.push(entry);
-      } else if (header.level.length === 3) {
-        if (seen.announced && !announced) {
-          entries[seen.index] = entry;
-          seen.announced = false;
-        }
-      } else {
-        entries.push(entry);
-      }
+    const level = header.level.length === 2 ? 2 : 3;
+    const announced = announcesContinuation(header.text.trim());
+    const seen = seenIds.get(entry.id);
+    if (!seen) {
+      seenIds.set(entry.id, { index: entries.length, level, announced });
+      entries.push(entry);
+      continue;
+    }
+    const kept = entries[seen.index]!;
+    if (seen.announced && !announced) {
+      // This heading is the entry proper; the announced heading above it and
+      // every continuation gathered so far become its continuations, in order.
+      entry.continuations = [
+        asContinuation(kept, seen.level, true),
+        ...(kept.continuations ?? []),
+      ];
+      entries[seen.index] = entry;
+      seen.level = level;
+      seen.announced = false;
+    } else {
+      (kept.continuations ??= []).push(asContinuation(entry, level, announced));
     }
   }
 
   return entries;
+}
+
+function asContinuation(
+  entry: CatalogueEntry,
+  level: 2 | 3,
+  announced: boolean
+): EntryContinuation {
+  return { level, title: entry.title, announced, tags: entry.tags };
 }
 
 /**
@@ -123,9 +148,10 @@ export function entryIdFromHeader(
  * "X7 (AMENDMENT) …". "X1: Update loop" is an entry whose title starts with a
  * word, not an update.
  *
- * Only used to choose WHICH of several headings sharing an ID is the entry; it
- * never decides that a heading is a continuation on its own (most continuations
- * name no such word, which is why the first heading still wins by default).
+ * Used to choose WHICH of several headings sharing an ID is the entry, and to
+ * mark a continuation as announced for display; it never decides that a heading
+ * is a continuation on its own — position does (most continuations name no such
+ * word, which is why the first heading still wins by default).
  * Measured 2026-11-05 over the store's 76 catalogues: of 7,861 IDs, exactly two
  * (both in one boundary map) have a first heading of this form with a plain
  * heading later. Headings like "X3 — …" or "X3. …" are not announced, so an
