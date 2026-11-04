@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, type UUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import type {
@@ -9,6 +9,7 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import { AgentRegistry, LIVE_STATUSES, type AgentRecord, type AgentStatus, type TranscriptLine } from "./registry";
 import { explainStartFailure, loginOnlyEnv, resolveClaude, type AgentEnv, type ClaudeBinary } from "./login";
+import { messagesIn, parseMessageRequest, renderForAgent, type SentMessage } from "../../shared/agent-messages";
 
 /**
  * The agent host (#75): the only code in AnviDeck that runs agents. Each agent is a Claude Code
@@ -17,9 +18,11 @@ import { explainStartFailure, loginOnlyEnv, resolveClaude, type AgentEnv, type C
  * Seams left for the issues that build on this:
  *  - permissions (#77): canUseTool parks every request the owner's own rules did not settle in
  *    `pending`; the agent shows "waiting" until answerPermission() settles it.
- *  - talking to an agent (#79): the prompt is a message stream (MessageQueue); send() adds to it
- *    while a turn is running. Today the stream is closed when a turn's result arrives, so the
- *    Claude Code process exits and the agent is resumed for its next turn.
+ *  - talking to an agent (#79): the prompt is a message stream (MessageQueue); message() adds to
+ *    it while the agent runs, each message carrying its own uuid so Claude Code's reports name it
+ *    (see deliveryIn). The stream is closed once a turn's result has arrived AND every message
+ *    sent has been taken in, so the Claude Code process exits and the agent is resumed for its
+ *    next turn. A message to an agent with no open stream is refused (409, resumable), never dropped.
  *  - guarding and logging actions (#76): the routes refuse other pages' writes; the token and the
  *    action log are #76's.
  */
@@ -30,9 +33,34 @@ export type QueryFn = (params: {
 }) => AsyncIterable<SDKMessage> & { close?: () => void };
 
 export class HostError extends Error {
-  constructor(readonly status: 400 | 404 | 409 | 429 | 503, message: string) {
+  /** `detail` is sent beside `error` in the response body (e.g. `resumable` on a refused message). */
+  constructor(readonly status: 400 | 404 | 409 | 429 | 503, message: string, readonly detail?: Record<string, unknown>) {
     super(message);
   }
+}
+
+/**
+ * What a frame from Claude Code says about a message AnviDeck sent with `uuid`.
+ * Two sources, both read off the frame as Claude Code wrote it:
+ *  - `command_lifecycle` frames ({ command_uuid, state }): Claude Code 2.1.318 emits one per
+ *    state change of a queued message that carried a uuid; "started" means a turn took it in
+ *    (mid-turn, between tool calls, or as the next turn). Not in the SDK's SDKMessage union, so
+ *    read loosely; the states are those of the CLI's own schema for the frame.
+ *  - `user_message_uuid` / `user_message_uuids` on assistant and result frames (sdk.d.ts: "client
+ *    uuids of every user message whose prompt this turn consumed"), the documented fallback.
+ */
+export function deliveryIn(m: unknown): { delivered: string[]; refused: { uuid: string; state: string }[] } {
+  const delivered: string[] = [];
+  const refused: { uuid: string; state: string }[] = [];
+  if (!m || typeof m !== "object") return { delivered, refused };
+  const f = m as Record<string, unknown>;
+  if (f.type === "command_lifecycle" && typeof f.command_uuid === "string") {
+    if (f.state === "started" || f.state === "completed") delivered.push(f.command_uuid);
+    else if (f.state === "cancelled" || f.state === "discarded" || f.state === "refused") refused.push({ uuid: f.command_uuid, state: f.state });
+  }
+  if (typeof f.user_message_uuid === "string") delivered.push(f.user_message_uuid);
+  if (Array.isArray(f.user_message_uuids)) for (const u of f.user_message_uuids) if (typeof u === "string") delivered.push(u);
+  return { delivered, refused };
 }
 
 /** A prompt stream: user messages pushed in arrive at the agent in order; end() closes it. */
@@ -45,12 +73,14 @@ export class MessageQueue implements AsyncIterable<SDKUserMessage> {
     return !this.ended;
   }
 
-  push(text: string): boolean {
+  /** `uuid` lets Claude Code report the message's delivery by name (see deliveryIn). */
+  push(text: string, uuid?: UUID): boolean {
     if (this.ended) return false;
     const msg: SDKUserMessage = {
       type: "user",
       message: { role: "user", content: text },
       parent_tool_use_id: null,
+      ...(uuid ? { uuid } : {}),
     };
     if (this.waiting) {
       const w = this.waiting;
@@ -105,6 +135,14 @@ interface Live {
   ending?: { status: "stopped" | "failed"; reason: string };
   pending: Map<string, PendingPermission & { resolve: (r: PermissionResult) => void }>;
   stderrTail: string;
+  /** Messages sent to this run that Claude Code has not yet taken in (their uuids). */
+  undelivered: Set<string>;
+  /**
+   * The last turn's result, while it waits for undelivered messages: the stream stays open
+   * (Claude Code runs a queued message as its next turn) and the status is applied only once
+   * nothing is left undelivered.
+   */
+  turnOver?: { status: "done" | "failed"; reason?: string };
 }
 
 export type HostEvent =
@@ -156,6 +194,12 @@ export class AgentHost {
       const last = lines.length ? lines[lines.length - 1].seq : 0;
       a.messageCount = Math.max(a.messageCount, last);
       this.seq.set(a.id, a.messageCount);
+      // A message still queued when the last server went away never reached the agent: say so.
+      for (const s of messagesIn(lines)) {
+        if (s.state === "queued") {
+          this.record(a.id, "host", { event: "message-not-delivered", messageId: s.messageId, reason: "AnviDeck restarted before the agent read it" });
+        }
+      }
     }
     // Agents that were live before a restart are now stopped: write that down.
     if (this.agents.size) this.persist();
@@ -248,10 +292,40 @@ export class AgentHost {
     return this.view(rec);
   }
 
-  /** Add a message to a running turn (#79 builds on this). False when no turn is open. */
-  send(id: string, text: string): boolean {
+  /**
+   * Send a message or a line comment to a running agent (#79). It is queued on the agent's
+   * prompt stream and arrives on its next turn (or mid-turn, between tool calls); the transcript
+   * records it as sent, then delivered or not delivered. An agent with no open stream (finished,
+   * failed, stopped, or ending) refuses with 409 and says whether it can be resumed instead.
+   */
+  message(id: string, body: Record<string, unknown>): { agent: AgentView; message: SentMessage } {
+    const rec = this.agents.get(id);
+    if (!rec) throw new HostError(404, `no agent ${id}`);
+    const req = parseMessageRequest(body);
+    if ("error" in req) throw new HostError(400, req.error);
     const live = this.live.get(id);
-    return live ? live.input.push(text) : false;
+    if (!live || live.ending || !live.input.open) {
+      const why = live?.ending
+        ? `the agent is being ${live.ending.status === "stopped" ? "stopped" : "ended"} (${live.ending.reason})`
+        : live
+          ? `the agent has finished its turn (${rec.status}) and is exiting`
+          : `the agent is not running (${rec.status}${rec.reason ? `: ${rec.reason}` : ""})`;
+      const resumable = rec.sessionId !== undefined;
+      throw new HostError(409, `${why}; the message was not sent${resumable ? ". Resume the agent with it instead" : ", and the agent never reached Claude Code, so it cannot be resumed"}`, {
+        resumable,
+        status: rec.status,
+      });
+    }
+    const messageId = randomUUID();
+    const text = renderForAgent(req);
+    const said = req.kind === "text" ? req.text : req.comment.text;
+    const comment = req.kind === "comment" ? { file: req.comment.file, line: req.comment.line, lineText: req.comment.lineText } : undefined;
+    // Recorded before it is pushed: a fake (or very fast) Claude Code may report it at once.
+    const line = this.record(id, "host", { event: "message-sent", messageId, said, comment, text });
+    live.undelivered.add(messageId);
+    live.input.push(text, messageId);
+    this.changed(rec);
+    return { agent: this.view(rec), message: { messageId, said, comment, text, sentAt: line.at, state: "queued" } };
   }
 
   /** Settle a parked permission request (#77 builds on this). */
@@ -308,6 +382,7 @@ export class AgentHost {
       sawResult: false,
       pending: new Map(),
       stderrTail: "",
+      undelivered: new Set(),
     };
     // Registered before any await, so two starts in one tick cannot both pass the cap.
     this.live.set(rec.id, live);
@@ -365,6 +440,7 @@ export class AgentHost {
 
   /** What each SDK message means for the agent's status. */
   private ingest(rec: AgentRecord, live: Live, m: SDKMessage): void {
+    if (live.undelivered.size) this.noteDelivery(rec, live, m);
     if (m.type === "system" && m.subtype === "init") {
       live.sawInit = true;
       rec.sessionId = m.session_id;
@@ -385,21 +461,49 @@ export class AgentHost {
     if (m.type === "result") {
       live.sawResult = true;
       rec.costEstimateUsd = m.total_cost_usd;
-      // The turn is over: close the prompt stream so the process exits (see header).
-      live.input.end();
       if (!live.sawInit) {
-        rec.status = "failed";
-        rec.reason = "Claude Code ended before it said which login it was using";
+        live.turnOver = { status: "failed", reason: "Claude Code ended before it said which login it was using" };
       } else if (m.subtype === "success" && !m.is_error) {
-        rec.status = "done";
-        rec.reason = undefined;
+        live.turnOver = { status: "done" };
       } else {
-        rec.status = "failed";
         const detail = m.subtype === "success" ? m.result : (m.errors ?? []).join("; ");
-        rec.reason = `Claude Code reported ${m.subtype}${detail ? `: ${String(detail).slice(0, 300)}` : ""}`;
+        live.turnOver = { status: "failed", reason: `Claude Code reported ${m.subtype}${detail ? `: ${String(detail).slice(0, 300)}` : ""}` };
       }
-      this.changed(rec);
+      if (!this.maybeEndTurn(rec, live)) this.changed(rec);
     }
+  }
+
+  /**
+   * The turn is over and nothing sent is still waiting: close the prompt stream so the process
+   * exits (see header), and take the turn's status. True when it did.
+   */
+  private maybeEndTurn(rec: AgentRecord, live: Live): boolean {
+    if (!live.turnOver || live.undelivered.size || !live.input.open || live.ending) return false;
+    live.input.end();
+    rec.status = live.turnOver.status;
+    rec.reason = live.turnOver.reason;
+    this.changed(rec);
+    return true;
+  }
+
+  /** Mark messages Claude Code reports as taken in (or turned away) by this frame. */
+  private noteDelivery(rec: AgentRecord, live: Live, m: unknown): void {
+    const { delivered, refused } = deliveryIn(m);
+    let any = false;
+    for (const u of delivered) {
+      if (!live.undelivered.delete(u)) continue;
+      any = true;
+      const by = (m as { type?: string }).type === "command_lifecycle" ? "started" : String((m as { type?: string }).type);
+      this.record(rec.id, "host", { event: "message-delivered", messageId: u, by });
+      // A message that starts its own turn after the last result reopens the run.
+      live.turnOver = undefined;
+    }
+    for (const r of refused) {
+      if (!live.undelivered.delete(r.uuid)) continue;
+      any = true;
+      this.record(rec.id, "host", { event: "message-not-delivered", messageId: r.uuid, reason: `Claude Code ${r.state} it before the agent read it` });
+    }
+    if (any && !this.maybeEndTurn(rec, live)) this.changed(rec);
   }
 
   private park(
@@ -460,9 +564,16 @@ export class AgentHost {
     for (const p of live.pending.values()) p.resolve({ behavior: "deny", message: "agent ended", interrupt: true });
     live.pending.clear();
     live.input.end();
+    const why = live.ending ? live.ending.reason : "the agent's run ended before it read the message";
+    for (const u of live.undelivered) this.record(rec.id, "host", { event: "message-not-delivered", messageId: u, reason: why });
+    live.undelivered.clear();
     if (live.ending) {
       rec.status = live.ending.status;
       rec.reason = live.ending.reason;
+    } else if (live.turnOver && error === undefined) {
+      // Claude Code exited after a result while a message was still waiting: the result stands.
+      rec.status = live.turnOver.status;
+      rec.reason = live.turnOver.reason;
     } else if (error !== undefined || !live.sawResult) {
       const msg = error instanceof Error ? error.message : error !== undefined ? String(error) : "Claude Code exited without a result";
       const detail = live.stderrTail.trim() ? `${msg} | ${live.stderrTail.trim().slice(-300)}` : msg;
@@ -499,7 +610,7 @@ export class AgentHost {
     }
   }
 
-  private record(id: string, from: "sdk" | "host", message: unknown): void {
+  private record(id: string, from: "sdk" | "host", message: unknown): TranscriptLine {
     const seq = (this.seq.get(id) ?? 0) + 1;
     this.seq.set(id, seq);
     const rec = this.agents.get(id);
@@ -511,5 +622,6 @@ export class AgentHost {
       console.error(`[agents] could not write transcript for ${id}: ${(e as Error).message}`);
     }
     this.emitFn({ type: "agent-message", data: { id, line } });
+    return line;
   }
 }
