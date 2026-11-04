@@ -2413,6 +2413,7 @@ button:focus-visible {
 .brain-selection-bar { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: linear-gradient(135deg, rgba(124, 140, 245, 0.06), rgba(124, 140, 245, 0.1)); backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur)); border: 1px solid rgba(124, 140, 245, 0.3); border-radius: var(--radius); font-size: 11px; margin-top: auto; flex-shrink: 0; box-shadow: 0 -2px 16px var(--glow-accent); }
 .sel-info { flex: 1; color: var(--text-0); line-height: 1.5; }
 .sel-id { font-weight: 700; }
+.sel-cat { color: var(--text-2); font-size: 0.9em; }
 .sel-clear { background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: var(--radius); color: var(--text-2); font-family: var(--font-mono); font-size: 10px; padding: 3px 10px; cursor: pointer; transition: all 0.2s; flex-shrink: 0; }
 .sel-clear:hover { color: var(--text-0); background: rgba(255, 255, 255, 0.08); border-color: rgba(255, 255, 255, 0.15); }
 

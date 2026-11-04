@@ -69,7 +69,11 @@ function buildRows(): void {
           continue;
         }
 
-        // Check if this entry was fired in this session
+        // Check if this entry was fired in this session. Matched by ID alone on
+        // purpose: the hook log records bare IDs scraped from boundary text
+        // (patterns: H/P/SP…, invariants: V/SV…), never the catalogue holding
+        // them, so when one project uses an ID in two catalogues (a vyapti
+        // invariant and its dharana alignment note) a fire is credited to both.
         let fireCount = 0;
         const session = state.hookSessions.find((s) => s.sid === sid);
         if (session) {

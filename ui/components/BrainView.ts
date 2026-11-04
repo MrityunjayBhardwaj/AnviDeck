@@ -14,15 +14,27 @@ import type {
   EntryDates,
 } from "../../shared/types";
 import type { Nav } from "../app";
+import {
+  type EntryRef,
+  entryKey,
+  refMatches,
+  sameRef,
+  findEntries,
+  findTraces,
+  refFromId,
+  sharedIds,
+} from "./brain-model";
 
 // ============================================================
 // State
 // ============================================================
 
-interface Selection {
-  type: "entry" | "boundary" | "artifact";
-  id: string;
-}
+// An entry is named by catalogue and ID (one ID can be used in two catalogues);
+// boundaries and artifacts by their ID.
+type Selection =
+  | { type: "entry"; ref: EntryRef }
+  | { type: "boundary"; id: string }
+  | { type: "artifact"; id: string };
 
 interface BrainState {
   projectName: string | null;
@@ -138,32 +150,47 @@ export function addBrainRouteEvent(entry: RouteLogEntry): void {
 // Selection helpers
 // ============================================================
 
-function select(type: Selection["type"], id: string): void {
-  if (S.selection?.type === type && S.selection?.id === id) {
-    S.selection = null;
-  } else {
-    S.selection = { type, id };
-  }
+function select(type: "boundary" | "artifact", id: string): void {
+  S.selection = isSelected(type, id) ? null : { type, id };
   renderCb?.();
 }
 
-function isSelected(type: Selection["type"], id: string): boolean {
-  return S.selection?.type === type && S.selection?.id === id;
+function selectEntry(ref: EntryRef): void {
+  S.selection = isEntrySelected(ref) ? null : { type: "entry", ref };
+  renderCb?.();
 }
 
-function isHighlighted(entryId: string): boolean {
-  if (!S.selection) return true;
-  if (S.selection.type === "entry" && S.selection.id === entryId) return true;
-  if (S.selection.type === "boundary") {
+/** Select an entry named by its ID alone (the hook log): pinned when one catalogue holds it. */
+function selectEntryById(id: string): void {
+  selectEntry(refFromId(S.project?.catalogues ?? [], id));
+}
+
+function isSelected(type: "boundary" | "artifact", id: string): boolean {
+  return S.selection?.type === type && S.selection.id === id;
+}
+
+function isEntrySelected(ref: EntryRef): boolean {
+  return S.selection?.type === "entry" && sameRef(S.selection.ref, ref);
+}
+
+/** The ID the current selection names, for sources that record IDs only (the hook log). */
+function selectedEntryId(): string | null {
+  return S.selection?.type === "entry" ? S.selection.ref.id : null;
+}
+
+function isHighlighted(catalogue: string, entryId: string): boolean {
+  const sel = S.selection;
+  if (!sel) return true;
+  if (sel.type === "entry") return refMatches(sel.ref, catalogue, entryId);
+  if (sel.type === "boundary") {
     const nodes = S.project ? buildBoundaryNodes(S.project) : [];
-    const node = nodes.find((n) => n.id === S.selection!.id);
-    return node ? node.linkedEntries.includes(entryId) : false;
+    const node = nodes.find((n) => n.id === sel.id);
+    return node ? node.linkedEntries.includes(entryKey(catalogue, entryId)) : false;
   }
-  if (S.selection.type === "artifact" && S.githubTrace) {
+  if (sel.type === "artifact" && S.githubTrace) {
     for (const et of S.githubTrace.entries) {
-      for (const a of et.artifacts) {
-        if (a.id === S.selection.id && et.entryId === entryId) return true;
-      }
+      if (et.catalogue !== catalogue || et.entryId !== entryId) continue;
+      if (et.artifacts.some((a) => a.id === sel.id)) return true;
     }
   }
   return false;
@@ -191,7 +218,8 @@ function buildBoundaryNodes(project: ProjectState): BrainBoundaryNode[] {
     for (const entry of cat.entries) {
       for (const ref of extractBoundaryRefs(entry)) {
         const node = nodes.find((n) => n.id === ref);
-        if (node) { node.patternCount++; if (!node.linkedEntries.includes(entry.id)) node.linkedEntries.push(entry.id); }
+        const key = entryKey(cat.name, entry.id);
+        if (node) { node.patternCount++; if (!node.linkedEntries.includes(key)) node.linkedEntries.push(key); }
       }
     }
   }
@@ -277,13 +305,14 @@ function renderProjectMode(project: ProjectState): HTMLElement {
       const list = document.createElement("div");
       list.className = "stratum-list";
       for (const entry of stratum.entries) {
-        const hl = isHighlighted(entry.id);
+        const ref: EntryRef = { catalogue: stratum.catalogue, id: entry.id };
+        const hl = isHighlighted(stratum.catalogue, entry.id);
         const row = document.createElement("div");
-        row.className = `stratum-entry${hl ? "" : " dimmed"}${isSelected("entry", entry.id) ? " sel" : ""}`;
+        row.className = `stratum-entry${hl ? "" : " dimmed"}${isEntrySelected(ref) ? " sel" : ""}`;
         const refs = extractBoundaryRefs(entry).map((r) => `<span class="boundary-dot">${r}</span>`).join("");
         const tags = entry.tags.filter((t) => ["FATALITY", "MISALIGNED", "BLIND SPOT"].includes(t)).map((t) => `<span class="entry-tag" style="color:${sevColor({ tags: [t] } as CatalogueEntry)}">${t}</span>`).join("");
         row.innerHTML = `<span class="entry-id" style="color:${sevColor(entry)}">${entry.id}</span><span class="entry-title">${entry.title}</span>${refs ? `<span class="entry-boundary-refs">${refs}</span>` : ""}${tags}`;
-        row.addEventListener("click", () => select("entry", entry.id));
+        row.addEventListener("click", () => selectEntry(ref));
         list.appendChild(row);
       }
       col.appendChild(list);
@@ -338,9 +367,9 @@ function renderProjectMode(project: ProjectState): HTMLElement {
     for (const [eid, count] of sortedEntries) {
       const w = Math.max((count / maxEFires) * 100, 3);
       const row = document.createElement("div");
-      row.className = `flow-agg-bar-row${isSelected("entry", eid) ? " sel" : ""}`;
+      row.className = `flow-agg-bar-row${selectedEntryId() === eid ? " sel" : ""}`;
       row.innerHTML = `<span class="flow-agg-bid">${eid}</span><div class="flow-agg-bar"><div class="flow-agg-bar-fill" style="width:${w}%;background:var(--cyan)"></div></div><span class="flow-agg-count">${count}</span>`;
-      row.addEventListener("click", () => select("entry", eid));
+      row.addEventListener("click", () => selectEntryById(eid));
       entriesDiv.appendChild(row);
     }
     flowGrid.appendChild(entriesDiv);
@@ -370,7 +399,7 @@ function renderProjectMode(project: ProjectState): HTMLElement {
     ghSec.innerHTML += `<div class="brain-empty-inline">Loading GitHub trace...</div>`;
   } else if (S.githubTrace && S.githubTrace.entries.length > 0) {
     const linked = S.githubTrace.entries.filter((e) => e.artifacts.length > 0);
-    const filtered = S.selection ? linked.filter((e) => isHighlighted(e.entryId)) : linked;
+    const filtered = S.selection ? linked.filter((e) => isHighlighted(e.catalogue, e.entryId)) : linked;
     const list = document.createElement("div");
     list.className = "brain-gh-list";
     for (const et of filtered.slice(0, 8)) {
@@ -421,7 +450,7 @@ function renderProjectMode(project: ProjectState): HTMLElement {
       const x = 4 + ((dated[i].ts - minTs) / span) * 290;
       const y = 72 - ((i + 1) / dated.length) * 62;
       pts.push(`${x.toFixed(1)},${y.toFixed(1)}`);
-      const hl = isHighlighted(dated[i].id);
+      const hl = isHighlighted(dated[i].catalogue, dated[i].id);
       const circle = document.createElementNS(svgNS, "circle");
       circle.setAttribute("cx", x.toFixed(1));
       circle.setAttribute("cy", y.toFixed(1));
@@ -452,9 +481,9 @@ function renderProjectMode(project: ProjectState): HTMLElement {
       mList.className = "evo-moments";
       for (const m of moments.slice(0, 4)) {
         const mEl = document.createElement("div");
-        mEl.className = `evo-moment-row${isHighlighted(m.id) ? "" : " dimmed"}`;
+        mEl.className = `evo-moment-row${isHighlighted(m.catalogue, m.id) ? "" : " dimmed"}`;
         mEl.innerHTML = `<span class="evo-star">★</span><span class="evo-entry-id">${m.id}</span><span class="evo-tags" style="color:${m.tags.includes("FATALITY") ? "var(--red)" : "var(--yellow)"}">${m.tags.filter((t) => ["FATALITY", "MISALIGNED", "BLIND SPOT"].includes(t)).join(", ")}</span>`;
-        mEl.addEventListener("click", () => select("entry", m.id));
+        mEl.addEventListener("click", () => selectEntry({ catalogue: m.catalogue, id: m.id }));
         mList.appendChild(mEl);
       }
       evoSec.appendChild(mList);
@@ -603,7 +632,9 @@ function renderSessionMode(): HTMLElement {
     const left = toFrac(ev.ts) * 100;
     const h = Math.max((ev.patterns.length / maxPatterns) * 100, 15);
     const inWindow = toFrac(ev.ts) >= S.obsStart && toFrac(ev.ts) <= S.obsEnd;
-    const matchesSelection = !S.selection || (S.selection.type === "entry" && ev.patterns.includes(S.selection.id)) || (S.selection.type === "boundary" && ev.label.includes(S.selection.id));
+    // Hook fires record bare IDs (no catalogue), so an entry selection matches them by ID.
+    const selId = selectedEntryId();
+    const matchesSelection = !S.selection || (selId !== null && ev.patterns.includes(selId)) || (S.selection.type === "boundary" && ev.label.includes(S.selection.id));
 
     const spike = document.createElement("div");
     spike.className = `spike-mark${ev.fatality ? " fatality" : ""}${inWindow ? " in-window" : ""}${matchesSelection ? "" : " dimmed"}`;
@@ -841,7 +872,7 @@ function renderSessionMode(): HTMLElement {
       for (const [bid, info] of boundaryMap) {
         const patternsSlice = info.patterns.slice(0, 5);
         const patternSpans = patternsSlice.map((p) => {
-          const hl = !S.selection || (S.selection.type === "entry" && S.selection.id === p);
+          const hl = !S.selection || selectedEntryId() === p;
           return `<span class="prompt-pattern${hl ? "" : " dimmed"}" data-id="${p}">${p}</span>`;
         }).join(", ");
         boundaryHtml += `<div class="prompt-boundary-fire"><span class="prompt-bid${isSelected("boundary", bid) ? " sel" : ""}" data-bid="${bid}">${bid}</span>${patternSpans ? ` → ${patternSpans}` : ""}${info.fatality ? ' <span class="fatality-tag">FATALITY</span>' : ""}</div>`;
@@ -860,7 +891,7 @@ function renderSessionMode(): HTMLElement {
 
       // Click handlers
       card.querySelectorAll(".prompt-pattern").forEach((span) => {
-        span.addEventListener("click", (e) => { e.stopPropagation(); select("entry", (span as HTMLElement).dataset.id!); });
+        span.addEventListener("click", (e) => { e.stopPropagation(); selectEntryById((span as HTMLElement).dataset.id!); });
       });
       card.querySelectorAll(".prompt-bid").forEach((span) => {
         span.addEventListener("click", (e) => { e.stopPropagation(); select("boundary", (span as HTMLElement).dataset.bid!); });
@@ -886,21 +917,33 @@ function renderSelectionBar(): HTMLElement | null {
 
   let info = "";
   if (S.selection.type === "entry") {
-    const id = S.selection.id;
-    // Find entry
-    let entryTitle = "";
-    let entryCat = "";
-    for (const cat of S.project?.catalogues ?? []) {
-      const e = cat.entries.find((e) => e.id === id);
-      if (e) { entryTitle = e.title; entryCat = cat.name; break; }
-    }
-    const boundaryRefs = S.project ? buildBoundaryNodes(S.project).filter((n) => n.linkedEntries.includes(id)).map((n) => n.id).join(", ") : "";
+    const ref = S.selection.ref;
+    const id = ref.id;
+    const catalogues = S.project?.catalogues ?? [];
+    const matches = findEntries(catalogues, ref);
+    const shared = sharedIds(catalogues).has(id);
+    // The hook log records the ID only, so fires cannot be split between two
+    // catalogues that use the same ID; say so rather than credit one of them.
     const fires = S.flowEvents.filter((e) => e.patterns.includes(id)).length;
-    const createdAt = S.dates[entryCat]?.[id]?.created;
-    const created = createdAt ? new Date(createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "?";
-    const ghLinks = S.githubTrace?.entries.find((e) => e.entryId === id)?.artifacts.slice(0, 3).map((a) => a.id).join(" ") ?? "";
+    const firesText = `${fires} fires${shared ? " (by ID: the hook log does not name the catalogue)" : ""}`;
+    const nodes = S.project ? buildBoundaryNodes(S.project) : [];
 
-    info = `<span class="sel-id" style="color:${CAT_COLORS[entryCat] ?? "var(--text-1)"}">${id}</span> ${entryTitle}${boundaryRefs ? ` · ${boundaryRefs}` : ""} · ${fires} fires · Created ${created}${ghLinks ? ` · ${ghLinks}` : ""}`;
+    if (matches.length === 1) {
+      const { catalogue: entryCat, entry } = matches[0]!;
+      const key = entryKey(entryCat, id);
+      const boundaryRefs = nodes.filter((n) => n.linkedEntries.includes(key)).map((n) => n.id).join(", ");
+      const createdAt = S.dates[entryCat]?.[id]?.created;
+      const created = createdAt ? new Date(createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "?";
+      const ghLinks = findTraces(S.githubTrace?.entries ?? [], { catalogue: entryCat, id })
+        .flatMap((t) => t.artifacts).slice(0, 3).map((a) => a.id).join(" ");
+      info = `<span class="sel-id" style="color:${CAT_COLORS[entryCat] ?? "var(--text-1)"}">${id}</span>${shared ? ` <span class="sel-cat">${entryCat}</span>` : ""} ${entry.title}${boundaryRefs ? ` · ${boundaryRefs}` : ""} · ${firesText} · Created ${created}${ghLinks ? ` · ${ghLinks}` : ""}`;
+    } else if (matches.length > 1) {
+      // Named by ID alone (from a hook fire) and held by several catalogues: list each.
+      const each = matches.map((m) => `<span style="color:${CAT_COLORS[m.catalogue] ?? "var(--text-1)"}">${m.catalogue}</span> ${m.entry.title}`).join(" · ");
+      info = `<span class="sel-id" style="color:var(--text-1)">${id}</span> in ${matches.length} catalogues: ${each} · ${firesText}`;
+    } else {
+      info = `<span class="sel-id" style="color:var(--text-1)">${id}</span> not in this project's catalogues · ${firesText}`;
+    }
   } else if (S.selection.type === "boundary") {
     const id = S.selection.id;
     const node = S.project ? buildBoundaryNodes(S.project).find((n) => n.id === id) : null;
@@ -909,12 +952,16 @@ function renderSelectionBar(): HTMLElement | null {
   } else if (S.selection.type === "artifact") {
     const id = S.selection.id;
     // Find which entries link to this artifact
+    const shared = sharedIds(S.project?.catalogues ?? []);
     const linkedEntries: string[] = [];
+    const seen = new Set<string>();
     if (S.githubTrace) {
       for (const et of S.githubTrace.entries) {
-        for (const a of et.artifacts) {
-          if (a.id === id && !linkedEntries.includes(et.entryId)) linkedEntries.push(et.entryId);
-        }
+        const key = entryKey(et.catalogue, et.entryId);
+        if (seen.has(key) || !et.artifacts.some((a) => a.id === id)) continue;
+        seen.add(key);
+        const label = shared.has(et.entryId) ? `${et.entryId} (${et.catalogue})` : et.entryId;
+        linkedEntries.push(`<span style="color:${CAT_COLORS[et.catalogue] ?? "var(--text-1)"}">${label}</span>`);
       }
     }
     info = `<span class="sel-id" style="color:var(--cyan)">${id}</span> → ${linkedEntries.join(", ") || "no entries linked"}`;
