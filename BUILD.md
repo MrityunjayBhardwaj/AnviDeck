@@ -52,7 +52,7 @@ The prototype's frame replaces today's sidebar:
  machine only) ──────┤  GET  /api/...  ──► READERS (server/readers/*)      read-only: files, git, gh │
                      │                                                                              │
                      │  write endpoints ─► origin + token check ─► AGENT HOST ─► Claude Agent SDK    │
-                     │  (planned, #76)          │                  (planned, #75)  query() ──► installed
+                     │  (#76, on main)          │                  (planned, #75)  query() ──► installed
                      │                          └─► action log (AnviDeck's own store folder)  `claude`
                      │  WebSocket /ws  ◄── hook-log watcher (exists); agent message stream (planned)│
                      └──────────────────────────────────────────────────────────────────────────────┘
@@ -69,7 +69,7 @@ The prototype's frame replaces today's sidebar:
 - Keeps a registry of AnviDeck-started agents on disk (id, session id, folder, issue, status). After a server restart each shows as stopped, with its transcript, and can be resumed.
 - Stops an agent, and caps how many run at once.
 - Statuses: starting, working, waiting on you, done, failed, stopped. "Could not start" never shows as "done".
-- Feeds each agent through a stream of user messages, so a message or a diff comment (file, line, the line's text) arrives on its next turn, with delivery shown (#79).
+- Feeds each agent through a stream of user messages, so a message or a diff comment (file, line, the line's text) arrives on its next turn, with delivery shown (#79, on main: `POST /api/agents/:id/message`; a stopped agent answers 409 with `resumable`).
 - Permission callback: a call your rules don't cover is parked on Home's queue and the agent's card with **Allow** / **Deny** (Deny takes an optional message). It survives a page reload, never times out to Allow, and is withdrawn if the agent stops (#77).
 - **Runs on your Claude Code login, never an API key:** `pathToClaudeCodeExecutable` is the installed `claude` (found on PATH, shown on screen); `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL` and the Bedrock/Vertex switches are removed from each agent's environment; an agent whose init message reports an `apiKeySource` other than `none` is stopped at once and never shown as running; the screen shows the login method and plan from `claude auth status` (not the email). A start that fails while Claude Code is replacing its binary says "Claude Code was updating, try again".
 - Spike 2026-11-05 (recorded in #75): SDK 0.3.318 with CLI 2.1.318 under Bun ran on the existing login with `apiKeySource: none`; both SessionStart hooks fired; the permission callback received a Write request and a deny stopped it.

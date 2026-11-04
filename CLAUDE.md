@@ -14,7 +14,7 @@ AnviDeck started as an observability dashboard that only read the framework's fi
 
 - **Readers** (`server/readers/*`, the GET routes in `server/routes/*`, `shared/parser.ts`) are read-only and stay that way. They never write into a project, a catalogue, memory or the anvi store. What they do today besides reading files: spawn `git`, `gh` and `node` to ask questions (log, show, ls-tree, `gh pr view`, `gh search prs`, `gh issue list`, anvi's structure guard), and the structure reader makes a scratch folder under `ANVIDECK_STRUCTURE_TMP` (default `/private/tmp/claude-501/anvideck-structure`) for the guard's temporary checkouts.
 - **The agent host** (planned, #75) is the only code that acts. It runs Claude Code agents through the Claude Agent SDK's `query()`: start, stream, stop, resume, and the permission callback. Every other write AnviDeck makes goes through it or through the action log.
-- A test will fail if a reader imports the agent host or writes a file (#76, planned).
+- A test fails if a reader imports the agent host, the action log or the write guard, or calls a file write API (#76, on `main`: `tests/reader-actor-split.test.ts`; the structure reader's scratch folder is its one listed exemption).
 
 **What AnviDeck will write once the workspace lands** (none of this is on `main` yet):
 - Agent actions: start an agent (#75), in its own worktree and branch for an issue (#78); stop and resume it; answer its permission requests (#77); send it messages and diff comments (#79).
@@ -29,8 +29,8 @@ AnviDeck started as an observability dashboard that only read the framework's fi
 | Guard | Status |
 |---|---|
 | This machine only: listens on `127.0.0.1` unless `HOST` is set; refuses a request whose Host is not a loopback name or whose Origin is another page (`server/access.ts`, `tests/access.test.ts`) | On `main` (#66) |
-| Every write endpoint requires the same origin **and** a per-server token placed in the page; anything else is refused | Planned (#76) |
-| Every action (what, target, result, time) is appended to the action log and shown in History | Planned (#76, #90) |
+| Every write endpoint requires the same origin **and** a per-server token placed in the page; anything else is refused (`server/guard.ts`, installed on the whole app before any route; pages write through `ui/write.ts`; `tests/write-guard.test.ts`) | On `main` (#76) |
+| Every action (what, target, result, time) is appended to the action log (`actions.jsonl` in the agent registry folder; `GET /api/actions`) and shown in History | Logged on `main` (#76); History planned (#90) |
 | Agents run on the installed Claude Code and its claude.ai login, never an API key: API-key and provider variables are removed from each agent's environment, and an agent whose init message reports an `apiKeySource` other than `none` is stopped at once | Planned (#75) |
 | Your normal permission rules apply, as in the terminal; only calls they don't cover come to AnviDeck. A request nobody answers keeps waiting, and a timeout never allows it | Planned (#77) |
 | Agents never merge; Merge is a button only you press | Planned (#78, #85) |
