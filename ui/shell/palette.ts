@@ -2,7 +2,7 @@
  * The ⌘K / Ctrl+K palette (#80). Entries come from palette-model.ts; this file only draws
  * them and handles keys. Pending entries are drawn but cannot be chosen.
  */
-import { filterEntries, type PaletteEntry } from "./palette-model";
+import { filterEntries, initialSelection, type PaletteEntry } from "./palette-model";
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
@@ -47,7 +47,7 @@ export function createPalette(deps: PaletteDeps): { open: () => void; close: () 
         : `<button type="button" class="sh-pal-item" role="option" data-pi="${i}"><span>${esc(e.label)}</span>${hint}</button>`;
     });
     res.innerHTML = html || `<div class="sh-grp">No match</div>`;
-    sel = 0;
+    sel = initialSelection(shown, input.value);
     mark();
   }
 
@@ -94,7 +94,7 @@ export function createPalette(deps: PaletteDeps): { open: () => void; close: () 
       mark();
     } else if (e.key === "ArrowUp" && n) {
       e.preventDefault();
-      sel = (sel - 1 + n) % n;
+      sel = sel <= 0 ? n - 1 : sel - 1;
       mark();
     } else if (e.key === "Enter") {
       e.preventDefault();

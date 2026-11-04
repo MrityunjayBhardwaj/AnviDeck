@@ -189,11 +189,19 @@ export interface Route {
 export function parseRoute(hash: string): Route {
   const raw = hash.replace(/^#/, "");
   const q = raw.indexOf("?");
-  const id = decodeURIComponent(q === -1 ? raw : raw.slice(0, q));
+  const rawId = q === -1 ? raw : raw.slice(0, q);
+  let id: string;
+  try {
+    id = decodeURIComponent(rawId);
+  } catch {
+    // A malformed escape (#%E0) is an unknown screen, never an exception at page load.
+    return { screen: "home", params: new URLSearchParams(), unknown: rawId };
+  }
   const params = new URLSearchParams(q === -1 ? "" : raw.slice(q + 1));
   if (id === "") return { screen: "home", params };
   if (BY_ID.has(id as ScreenId)) return { screen: id as ScreenId, params };
-  if (id in ALIASES) return { screen: ALIASES[id], params };
+  // Own keys only: "constructor" or "__proto__" must not resolve through Object.prototype.
+  if (Object.hasOwn(ALIASES, id)) return { screen: ALIASES[id]!, params };
   return { screen: "home", params: new URLSearchParams(), unknown: id };
 }
 

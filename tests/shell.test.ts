@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { OLDER_VIEWS, PROJECT_TABS, RAIL, SCREENS, hashFor, parseRoute, screen, type ScreenId } from "../ui/shell/routes";
 import { activityCounts, activityText, activityTitle, type StripAgent } from "../ui/shell/activity";
 import { GUARDS, guardsLabel } from "../ui/shell/guards";
-import { filterEntries, fuzzyScore, paletteEntries, screenHash, type PaletteInput } from "../ui/shell/palette-model";
+import { filterEntries, fuzzyScore, initialSelection, paletteEntries, screenHash, type PaletteInput } from "../ui/shell/palette-model";
 
 const agent = (id: string, status: string, pending = 0): StripAgent => ({
   id,
@@ -185,8 +185,54 @@ describe("palette", () => {
     expect(filterEntries(withPaths, "debug").map((x) => x.group)).toEqual(["Commands"]);
     // A hint still lets an entry in when it contains the query as written.
     expect(filterEntries(withPaths, "/private/tmp").map((x) => x.label)).toEqual(["Switch to pkg"]);
-    // Groups keep their order whatever the scores.
+    // Each group's rows stay together (never interleaved), whatever the scores.
     const groups = filterEntries(e, "a").map((x) => x.group);
-    expect(groups).toEqual([...groups].sort((a, b) => ["Screens", "Projects", "Agents", "Issues", "Commands"].indexOf(a) - ["Screens", "Projects", "Agents", "Issues", "Commands"].indexOf(b)));
+    const runs = groups.filter((g, i) => i === 0 || groups[i - 1] !== g);
+    expect(new Set(runs).size).toBe(runs.length);
+  });
+});
+
+describe("review follow-ups: the palette's first row and hashes that must not crash", () => {
+  // Real store names are long dashed paths; their letters spell almost any query when scattered.
+  const realName = "-private-tmp-claude-501--Users-someone-Documents-projects-anvi-826675c1-d0e1-4b2a-9c3d-scratchpad-720-run-pkg";
+  const realInput: PaletteInput = {
+    projects: [{ name: realName, path: "/private/tmp/x" }, { name: "stave", path: "/p/stave" }],
+    currentProject: "stave",
+    hostAgents: [],
+    terminalAgents: [],
+  };
+
+  test("'debug' selects the debug command, not a project whose long name scatters the letters", () => {
+    const rows = filterEntries(paletteEntries(realInput), "debug");
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows[0]!.group).toBe("Commands");
+    expect(rows[0]!.label.toLowerCase()).toContain("debug");
+    // The debug command is pending until #78, so nothing is selected and Enter runs nothing.
+    expect(rows[0]!.pending).toBeTruthy();
+    expect(initialSelection(rows, "debug")).toBe(-1);
+    expect(initialSelection(filterEntries(paletteEntries(realInput), "notes"), "notes")).toBe(0);
+    expect(initialSelection([], "x")).toBe(-1);
+  });
+
+  test("with no query the groups keep their order", () => {
+    const rows = filterEntries(paletteEntries(realInput), "");
+    expect(rows[0]!.group).toBe("Screens");
+  });
+
+  test("a malformed escape in the hash is an unknown screen, not an exception", () => {
+    for (const h of ["#%E0", "#map%", "#%"]) {
+      const r = parseRoute(h);
+      expect(r.screen).toBe("home");
+      expect(r.unknown).toBeDefined();
+    }
+  });
+
+  test("Object.prototype names are not screens", () => {
+    for (const h of ["#constructor", "#toString", "#__proto__", "#hasOwnProperty"]) {
+      const r = parseRoute(h);
+      expect(r.screen).toBe("home");
+      expect(r.unknown).toBe(h.slice(1));
+    }
+    expect(parseRoute("#knowledge").screen).toBe("notes");
   });
 });

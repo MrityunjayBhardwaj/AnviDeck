@@ -128,17 +128,34 @@ function entryScore(e: PaletteEntry, query: string): number | null {
   return q && e.hint?.toLowerCase().includes(q) ? 0 : null;
 }
 
-/** Entries matching the query, best first within each group; group order is kept. */
+/**
+ * Entries matching the query, best first within each group. With no query the groups keep
+ * their order; with a query, the group holding the best match comes first, so the selected
+ * first row is the best match and not a weak one from an earlier group.
+ */
 export function filterEntries(entries: PaletteEntry[], query: string): PaletteEntry[] {
   const groups: PaletteGroup[] = ["Screens", "Projects", "Agents", "Issues", "Commands"];
-  const out: PaletteEntry[] = [];
-  for (const g of groups) {
+  const blocks: { g: number; best: number; rows: PaletteEntry[] }[] = [];
+  groups.forEach((g, gi) => {
     const scored = entries
       .filter((e) => e.group === g)
       .map((e, i) => ({ e, i, s: entryScore(e, query) }))
       .filter((x): x is { e: PaletteEntry; i: number; s: number } => x.s !== null);
+    if (!scored.length) return;
     if (query.trim()) scored.sort((a, b) => b.s - a.s || a.i - b.i);
-    out.push(...scored.map((x) => x.e));
-  }
-  return out;
+    blocks.push({ g: gi, best: scored[0]!.s, rows: scored.map((x) => x.e) });
+  });
+  if (query.trim()) blocks.sort((a, b) => b.best - a.best || a.g - b.g);
+  return blocks.flatMap((b) => b.rows);
+}
+
+/**
+ * Which choosable row starts selected (an index into the rows that can run), or -1 for none.
+ * When the best match cannot run yet (a command still pending), nothing is selected:
+ * otherwise Enter would run the next runnable row, a weaker match the person did not ask for.
+ */
+export function initialSelection(shown: PaletteEntry[], query: string): number {
+  if (!shown.length) return -1;
+  if (query.trim() && shown[0]!.pending) return -1;
+  return 0;
 }
