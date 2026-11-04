@@ -387,6 +387,34 @@ export interface EntryDate {
 export type EntryDates = Record<string, Record<string, EntryDate>>;
 
 /**
+ * /entry-dates while some catalogues are still being read from git (HTTP 202,
+ * #34). `dates` holds the catalogues already read; ask again for the rest.
+ */
+export interface EntryDatesPending {
+  status: "pending";
+  pending: string[];
+  dates: EntryDates;
+}
+
+/**
+ * /entry-dates when git could not answer for a catalogue (HTTP 503, #34): a
+ * failed or stopped `git log`/`git blame`. Never to be shown as "no dates".
+ */
+export interface EntryDatesFailed {
+  status: "failed";
+  error: string;
+  failed: string[];
+  pending: string[];
+  dates: EntryDates;
+}
+
+/** What the UI makes of one /entry-dates answer. */
+export type EntryDatesRead =
+  | { status: "ready"; dates: EntryDates }
+  | EntryDatesPending
+  | EntryDatesFailed;
+
+/**
  * What a reader could tell about its source, so "could not read" never looks
  * like "nothing found":
  *   ok         — items were read, nothing failed
