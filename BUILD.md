@@ -52,7 +52,7 @@ The prototype's frame replaces today's sidebar:
  machine only) ──────┤  GET  /api/...  ──► READERS (server/readers/*)      read-only: files, git, gh │
                      │                                                                              │
                      │  write endpoints ─► origin + token check ─► AGENT HOST ─► Claude Agent SDK    │
-                     │  (planned, #76)          │                  (planned, #75)  query() ──► installed
+                     │  (#76, on main)          │                  (planned, #75)  query() ──► installed
                      │                          └─► action log (AnviDeck's own store folder)  `claude`
                      │  WebSocket /ws  ◄── hook-log watcher (exists); agent message stream (planned)│
                      └──────────────────────────────────────────────────────────────────────────────┘

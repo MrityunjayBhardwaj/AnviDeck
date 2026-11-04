@@ -5,13 +5,19 @@ import api from "./routes/api";
 import ws, { broadcast } from "./routes/ws";
 import { watchGlobal } from "./watchers/file-watcher";
 import { watchHookLogs } from "./watchers/hook-logger";
-import { bindHost, isLoopback, localOnly } from "./access";
+import { bindHost, isLoopback } from "./access";
+import { installGuard, serverWriteToken, withWriteToken } from "./guard";
+import { ActionLog, actionRoutes } from "./action-log";
 
 const app = new Hono();
 
 // Only this machine's own browser may read AnviDeck: no other host, no other web page.
+// A write also needs this server's token (placed in the pages it serves), and every write,
+// accepted or refused, is recorded in the action log (#76). Installed before any route.
 const hostname = bindHost();
-app.use("/*", localOnly(hostname));
+const actionLog = new ActionLog();
+installGuard(app, { bind: hostname, token: serverWriteToken(), log: actionLog });
+app.route("/api/actions", actionRoutes(actionLog));
 
 // Mount API routes
 app.route("/api/structure", (await import("./routes/structure")).default);
@@ -54,9 +60,10 @@ app.get("/app.js", async (c) => {
 app.get("/*", async (c) => {
   if (c.req.path.startsWith("/api")) return c.text("Not found", 404);
   const path = join(UI_DIR, "index.html");
-  const content = Bun.file(path);
-  return new Response(content, {
-    headers: { "content-type": "text/html" },
+  const html = withWriteToken(await Bun.file(path).text());
+  // The token changes at every server start: a cached page would carry a stale one.
+  return new Response(html, {
+    headers: { "content-type": "text/html", "cache-control": "no-store" },
   });
 });
 
