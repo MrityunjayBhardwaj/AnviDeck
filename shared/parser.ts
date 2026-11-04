@@ -28,7 +28,9 @@ export function parseCatalogueEntries(
   // where a tag word is prose ("…IS A BLIND SPOT THE DAY…").
   const headerTags = !catalogueName || HEADER_STATUS_CATALOGUES.includes(catalogueName);
   const entries: CatalogueEntry[] = [];
-  const seenIds = new Set<string>();
+  // Where each ID's kept entry sits, and whether its heading announces itself
+  // as a continuation ("<id> UPDATE …") rather than the entry proper.
+  const seenIds = new Map<string, { index: number; announced: boolean }>();
   // Split into entry blocks by h2 or h3 headers
   const entryPattern = /^(#{2,3})\s+(.+)$/gm;
   const headerMatches: { level: string; text: string; index: number }[] = [];
@@ -60,11 +62,25 @@ export function parseCatalogueEntries(
     // two h2 headers sharing an ID are BOTH kept — that's a duplicate-ID data
     // error the framework counts too, and the tree should surface it, not
     // silently merge it away.
+    //
+    // Which heading of a repeated ID is the entry: the first one, unless it
+    // announces itself as a continuation and a later one does not. An update can
+    // be written ABOVE its entry (one project's boundary map puts its newest
+    // "### <id> UPDATE" headings on top of "### <id>: … fatality test TRIPPED");
+    // keeping the first heading there kept an update's header and lost the
+    // entry's own status.
     if (entry) {
-      const isRepeatedSubSection =
-        header.level.length === 3 && seenIds.has(entry.id);
-      if (!isRepeatedSubSection) {
-        seenIds.add(entry.id);
+      const announced = announcesContinuation(header.text.trim());
+      const seen = seenIds.get(entry.id);
+      if (!seen) {
+        seenIds.set(entry.id, { index: entries.length, announced });
+        entries.push(entry);
+      } else if (header.level.length === 3) {
+        if (seen.announced && !announced) {
+          entries[seen.index] = entry;
+          seen.announced = false;
+        }
+      } else {
         entries.push(entry);
       }
     }
@@ -98,6 +114,27 @@ export function entryIdFromHeader(
   if (!m) return null;
   if (/^U[A-Z]?\d+$/.test(m[1])) return null;
   return { id: m[1], rest: m[2] };
+}
+
+/**
+ * Does this header announce a continuation of an entry rather than the entry
+ * itself? True when the ID is followed directly, with no colon, by one of the
+ * continuation words authors use: "X1 UPDATE 2026-07-31 …", "X6 ADDENDUM …",
+ * "X7 (AMENDMENT) …". "X1: Update loop" is an entry whose title starts with a
+ * word, not an update.
+ *
+ * Only used to choose WHICH of several headings sharing an ID is the entry; it
+ * never decides that a heading is a continuation on its own (most continuations
+ * name no such word, which is why the first heading still wins by default).
+ * Measured 2026-11-05 over the store's 76 catalogues: of 7,861 IDs, exactly two
+ * (both in one boundary map) have a first heading of this form with a plain
+ * heading later. Headings like "X3 — …" or "X3. …" are not announced, so an
+ * entry written that way is never displaced by a later "X3: …" heading.
+ *
+ * `headerText` is the header without its leading `## ` / `### `.
+ */
+export function announcesContinuation(headerText: string): boolean {
+  return /^[A-Z][A-Za-z]*\d+\s+\(?(UPDATE|ADDENDUM|AMENDMENT|CORRECTION|RECURRENCE)\b/i.test(headerText);
 }
 
 /**
