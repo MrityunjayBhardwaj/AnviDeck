@@ -1,627 +1,248 @@
-# AnviDeck — Cognitive Framework Observability Deck
+# AnviDeck: Agent Workspace for the Ānvīkṣikī Framework
 
 ## What This Is
 
-A browser-based observability dashboard for the Ānvīkṣikī cognitive framework. The primary observation instrument for watching the framework operate across all projects, all sessions, in real-time and historically.
+A local browser workspace (`localhost:4000`) where you run and steer Claude Code agents on projects that use the Ānvīkṣikī (anvi) framework: start an agent on an issue, watch what it does and what anvi told it at each step, answer it when it waits on you, review its PR with the context it had, and merge when you are satisfied. Alongside the agents sit the project's design, its notes (catalogues, memory, Ground Truth) and its history.
 
-Open `localhost:4000` in a browser. See everything. Click anything. Slide the timeline. Understand what led to every cognition and action.
+**Status, 2026-11-05.** AnviDeck began as an observability dashboard that only read the framework's files (phases 1–10, below). On 2026-11-05 the owner decided it becomes a full agent workspace in this repo, matching the prototype at https://claude.ai/artifact/RucrgeLUJLfb8HaCTUGViF. Tracking issue: #93. **None of the workspace's actions are on `main` yet.** Each section below says whether it describes what exists or what is planned; "planned" items link the issue that builds them. An item becomes "exists" only when its PR is merged on `main`.
 
-## Why This Exists (Design-Entailed)
+## Why
 
-The Anvi framework accumulates state: catalogues grow, dharana entries multiply, memory evolves, sessions produce observations. A system that accumulates state NECESSARILY needs observability — or that state rots undetected.
+The anvi framework accumulates state: catalogues grow, dharana entries multiply, memory evolves, sessions produce observations. A system that accumulates state needs a place to see it, or that state rots undetected. That is why the dashboard was built.
 
-This is not speculative. It's deductively necessary from the architecture:
-- 4 catalogues × N projects = growing knowledge base that needs audit
-- Dharana instantiation per project = instantiated checks that can go stale
-- Dhyana runtime checks per session = enforcement that may or may not fire
-- System lens per session = contribution data that needs visualization
-- Framework git repo = version history that needs diffing
-
-The CLI dashboard (`anvi-dashboard.sh`) is the minimal viable version. AnviDeck is the real instrument.
+The work that state serves is done by agents: Claude Code sessions that edit code, get context from anvi's hooks, get blocked by its guards, and open PRs. Watching them from one tool and acting on them from a terminal splits one loop in two. The workspace joins them: the screen that shows what anvi told an agent is the screen where you answer it.
 
 ---
 
-## What It Shows
+## The workspace (planned, #93)
 
-### Primary Views
+### Shell (#80)
 
-#### 1. Command Center (Home)
-The landing page. Everything at a glance.
+The prototype's frame replaces today's sidebar:
+- **Rail:** Home (with its badge), Map, Agents, Changes, Notes, Project (tabs: Code, Design, History, Work), Help.
+- **Project switcher** and a **"Guards on"** indicator.
+- **Activity strip** at the bottom ("4 agents · 1 working · 3 waiting on you").
+- **⌘K palette:** screens, agents, issues, and commands such as starting `/anvi:debug` in a new agent.
+- Every screen reachable from the rail, by URL hash and from the palette. Selective re-rendering stays. Old views stay reachable until they are retired (#92).
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  ANVI DECK                                        [live] ⚡  │
-├─────────────┬───────────────────────────────────────────────┤
-│             │                                               │
-│  PROJECTS   │  FRAMEWORK HEALTH          SESSION TIMELINE   │
-│  ─────────  │  ──────────────            ────────────────   │
-│  ▸ sonicPi  │  Catalogues: 4/4 ✓        ┌──────────────┐   │
-│    composr  │  Fatality: 3 ⚠            │ ←─────●──→   │   │
-│    struCode │  Misaligned: 6            │  commit slider│   │
-│    MoGraph  │  Blind spots: 1           └──────────────┘   │
-│    ...      │  Hook: active ✓                               │
-│             │  Last commit: 2m ago       ACTIVE SESSION     │
-│             │                            ──────────────     │
-│             │  CROSS-PROJECT             sonicPiWeb          │
-│             │  ──────────────            SoundLayer phase    │
-│             │  16 projects               dhyana: B2 scoped  │
-│             │  58 memories               hook fires: 12     │
-│             │  19 feedback               catches: 3         │
-│             │  4 sessions today                             │
-│             │                                               │
-└─────────────┴───────────────────────────────────────────────┘
-```
+### Screens
 
-#### 2. Project Deep Dive
-Click any project. See its full cognitive state.
-
-**Catalogues panel:**
-- Each catalogue (hetvabhasa, vyapti, krama, dharana) as a collapsible tree
-- Entry count, last modified, staleness indicators
-- Click any entry → full content with provenance (ORIGIN/WHY/HOW)
-- Diff against previous version (from git history)
-
-**Dharana panel:**
-- Boundary map: visual diagram of system boundaries with error pattern counts
-- Color-coded: green (clean), yellow (approaching threshold), red (fatality)
-- Invariant spans: which modules each invariant touches, ALIGNED/MISALIGNED badges
-- Org health: fatality test results as a traffic light
-- Composition pairs: table with verification status (verified/pending/failed)
-- Observation tools: exists/to-build/blind-spot inventory
-
-**Memory panel:**
-- All memory entries for this project, sorted by type (feedback, session, project, reference)
-- Recurrence counts for entries approaching dharana promotion
-- Session memory → dharana promotion pipeline visible
-
-#### 3. Session Timeline
-The timeline slider at the bottom of every view.
-
-**Data source:** `~/.claude/.git` history.
-
-- Each commit = a point on the timeline
-- Slide to any point → the entire dashboard shows framework state AT THAT COMMIT
-- Diff mode: select two points → see what changed between them
-- Hover any point → commit message + files changed
-- Annotations: "fatality detected," "new axis created," "entry pruned"
-
-**How it works technically:**
-```
-User slides to commit abc123
-  → git show abc123:CLAUDE.md → render principles state
-  → git show abc123:memory/ → render memory state
-  → git show abc123:projects/{hash}/memory/ → render project memory
-  → Compare with HEAD → highlight what's different
-```
-
-#### 4. Cognitive Trace (Real-Time Session View)
-When a Claude Code session is active, show what the framework is doing.
-
-**Hook activity log:**
-- Every time `catalogue-context-injector.js` fires → logged with: file, matched boundaries, injected context
-- Color-coded: red (fatality boundary touched), yellow (warning boundary), green (clean)
-- Click any entry → see the dharana entry that triggered it
-
-**Dhyana state:**
-- Currently scoped boundaries (loaded from dharana at session start)
-- Active hetvabhasa patterns for those boundaries
-- Active vyapti invariants
-- How many times each check has fired this session
-- Whether any check caught something (contribution tracking for system lens)
-
-**Lens chain trace:**
-- If a diagnosis happened this session, show the lens chain:
-  observation₁ → axis A → observation₂ → axis B → ... → root cause
-- Each step clickable → shows the observation that activated it
-- Depth indicator: surface / shallow / deep per step
-
-**Decision log:**
-- Every major decision point in the session
-- What was considered, what was chosen, why
-- Links to the catalogue entries or principles that informed the decision
-
-#### 5. System Lens Dashboard
-The framework's self-observation data.
-
-**Contribution matrix:**
-- Rows: catalogue entries (hetvabhasa SP1-SP14, vyapti SV1-SV13, etc.)
-- Columns: sessions (last 10)
-- Cells: ✓ (contributed), — (not relevant), ✗ (should have caught but didn't)
-- Heat map: frequently contributing entries are hot, stale entries are cold
-
-**Cost vs Catch:**
-- Per session: how many bugs caught BY framework vs DESPITE framework
-- Trend line over last 10 sessions
-- Threshold alert: if "despite" exceeds "by" for 2+ consecutive sessions
-
-**Pruning candidates:**
-- Entries with 0 contributions in 5+ sessions
-- Each with WHY field displayed — user decides whether to prune or keep
-- "Prune" button → moves entry to archive section, adds RETIRED date
-
-**Axis evolution:**
-- Timeline of when each lens axis was created
-- What blind spot triggered it
-- How many times it's fired since creation
-
-#### 6. Cross-Project Intelligence
-Patterns that span multiple projects.
-
-**Recurring error patterns:**
-- Hetvabhasa entries that appear in multiple projects → structural patterns worth learning from
-- "Parameter name mismatch at boundary" appears in sonicPiWeb AND struCode → this is a universal trap
-
-**Shared invariants:**
-- Vyapti entries that are structurally similar across projects
-- "Observation over inference" → appears everywhere, always holds
-
-**Memory network:**
-- All memory entries across all projects, visualized as a graph
-- Connections: entries that reference the same concepts
-- Clusters: groups of related feedback/project memories
+| Screen | What it shows and does | Built on | Issue |
+|---|---|---|---|
+| **Home** | One queue, soonest first; each item has one action done in place: review a PR (with its deadline), answer a waiting agent, merge a PR that's ready. A health line ("Healthy · 1 thing to watch …") that opens to guards, allowed rule breaks, out-of-date notes and notes backed by source. The list of agents. | Today's Home readers + the agent host | #81 (takes over #47) |
+| **Map** | Projects, design blocks, files and imports, with agents replayed on them. **Exists** (#52); remaining gaps tracked. | Structure reader, replay reader | #48, #49 |
+| **Agents** | A tab per agent and a 2×2 grid; its plan with progress; its tool calls with which anvi hooks ran and what context they gave; a refusal card (layer path and rule) when the design guard blocks an edit; a message box. Terminal-started sessions still open, labelled as view only. | Agent host live stream; replay reader for terminal sessions | #82 |
+| **Changes** | A PR's files, the layers and boundaries it touches, the diff with the anvi context the agent received at each hunk, line comments that go back to the agent, the evidence, a guided tour, the self-review gaps. | `gh` diff, hook log joined per hunk, the evidence format | #84 (needs #79, #83) |
+| **Notes** | Catalogues by kind with search; which catalogue is used when, per activity; freshness (drifted entries, oldest drifted entries still in use, **Re-check a batch** by subsystem); grounding (Ground Truth docs, their age, the entries citing them); project memory with **Promote**. Re-check and Promote start an agent. | Catalogue, currency, memory, grounding readers | #89 (needs #72, #73) |
+| **Project · Code** | File tree coloured by layer, with markers for refused edits, imports that break the design, and files agents touched; a file view with blame and known-trap lines. Editing is off while agents work, behind an **Enable editing** switch. | Structure reader, refusal log, agents' edits, `git blame` | #88 |
+| **Project · Design** | Five lenses: Armed (enforcement mode, allowed rule breaks, trial record), Placed (placement in review, "ask before writing"), Consolidated (where problems cluster, the cost curve of fixes, shown only where files per fix can be measured), Path to target (moves to the declared design, each linked to an issue), System flows. | Structure readers; your recorded calls | #87, #86 |
+| **Project · History** | One timeline of agent turns, edits, refusals, rulings, commits and catalogue changes, each event naming its source; a moment's details; compare two points (code, design, knowledge); replay a session. | Timeline, hook log, replay reader, action log | #90 |
+| **Project · Work** | The board (Todo / In Progress / Done from the GitHub project's Status field; a list if the project has no board), **Start agent**, **New issue**; for each PR your workflow as steps (Friction → Issue → Branch → Fix → Test → Observe → PR → Self-review → Merge, by you) with merge checks (CI green, closing reference parsed, no conflict with other open PRs). **Merge** is a button only you press. | `gh`, `gh project`, `git merge-tree` | #85 (needs #78) |
+| **Help** | Six guided flows played over the real screens: start a task, a blocked edit and your call, review a change, notes go out of date, place new code, fix a boundary. A step whose data isn't there is skipped, and the tour says so. | All screens | #91 |
 
 ---
 
-## Technical Architecture
+## Architecture
+
+### Readers and the agent host
+
+```
+                     ┌──────────────────────── AnviDeck server (Bun + Hono) ────────────────────────┐
+ browser (this       │                                                                              │
+ machine only) ──────┤  GET  /api/...  ──► READERS (server/readers/*)      read-only: files, git, gh │
+                     │                                                                              │
+                     │  write endpoints ─► origin + token check ─► AGENT HOST ─► Claude Agent SDK    │
+                     │  (planned, #76)          │                  (planned, #75)  query() ──► installed
+                     │                          └─► action log (AnviDeck's own store folder)  `claude`
+                     │  WebSocket /ws  ◄── hook-log watcher (exists); agent message stream (planned)│
+                     └──────────────────────────────────────────────────────────────────────────────┘
+```
+
+- **Readers are read-only.** They read files, spawn `git`/`gh`/`node` to ask questions, and the structure reader keeps a scratch folder under `ANVIDECK_STRUCTURE_TMP` for anvi's structure guard. They never write into a project, a catalogue, memory or the store. A test will enforce that no reader imports the agent host or writes a file (#76).
+- **The agent host is the only module that acts** (#75). Everything AnviDeck does beyond reading goes through it or the action log.
+- **Catalogues, memory and Ground Truth docs are changed only by agents**, never by AnviDeck directly (#89, #93).
+
+### Agent host (#75, planned)
+
+- Starts an agent with a folder, a prompt and your normal settings: user, project and local settings load, so anvi's hooks and CLAUDE.md apply.
+- Streams every SDK message to the page over the existing WebSocket and keeps it per agent.
+- Keeps a registry of AnviDeck-started agents on disk (id, session id, folder, issue, status). After a server restart each shows as stopped, with its transcript, and can be resumed.
+- Stops an agent, and caps how many run at once.
+- Statuses: starting, working, waiting on you, done, failed, stopped. "Could not start" never shows as "done".
+- Feeds each agent through a stream of user messages, so a message or a diff comment (file, line, the line's text) arrives on its next turn, with delivery shown (#79).
+- Permission callback: a call your rules don't cover is parked on Home's queue and the agent's card with **Allow** / **Deny** (Deny takes an optional message). It survives a page reload, never times out to Allow, and is withdrawn if the agent stops (#77).
+- **Runs on your Claude Code login, never an API key:** `pathToClaudeCodeExecutable` is the installed `claude` (found on PATH, shown on screen); `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL` and the Bedrock/Vertex switches are removed from each agent's environment; an agent whose init message reports an `apiKeySource` other than `none` is stopped at once and never shown as running; the screen shows the login method and plan from `claude auth status` (not the email). A start that fails while Claude Code is replacing its binary says "Claude Code was updating, try again".
+- Spike 2026-11-05 (recorded in #75): SDK 0.3.318 with CLI 2.1.318 under Bun ran on the existing login with `apiKeySource: none`; both SessionStart hooks fired; the permission callback received a Write request and a deny stopped it.
+
+### Starting an agent from an issue (#78, planned)
+
+**Start agent** on an issue (Work, Home, ⌘K): creates a worktree and branch named after the issue; links the project's `.anvi` and `ref` into it (the links anvi's hooks say a worktree needs); starts the agent with a prompt built from the issue plus the workflow (issue → branch → fix → test and observe → PR → self-review; agents never merge). Refuses, saying why, if the worktree already exists or the issue is closed. Moves the issue to In Progress if the project has a board.
+
+### Evidence and self-review (#83, planned)
+
+Agents AnviDeck starts write two PR-body sections with a fixed shape: **Evidence** (tests with the runner's own exit code / observed / not checked) and **Self-review** (severity, gap, issue). AnviDeck parses them; a PR without them shows "not recorded", never an empty list.
+
+### Safety model
+
+| Guard | Status |
+|---|---|
+| Listens on `127.0.0.1` unless `HOST` is set; refuses a request whose Host is not a loopback name or whose Origin is another page (`server/access.ts`, tested in `tests/access.test.ts`) | **Exists** (#66) |
+| Every write endpoint requires the same origin and a per-server token placed in the page | Planned (#76) |
+| Every action (what, target, result, time) appended to an action log in AnviDeck's own store folder and shown in History | Planned (#76, #90) |
+| Readers can't act: a test fails if a reader imports the agent host or writes a file | Planned (#76) |
+| Agents on the Claude Code login only (see Agent host) | Planned (#75) |
+| Your permission rules apply as in the terminal; only uncovered calls reach AnviDeck; no timeout allows a call | Planned (#77) |
+| Merge only by you, only the reviewed head; refused if the head moved after review | Planned (#85) |
+| Code-screen edits only to files no running agent is touching, each through the action log | Planned (#88) |
 
 ### Stack
 
-```
-AnviDeck/
-├── server/
-│   ├── index.ts              ✅ Hono + WebSocket server, file watchers, broadcast
-│   ├── routes/
-│   │   ├── api.ts            ✅ REST API (projects, catalogues, hook-logs, cross-project, routing-architecture, entry-dates)
-│   │   └── ws.ts             ✅ WebSocket server (hono/bun upgradeWebSocket, client tracking, heartbeat)
-│   ├── readers/
-│   │   ├── catalogue.ts      ✅ Parse .anvi/ markdown files + boundary extraction
-│   │   ├── memory.ts         ✅ Parse memory/ markdown files with frontmatter
-│   │   └── git-history.ts    ✅ Read git log, show file at commit, diff
-│   └── watchers/
-│       ├── file-watcher.ts   ✅ Watch .anvi/ and memory/ for changes
-│       └── hook-logger.ts    ✅ Tail /tmp/anvi-hook-*.log + anvi-route-*.log, parse JSON, broadcast
-├── hooks/ (symlinks to ~/.claude/hooks/)
-│   ├── catalogue-context-injector.js → ~/.claude/hooks/catalogue-context-injector.js  ✅ + AnviDeck logging
-│   ├── anvi-route-logger.js  → ~/.claude/hooks/anvi-route-logger.js  ✅ PostToolUse Read detection
-│   └── settings.json         → ~/.claude/settings.json
-├── ui/
-│   ├── index.html            ✅ Single page app shell
-│   ├── app.ts                ✅ Main app — selective DOM updates, Nav API, WebSocket, cross-linking
-│   ├── api.ts                ✅ Typed API client (all endpoints)
-│   ├── components/
-│   │   ├── CommandCenter.ts  ✅ Quick actions, insights banner, project list with badges
-│   │   ├── ProjectView.ts    ✅ Project deep dive + breadcrumb + quick links to other views
-│   │   ├── CatalogueTree.ts  ✅ Collapsible entries with tags + provenance
-│   │   ├── Timeline.ts       ✅ Git commit slider with diff mode + markers
-│   │   ├── DiffViewer.ts     ✅ Syntax-highlighted diff display
-│   │   ├── CognitiveTrace.ts ✅ 3-panel live: Hook Activity, Dhyana State, Routing Decisions
-│   │   ├── ContextBudget.ts  ✅ Three-tier context usage bar visualization
-│   │   ├── SystemLens.ts     ✅ Contribution matrix, pruning candidates, entry timeline
-│   │   ├── CrossProject.ts   ✅ Recurring patterns, shared invariants, memory network
-│   │   ├── RoutingView.ts    ✅ Three-tier diagram, routing table, coverage verification
-│   │   ├── BrainView.ts      🔲 Phase 8: State + Flow + Evolution tabs
-│   │   └── GitHubTrace.ts    🔲 Phase 9: Knowledge → artifact → outcome loop
-│   └── styles/
-│       └── deck.css          ✅ Dark theme, monospace, all component styles (~2,400 lines)
-├── shared/
-│   ├── types.ts              ✅ Full type definitions (~170 lines)
-│   └── parser.ts             ✅ Markdown → structured data parser (161 lines)
-├── .anvi/                    ⇢ symlink into ~/.anvideck (catalogues + phase plans, not tracked here)
-├── ref/
-│   ├── ANVI_THESIS.md        ✅ Framework thesis (923 lines, includes Part VIII)
-│   └── DATA_EXAMPLES.md      ✅ Parsed data examples for every type
-├── build.ts                  ✅ Single esbuild pass via Bun
-├── package.json              ✅ Hono + TypeScript + Bun
-├── tsconfig.json             ✅
-├── CLAUDE.md                 ✅ Project instructions (reflects all 9 phases)
-└── BUILD.md                  ← This file
-```
+**Hono on Bun** (server): lightweight, TypeScript-native, zero-config.
 
-### Why This Stack
+**Plain TypeScript UI**: DOM functions, no React/Vue/Svelte. The UI is information-dense; a framework adds build complexity without proportional benefit.
 
-**Hono** (server): Lightweight, TypeScript-native, zero-config. No Express boilerplate. Runs on Bun or Node.
+**One esbuild pass**: `bun run build.ts` bundles `ui/app.ts` into `dist/app.js`. No webpack, no vite.
 
-**No React/Vue/Svelte** (UI): Plain TypeScript with DOM manipulation. The UI is information-dense and read-heavy — it doesn't need reactivity frameworks. A framework would add build complexity without proportional benefit. Components are just functions that return DOM elements.
+**No Electron**: a browser tab is enough for a local tool.
 
-**No build pipeline for UI**: Serve TypeScript directly via Bun, or use a single esbuild pass. No webpack, no vite config, no HMR complexity. The UI updates via WebSocket push, not client-side state management.
+**Claude Agent SDK** (planned, #75): the only new dependency the workspace needs to run agents. Not yet in `package.json`.
 
-**Why not Electron**: This is a local dev tool. A browser tab is sufficient. No distribution, no packaging, no cross-platform concerns.
+### Data sources (readers)
 
-### Data Sources
+| Data | Location |
+|------|----------|
+| Framework principles, routing table | `~/.claude/CLAUDE.md` |
+| Global and project memory | `~/.claude/memory/*.md`, `~/.claude/projects/<encoded-path>/memory/*.md` |
+| Projects | `~/.claude/projects/<encoded-path>/`, decoded from the transcripts' `cwd` |
+| Catalogues, Ground Truth docs | first existing of `{project}/.anvi`, `{project}/artifacts/.anvi`, `~/.anvideck/projects/{name}/.anvi` (same for `ref`), via `shared/anvi-paths.ts` |
+| Session transcripts | `~/.claude/projects/<encoded-cwd>/<session>.jsonl` |
+| Live sessions | `~/.claude/sessions/*.json` |
+| Hook and routing activity | `/tmp/anvi-hook-*.log`, `/tmp/anvi-route-*.log` (written by `catalogue-context-injector.js` and `anvi-route-logger.js`) |
+| Framework history | the `~/.claude` git repo |
+| Design structure | anvi's structure guard `~/.claude/anvi/scripts/structure-guard.js` and its registries |
+| Notes currency | `~/.anvideck/projects/anvi/instances` |
+| GitHub | `gh`: PR state, your open PRs, issues and PRs |
 
-All data is read from the filesystem. No database. No API keys. No external services.
-
-| Data | Source | Access pattern |
-|------|--------|---------------|
-| Framework principles | `~/.claude/CLAUDE.md` | Read + parse sections |
-| Global memory | `~/.claude/memory/*.md` | Read + parse frontmatter |
-| Project memory | `~/.claude/projects/*/memory/*.md` | Glob + read + parse |
-| Catalogues | `{project}/.anvi/*.md` or `{project}/artifacts/.anvi/*.md` | Glob + read + parse |
-| Version history | `~/.claude/.git` | `git log`, `git show {commit}:{path}` |
-| Hook activity | `/tmp/anvi-hook-*.log` (written by injector hook) | Tail + watch |
-| Active sessions | `/tmp/claude-ctx-*.json` (written by context monitor) | Read + watch |
-
-### Real-Time Architecture
-
-```
-catalogue-context-injector.js (hook)
-    → fires on Write|Edit
-    → writes to /tmp/anvi-hook-{session}.log:
-      { timestamp, file, boundaries, injected, fatality }
-    → AnviDeck file-watcher picks up the log entry
-    → WebSocket pushes to browser
-    → CognitiveTrace component updates live
-```
-
-The hook needs one addition: write a structured log line alongside the injection. Current hook only outputs to Claude's context. New behavior: also append to a log file.
-
-### Markdown Parser
-
-All Anvi data is markdown with structure. The parser extracts:
-
-```typescript
-interface CatalogueEntry {
-  id: string          // "SP8", "SV12", "B2"
-  title: string       // First line after ##
-  sections: Record<string, string>  // "Root cause:", "Detection signal:", etc.
-  tags: string[]      // Extracted from content: FATALITY, MISALIGNED, NOT YET IMPLEMENTED
-  origin?: string     // ORIGIN field (dharana entries)
-  why?: string        // WHY field (dharana entries)
-  how?: string        // HOW field (dharana entries)
-}
-
-interface Catalogue {
-  name: string        // "hetvabhasa", "vyapti", "krama", "dharana"
-  path: string        // Absolute path to .md file
-  entries: CatalogueEntry[]
-  lastModified: Date
-}
-
-interface ProjectState {
-  name: string
-  path: string
-  catalogues: Catalogue[]
-  memory: MemoryEntry[]
-  fatalitySignals: number
-  misalignedInvariants: number
-  blindSpots: number
-  boundaries: BoundaryInfo[]
-}
-```
-
-### Git Timeline Engine
-
-```typescript
-interface TimelinePoint {
-  hash: string
-  message: string
-  date: Date
-  filesChanged: string[]
-  // Lazy-loaded: full state at this point
-  stateAt?: FrameworkState
-}
-
-// Reconstruct state at any commit
-async function stateAtCommit(hash: string): Promise<FrameworkState> {
-  const claudeMd = await gitShow(hash, 'CLAUDE.md')
-  const memories = await gitLsTree(hash, 'memory/')
-  const projectMemories = await gitLsTree(hash, 'projects/')
-  // Parse each file, build state
-  return { principles: parse(claudeMd), memories: parseAll(memories), ... }
-}
-```
+Planned additions: the agent registry, action log and your calls on blocked edits, in AnviDeck's own store folder (#75, #76, #86); the board via `gh project` (#85).
 
 ---
 
-## Build Phases
+## Build order (#93)
 
-### Phase 1: Data Layer + API (foundation) — COMPLETE
-**Goal:** Read all framework data from filesystem, expose via REST API.
+Each item goes issue → branch → PR → owner's merge. All are open as of 2026-11-05.
 
-- [x] Markdown parser — `shared/parser.ts` (161 lines). Parses catalogue entries + memory frontmatter.
-- [x] Git history reader — `server/readers/git-history.ts` (114 lines). Log, show at commit, diff.
-- [x] Catalogue reader — `server/readers/catalogue.ts` (112 lines). Reads .anvi/ with boundary extraction.
-- [x] Memory reader — `server/readers/memory.ts` (65 lines). Parses frontmatter + content.
-- [x] File watcher — `server/watchers/file-watcher.ts` (76 lines). Watches .anvi/ and memory/.
-- [x] Hono server — `server/index.ts` (66 lines). Serves API + static files.
-- [x] REST API — `server/routes/api.ts` (172 lines). Projects, catalogues, memory, timeline, diff.
-- [x] Types — `shared/types.ts` (86 lines). Full type definitions.
+| Step | Issues |
+|---|---|
+| **0. Foundation** | #72 level-2 update headings listed as separate entries · #73 entries matched by ID alone across catalogues · #34 slow first entry-dates read · #74 these docs |
+| **1. Agent host** | #75 run agents · #76 every action guarded and logged · #77 permission requests (needs #75) · #79 talk to a running agent (needs #75) · #78 start from an issue in its own worktree (needs #75, #83) · #83 evidence and self-review format |
+| **2. Shell** | #80 navigation, project switcher, activity strip, ⌘K |
+| **3. Screens** (independent once 1 and 2 are in) | #81 Home · #82 Agents · #84 Changes · #85 Work · #86 your calls → #87 Design · #88 Code · #89 Notes · #90 History · #48, #49 Map gaps |
+| **4. Finish** | #91 Help and the six flows · #92 retire the old views |
 
-**Verified:** `bun run dev` starts server, API routes return data.
+## What gets retired (#92)
 
-### Phase 2: Command Center + Project View — COMPLETE
-**Goal:** Open browser, see everything, click into projects.
+Live Sessions, Live Trace, Brain, System Lens, Cross-Project and Routing are outside the prototype. Once Notes, History and Agents carry what's useful from them, the views, their routes and any readers nothing else uses are removed, with a list of what each view showed and where it went. Deleting needs the owner's go on the PR. #92 does not name the Project view, GitHub Trace or the timeline strip; their future is open.
 
-- [x] Command Center — `ui/components/CommandCenter.ts` (124 lines). Project list, health summary, stats.
-- [x] Project View — `ui/components/ProjectView.ts` (127 lines). Catalogue trees, dharana panel, memory panel, boundaries, health indicators.
-- [x] Catalogue Tree — `ui/components/CatalogueTree.ts` (114 lines). Collapsible entries with tags (FATALITY, MISALIGNED, etc.), provenance display (ORIGIN/WHY/HOW).
-- [x] App shell — `ui/app.ts` (144 lines). Routing, state management, navigation.
-- [x] API client — `ui/api.ts` (20 lines). Typed fetch wrapper.
-- [x] CSS — `ui/styles/deck.css` (763 lines). Full dark theme, all component styles.
-- [x] Build — `build.ts` (21 lines). Single esbuild pass via Bun.
+---
 
-**Verified:** Browser shows all projects, click into sonicPiWeb, see catalogue entries with tags.
+## What exists today (`main` at `dd71c3e`, 2026-11-05)
 
-### Phase 3: Timeline Slider — COMPLETE
-**Goal:** Slide to any point in framework history, see state at that point.
+Every HTTP route is a GET; the WebSocket only pushes hook and routing log lines to the page.
 
-- [x] Timeline component — `ui/components/Timeline.ts` (226 lines). Interactive markers per commit.
-- [x] Diff viewer — `ui/components/DiffViewer.ts` (41 lines). Syntax-highlighted diff display.
-- [x] Diff mode — select two commits, show what changed between them.
-- [x] Marker annotations — color-coded by content (red for fatality, yellow for warning, cyan for new axis).
-- [x] Tooltip on hover — commit hash, message, date, files changed.
-
-**Verified:** Slider shows 10 framework commits, diff between any two points works.
-
-### Phase 4: Real-Time Session Trace (live observability) — COMPLETE
-**Goal:** Watch the framework operate in real-time during a Claude Code session. See which boundaries are active, which checks fire, which files get loaded by the context routing protocol.
-
-**4.1 Hook logger** — update `catalogue-context-injector.js` to write structured log:
-- Append to `/tmp/anvi-hook-{session_id}.log` on every fire
-- Format: `{ timestamp, session_id, file, relPath, boundaries: string[], fatality: boolean, injected: string }`
-- Session ID from the hook's stdin JSON (`data.session_id`)
-- Zero-impact on hook performance (append, not read-write)
-
-**4.2 Context routing logger** — new mechanism to capture routing decisions:
-- When the Context Routing Protocol fires (activity classification), log:
-  `{ timestamp, session_id, activity_type, files_loaded: string[], message_excerpt }`
-- This shows WHICH spec files were loaded for WHICH user message
-- Implementation: a lightweight PostToolUse hook that detects Read tool calls to spec files
-
-**4.3 WebSocket server** — `server/routes/ws.ts`:
-- Upgrade route at `/ws`
-- File watcher on `/tmp/anvi-hook-*.log` and `/tmp/anvi-route-*.log`
-- On new line → parse JSON → push to all connected clients
-- Heartbeat to detect disconnects
-
-**4.4 Cognitive Trace component** — `ui/components/CognitiveTrace.ts`:
-- Two-panel layout: **Hook Activity** (left) + **Routing Decisions** (right)
-- Hook Activity: live feed of boundary matches, color-coded (red = fatality, green = clean)
-  - Click any entry → expand to show full injected context
-  - Counter: total fires this session, fatality fires, unique boundaries touched
-- Routing Decisions: live feed of activity classifications + file loads
-  - Shows: "DIAGNOSE → loaded adaptive-observation.md + diagnose.md + hetvabhasa.md"
-  - Click → expand to show the user message that triggered the classification
-
-**4.5 Dhyana state panel** — part of CognitiveTrace:
-- Currently scoped boundaries (from dharana)
-- Active hetvabhasa patterns per boundary
-- Active vyapti invariants per boundary
-- Fire count per check this session (how many times each boundary was touched)
-- Contribution flag: did any fire CATCH something (diverged from expected)?
-
-**4.6 Three-tier context view** — `ui/components/ContextBudget.ts`:
-- Visual breakdown of what's loaded per prompt:
-  ```
-  Tier 1 (always): ██████████████░░░░░░ 39k / 150k
-  Tier 2 (hook):   ██░░░░░░░░░░░░░░░░░ ~2k (last injection)
-  Tier 3 (routed): ████████░░░░░░░░░░░ ~18k (DIAGNOSE loaded)
-  Total:           ████████████████████░ 59k / 150k
-  ```
-- Updates live as routing decisions and hook injections occur
-- Warning when approaching context limits
-
-**Verification:** Start a Claude Code session on sonicPiWeb, edit SuperSonicBridge.ts. AnviDeck shows:
-- Hook Activity: "B2 touched. FATALITY. 5 patterns cluster here."
-- If user said "debug this": Routing shows "DIAGNOSE → loaded 4 files"
-- Context Budget: Tier 1 (39k) + Tier 3 (25k) = 64k used
-- Dhyana panel: B2 active, SP8/SP9/SP10/SP11/SP12 listed, SV12/SV13 invariants flagged
-
-### Phase 5: System Lens Dashboard (self-observation) — COMPLETE
-**Goal:** Visualize whether the framework is actually helping.
-
-- Contribution matrix: entries × sessions heat map
-  - Rows: catalogue entries (SP1-SP14, SV1-SV13, B1-B4)
-  - Columns: last N sessions
-  - Cells: contributed (green), not relevant (gray), should-have-caught (red)
-- Cost vs Catch trend line
-  - X: sessions, Y: count
-  - Two lines: "caught by framework" vs "caught despite framework"
-  - Alert threshold: if "despite" > "by" for 2+ consecutive sessions
-- Pruning candidates with WHY display
-  - List entries with 0 contributions in 5+ sessions
-  - Show WHY field inline — user decides keep or retire
-  - "Retire" button → archives entry with RETIRED date
-- Axis evolution timeline
-  - When each lens axis was created
-  - What blind spot triggered it
-  - Fire count since creation
-
-**Verification:** After 3+ sessions, the matrix shows which entries pulled their weight.
-
-### Phase 6: Cross-Project Intelligence (pattern recognition) — COMPLETE
-**Goal:** Find patterns that span multiple projects.
-
-- Recurring error patterns: scan all projects' hetvabhasa for structurally similar entries
-  - Similarity: same root cause category (data-flow/timing/ownership/boundary) + similar detection signal
-  - Display: "Parameter name mismatch appears in sonicPiWeb (SP9) and struCode (SC3)"
-- Shared invariants: vyapti entries that hold across projects
-- Memory network: graph visualization of related memory entries across projects
-  - Nodes: memory entries, Edges: shared concepts/references
-  - Clusters reveal cross-project knowledge themes
-
-**Verification:** Cross-project patterns surfaced automatically without manual comparison.
-
-### Phase 7: Context Routing Visualization — COMPLETE
-**Goal:** Visualize the three-tier context architecture and routing decisions.
-
-- Architecture diagram: interactive view of Tier 1/2/3 with file sizes
-- Routing decision log: every classification with the files it loaded
-- Prompt budget tracker: how much context is used per prompt over the session
-- Lossless verification: for any activity type, show the complete file chain that would be loaded
-- Chicken-and-egg visualization: show the classify→load→reason pipeline
-
-**Verification:** User can see that every activity type has a complete, lossless context path.
-
-### Phase 8: Brain View (project cognitive state) — NEXT
-**Goal:** Single dense screen showing everything the framework knows about a project, how it's operating, and how understanding has evolved. The "virtual brain" of a project.
-
-Three tabs within one "Brain" view:
-
-**8.1 State — Situation Map:**
-- Four horizontal strata: Boundaries (top) → Traps (hetvabhasa) → Rules (vyapti) → Sequences (krama)
-- Each boundary as a box: size = pattern count, color = severity (red = fatality, yellow = warning, green = clean)
-- Each entry shows which boundary it belongs to (dot indicator)
-- Sidebar: memory entries + session activity summary
-- Everything on one screen, zero clicks to understand
-
-**8.2 Flow — Cognitive Trace Timeline:**
-- Horizontal time axis with vertical lanes for each tier
-- Tier 1: solid bar (always active)
-- Tier 3: colored blocks showing routing decisions (DIAGNOSE, PLAN, IMPLEMENT, REVIEW)
-- Tier 2: spike marks showing hook fires with boundary labels
-- Below spikes: pattern IDs that activated (SP8, SP9, etc.)
-- Click any spike → drill down to full activation chain (what was injected, why, which entries)
-- Stars marking new entries created during session
-
-**8.3 Evolution — Learning Over Time:**
-- Entry count growth over sessions (from git history of .anvi/ files)
-- When specific entries were created/modified
-- Fire rates per entry over time (from hook logs)
-- Key moments: "fatality detected", "new axis created", "consolidation planned"
-- Shows the system literally getting smarter session over session
-
-**Verification:** Open Brain view for sonicPiWeb → see all 41 entries across 4 strata with severity coloring. Click a boundary → see activation history. Evolution tab shows growth from 0 to 41 entries with key moments annotated.
-
-### Phase 9: GitHub Trace (knowledge → artifact → outcome loop) — TODO
-**Goal:** Close the loop from brain knowledge to GitHub artifacts. For any catalogue entry, see which issues/PRs/commits it informed. For any GitHub artifact, see which brain entries were active when it was created.
-
-**9.1 Correlation Engine:**
-- Scan commit messages for catalogue IDs (SP8, SV12, B2) → high confidence link
-- Scan issue/PR bodies for catalogue keywords → high confidence
-- Match commit file paths with hook fire file paths → medium confidence
-- Temporal proximity: entry created → commit within 24h on same files → medium confidence
-- Uses `gh` CLI (already authenticated) + local `git log`
-
-**9.2 Entry → Artifact View:**
-- For each catalogue entry: linked issues, PRs, commits with confidence scores
-- Shows the full lifecycle: knowledge created → hook activated → bug found → fix merged → knowledge refined
-
-**9.3 Artifact → Entry View (reverse):**
-- For each GitHub issue/PR: which brain entries were active when it was created
-- "This PR was informed by SP8, SP9, and SV12 — the framework caught the param mismatch"
-
-**9.4 Cognitive Loop Visualization:**
 ```
-OBSERVE → LEARN → ACTIVATE → ACT → PRODUCE → VERIFY → REFINE → loop
-(session)  (entry)  (hook)    (Claude) (issue/PR)  (test)  (update)
+server/
+  index.ts                Hono app: access guard, routes, static files, file + hook-log watchers
+  access.ts               this-machine-only guard (#66)
+  routes/
+    api.ts                projects, project, catalogues, memory, sessions, timeline, state-at, diff,
+                          routing-architecture, cross-project, hook-logs, entry-dates, github-trace
+    home.ts               /api/home
+    replay.ts             /api/replay/sessions, /api/replay/session/:sid
+    structure.ts          /api/structure, /api/structure/:project
+    ws.ts                 /ws push channel
+  readers/                catalogue, memory, projects, sessions, git-history, ground-truth, routing,
+                          home, replay, structure (+ structure-driver.cjs, structure-lock), read-status
+  watchers/               file-watcher (global memory changes, logged to the console), hook-logger (/tmp anvi logs)
+shared/                   types, parser, anvi-paths (artifact resolver), home/replay/structure types
+ui/
+  app.ts                  shell: sidebar, selective re-render, Nav, timeline strip, WebSocket
+  api.ts, home-count.ts   API client; Home badge count
+  components/             CommandCenter (Home), ProjectView, CatalogueTree, Timeline, DiffViewer,
+                          LiveSessions, AgentsView, MapView (+ map-model), CognitiveTrace,
+                          ContextBudget, BrainView, SystemLens, CrossProject, RoutingView, GitHubTrace
+  styles/deck.css
+tests/                    access, git-history, home, map-model, parser, replay, shared-stores, structure
+hooks/                    symlinks to ~/.claude/hooks (injector, route logger, settings.json)
+ref/                      ANVI_THESIS.md, DATA_EXAMPLES.md
 ```
-- Each step traceable
-- Click any node → see the data at that step
 
-**Verification:** Click SP8 in Brain view → see Issue #47, PR #48, commit abc123 linked with "high" confidence. Click Issue #47 → see SP8, SP9 as informing entries. The loop is visible end to end.
+### Views today
 
-**Data model decision: NO Neo4j.** Investigated graph visualization (2026-04-01): 41 nodes, 27 edges, 1.6% density — too sparse for graph layout. Data is stratified by cognitive function, not networked. Tables and strata represent it correctly. `gh` CLI + local git provide all needed data. Zero external infrastructure maintained.
+| View | Shows | Fate |
+|---|---|---|
+| Home (`CommandCenter.ts`) | one queue of PRs and agents, a one-line status, project list; each row's action is a link | rebuilt as the workspace Home (#81) |
+| Project (`ProjectView.ts`, `CatalogueTree.ts`) | catalogues with REF and an "ungrounded only" filter, memory, grounding, read status | not named in #92 |
+| Timeline strip (`Timeline.ts`, `DiffViewer.ts`) | `~/.claude` commits; diff between two | not named in #92 |
+| Live Sessions | active Claude Code sessions | retire (#92) |
+| Agents (`AgentsView.ts`) | one project's terminal-started sessions, replayed: session, changes, notes used | becomes the workspace Agents (#82) |
+| Map (`MapView.ts`) | projects, design blocks, files, imports; agents replayed on them | kept; gaps #48, #49 |
+| Live Trace (`CognitiveTrace.ts`, `ContextBudget.ts`) | live hook activity, routing decisions, context budget | retire (#92) |
+| Brain (`BrainView.ts`) | a project's boundaries and entries by stratum, with hook and routing activity and entry dates | retire (#92) |
+| System Lens | contribution matrix, pruning candidates with WHY | retire (#92) |
+| Cross-Project | recurring patterns, shared invariants, memory network | retire (#92) |
+| Routing | three-tier context diagram, routing table, coverage | retire (#92) |
+| GitHub Trace (`GitHubTrace.ts`) | catalogue entries linked to issues, PRs and commits | not named in #92 |
 
-### Phase 10: Ground Truth Visualization (three-layer grounding observability) — TODO
+### How we got here: the dashboard phases
 
-**Goal:** Visualize the three-layer grounding chain (Catalogue → Ground Truth doc → source code) introduced in Anvi v1.1.0. Show which entries are grounded, which are ungrounded, and let the user click through the full provenance chain.
-
-**Why this matters:** Ground Truth docs (`artifacts/ref/GROUND_TRUTH_*.md`) trace external system pipelines with `file:line` citations. Every catalogue entry should have a `**REF:**` field pointing to these docs. Without visibility into grounding status, ungrounded entries accumulate silently — the very failure mode Ground Truth was designed to prevent.
-
-**10.1 Grounding Health in Command Center:**
-- Add to Framework Health panel: `Grounding: 14/22 entries (64%)` with color (green >80%, yellow >50%, red <50%)
-- Per-project grounding percentage in project list
-- Ungrounded entries count as a health signal alongside fatality/misaligned/blind spots
-
-**10.2 Ground Truth Inventory in ProjectView:**
-- New panel: "Ground Truth Documents"
-- Table: system name, doc path, lines, code citations, stages, last modified date
-- Source directories: `artifacts/ref/sources/[system]/` with file count
-- Grounding bar: visual showing grounded vs ungrounded entries per catalogue
-
-**10.3 REF Display in CatalogueTree:**
-- Each catalogue entry shows its `**REF:**` field below the title
-- REF is clickable → opens the referenced Ground Truth doc section
-- Ungrounded entries highlighted with amber border
-- Filter: "show ungrounded only" toggle
-
-**10.4 Provenance Chain Drill-Down:**
-- Click any REF → shows: Ground Truth doc section (the interpretation) + cited source code lines
-- Three-panel view: Catalogue entry | Ground Truth section | Source code snippet
-- The full chain visible on one screen: compact claim → interpretation with context → actual code
-
-**10.5 BrainView Ground Truth Layer:**
-- In the State tab: overlay showing which boundaries have Ground Truth docs
-- Boundaries WITH Ground Truth: solid border
-- Boundaries WITHOUT: dashed border with "OPAQUE" label
-- Click boundary → shows Ground Truth doc's boundary map entry for that boundary
-
-**10.6 Server-Side:**
-- New reader: `server/readers/ground-truth.ts`
-  - Scans `artifacts/ref/GROUND_TRUTH_*.md` files
-  - Parses: system name (from filename), line count, code citation count (regex `[a-z_]+\.(js|rb|ts):\d+`), stage count (`## STAGE`)
-  - Scans `artifacts/ref/sources/*/` directories for file inventory
-- New API endpoint: `GET /api/projects/:name/grounding`
-  - Returns `GroundingStatus`: total/grounded/ungrounded entries, Ground Truth doc list, source directories
-- Update existing endpoints to include `groundingPercent` in ProjectSummary
-
-**Verification:**
-- Open Command Center → grounding percentage visible per project
-- Click project → Ground Truth Inventory panel shows all docs with stats
-- Click catalogue entry with REF → three-panel provenance drill-down works
-- Click ungrounded entry → amber highlight, no REF to display
-- BrainView shows solid vs dashed boundaries for grounded vs opaque
-
-**Dependencies:**
-- Phase 8 (BrainView) for the boundary overlay
-- Types already in `shared/types.ts`: `GroundTruthDoc`, `GroundingStatus`, `CatalogueEntry.ref`, `CatalogueEntry.grounded`
-- Parser already extracts `**REF:**` fields (v1.1.0 commit `ab99487`)
+| Phase | What shipped |
+|---|---|
+| 1. Data layer + API | parser, catalogue/memory/git readers, file watcher, REST API (`4cc09bd`) |
+| 2. Command Center + Project view | (`423aeb8`) |
+| 3. Timeline slider with diff mode | (`c62368b`) |
+| 4. Real-time session trace | hook logger, route logger, WebSocket, Live Trace, Context Budget (`df25189`) |
+| 5. System Lens | contribution matrix, pruning candidates (`0e7932c`); the planned Prune/Retire button was never built |
+| 6. Cross-project intelligence | (`4acdc93`) |
+| 7. Context routing visualization | (`58d4345`) |
+| 8. Brain view | (`b1fd8ed`) |
+| 9. GitHub Trace | (`bdb71f3`) |
+| 10. Ground Truth visualization | grounding status, REF display, ungrounded filter, opaque boundaries in Brain (#4, #5); the three-panel provenance drill-down was not built |
+| Since | Live Sessions (#11), replay reader (#24), structure data (#20), Agents view (#44), Home (#50), Map (#52), this-machine-only guard (#66), and fixes (#53–#71) |
 
 ---
 
-## Design Principles for AnviDeck Itself
+## Design Principles
 
-**Information density over visual flair.** This is an engineering instrument, not a marketing page. Every pixel conveys data. Think: Grafana dashboards, Bloomberg terminal, aircraft cockpit — not Notion or Linear.
+**Information density over visual flair.** An engineering instrument: Grafana, Bloomberg, a cockpit. Not Notion or Linear.
 
-**Read-heavy, write-light.** The dashboard observes. It doesn't modify catalogues (that's Claude's job). The only write actions: mark entries as "reviewed" for staleness tracking, and "prune" for system lens.
+**Readers read; one module acts.** Every action goes through the agent host or the action log, behind the origin and token check, and is recorded.
 
-**Zero config.** Point it at `~/.claude/` and it works. No environment variables, no API keys, no database setup. All data comes from the filesystem.
+**You decide; agents do.** Agents propose and change; you answer permission requests, review and merge. Agents never merge.
 
-**Offline-first.** Everything is local. No external services, no cloud, no telemetry. The framework's data never leaves the machine.
+**Every figure says where it came from.** A reader that could not look says so (`unreadable`, `partial`), never "nothing found". Nothing illustrative is shown as measured (#87).
 
-**Fast startup.** The server reads files lazily. The UI renders immediately with cached state. Git operations are deferred until the timeline is actually opened.
+**Zero config.** Point it at `~/.claude/` and `~/.anvideck/` and it works. Overrides are environment variables (`PORT`, `HOST`, `ANVIDECK_HEALTH_DIR`, `ANVIDECK_STRUCTURE_TMP`, `ANVIDECK_STRUCTURE_GUARD`).
 
-**Dark theme, monospace.** Consistent with terminal aesthetics. The user switches between Claude Code (terminal) and AnviDeck (browser) — visual continuity matters.
+**Local by default.** This machine only; no cloud service of AnviDeck's own and no telemetry. Network use is GitHub through `gh` and the agents' own Claude Code sessions on your login.
 
----
+**Fast startup.** Lazy file reads; the UI renders immediately; slow reads say what they are still reading.
 
-## Open Questions (to resolve during implementation)
-
-1. **Session identification:** ~~How to reliably identify which Claude Code session is active?~~ **RESOLVED:** The hook receives `session_id` in stdin JSON. Log files use `/tmp/anvi-hook-{session_id}.log`. Context monitor uses `/tmp/claude-ctx-{session_id}.json`. Same ID across all.
-
-2. **Project discovery:** ~~How to find all projects?~~ **RESOLVED in Phase 1:** Scan `~/.claude/projects/` directory names (path-encoded). Decode with `name.replace(/^-/, '/').replace(/-/g, '/')`. Implemented in `server/routes/api.ts`.
-
-3. **Catalogue location variance:** ~~Some projects use `.anvi/`, others use `artifacts/.anvi/`.~~ **RESOLVED in Phase 1:** Reader checks both locations. Implemented in `server/readers/catalogue.ts`.
-
-4. **Large git histories:** `~/.claude/.git` could grow large over many sessions. The timeline should paginate and lazy-load. Git operations should be async. **STILL OPEN** — current implementation loads all commits. Needs pagination for 100+ commits.
-
-5. **Multi-session concurrent:** ~~If two Claude Code sessions are active simultaneously~~ **RESOLVED:** Session ID in log filenames distinguishes them. Each WebSocket client can filter by session.
-
-6. **Context routing logging (NEW):** ~~The routing protocol fires inside Claude's reasoning — not via a hook.~~ **RESOLVED in Phase 4:** PostToolUse hook (`anvi-route-logger.js`) detects Read calls to spec files. Logs to `/tmp/anvi-route-{session_id}.log`. Option (a) implemented.
-
-7. **Contribution tracking data model (NEW):** ~~The system lens needs "did this entry contribute?" data per session.~~ **RESOLVED in Phase 5:** Derive from hook logs + catalogues at render time. No new persistent file needed. "Should-have-caught" (red cells) deferred to future session report annotation.
-
-8. **GitHub trace confidence scoring (NEW):** How reliable are the correlations between catalogue entries and GitHub artifacts? High confidence = explicit ID mention (SP8 in commit message). Medium = file overlap + temporal proximity. Low = keyword only. **Needs calibration during Phase 9 implementation.**
+**Dark theme, monospace.** Visual continuity with the terminal.
 
 ---
 
-## Success Criteria
+## Open Questions
 
-AnviDeck is successful when:
+1. **Where AnviDeck's own store folder lives** (action log, calls, agent registry): to be settled in #75 / #76.
+2. **Large git histories:** `/api/timeline` pages (`limit`, `offset`, default 100), but the UI asks once for 200 commits and does not page further.
+3. **GitHub Trace confidence scoring:** correlations between catalogue entries and GitHub artifacts were never calibrated. Open while the view's future is open.
 
-1. **At any point in a conversation**, the user can open the browser and see exactly what the framework is doing — which boundaries are scoped, which checks are firing, what dharana says about the current file. ✅ (Phase 4: Live Trace)
+## Success Criteria (the workspace)
 
-2. **At session end**, the system lens dashboard shows concrete data: contribution counts, stale candidates, cost vs catch — not guesses. ✅ (Phase 5: System Lens)
-
-3. **Across sessions**, the timeline slider shows the framework's evolution — when entries were added, when fatality was detected, when the SoundLayer consolidation was decided. ✅ (Phase 3: Timeline + Phase 5: Entry Timeline)
-
-4. **Across projects**, recurring patterns are surfaced automatically — the user doesn't need to manually compare catalogues. ✅ (Phase 6: Cross-Project Intelligence)
-
-5. **Zero friction:** Opening `localhost:4000` shows everything. No login, no config, no waiting. ✅ (All phases)
-
-6. **Brain View** (Phase 8): For any project, see the complete cognitive state on one screen — what the brain knows (state), what it's doing right now (flow), and how it got here (evolution).
-
-7. **Full traceability** (Phase 9): For any catalogue entry, trace to the GitHub artifacts it informed. For any issue/PR, trace back to the brain entries that were active. The full loop from knowledge to artifact is visible.
-
-8. **Grounded claims** (Phase 10): For any catalogue entry, see whether it's grounded in source code. Click through the three-layer chain: entry → Ground Truth doc → source file:line. Ungrounded entries are visually flagged. The dashboard answers: "how much of our knowledge is actually backed by code?"
+1. An agent started from AnviDeck runs on the Claude Code login (`apiKeySource: none` shown), streams to the page, survives a page reload, and is listed as stopped after a server restart and resumes (#75).
+2. A write from another origin, or without the token, is refused; every action appears in the log with its result (#76).
+3. A permission request appears on Home and the agent's card within a second; Allow lets the call run; Deny stops it with the message (#77).
+4. Starting from a real issue creates the worktree with both links resolving, and the agent's first edit shows the anvi context it was given (#78).
+5. Every prototype screen is reachable from the rail, by URL and from ⌘K (#80), and each shows real figures with their source and date.
+6. All six Help flows play to the end on a real project (#91).
+7. The old views are retired with each one's useful content named in its new home, and the build, tests and remaining screens are unaffected (#92).
