@@ -1,101 +1,98 @@
 ## Project: AnviDeck
 
-Browser-based observability dashboard for the Ānvīkṣikī cognitive framework. The primary observation instrument for watching the framework operate across all projects, all sessions, in real-time and historically.
+A local, browser-based workspace for working with Claude Code agents on projects that use the Ānvīkṣikī (anvi) framework. You see what each agent is doing and what anvi told it, review its changes, answer it, and steer the work, all from one screen on your own machine.
+
+AnviDeck started as an observability dashboard that only read the framework's files. On 2026-11-05 the owner decided it becomes a full agent workspace in this same repo, matching the prototype at https://claude.ai/artifact/RucrgeLUJLfb8HaCTUGViF (tracking issue #93). That work is in progress: **on `main` today no workspace action exists yet** (every HTTP route is a GET; see "Current state"). Do not describe planned behaviour as shipped. An item counts as done only once its PR is merged on `main`.
 
 ### Required Reading
-1. `BUILD.md` — Complete specification: 6 views, 9 phases (1-7 COMPLETE), architecture, data sources
-2. `ref/ANVI_THESIS.md` — WHY the framework exists, Part VI covers the three-tier context architecture this dashboard observes
-3. `ref/DATA_EXAMPLES.md` — Exact input/output for every data type the parser handles
+1. `BUILD.md`: the workspace specification: screens, the reader / agent-host split, the safety model, build order, what gets retired, and what exists today.
+2. Issue #93 (`gh issue view 93 --repo MrityunjayBhardwaj/AnviDeck`): build order and the owner's decisions. Each step has its own issue (#72–#92).
+3. `ref/ANVI_THESIS.md`: why the framework exists; Part VI covers the three-tier context architecture.
+4. `ref/DATA_EXAMPLES.md`: input and output for the data types the parser handles.
 
-### v1.1.0 Ground Truth Awareness
+### The rule that shapes the code: readers read, one module acts
 
-AnviDeck now understands the three-layer grounding abstraction:
-- `CatalogueEntry.ref` — the `**REF:**` field from catalogue entries (links to Ground Truth docs)
-- `CatalogueEntry.grounded` — boolean, true if entry has a non-UNGROUNDED REF
-- `GroundingStatus` — per-project stats: grounded/ungrounded counts, Ground Truth doc inventory
-- `ProjectSummary.groundingPercent` — percentage of entries with Ground Truth refs
-- Parser extracts `**REF:**` lines from catalogue markdown
+- **Readers** (`server/readers/*`, the GET routes in `server/routes/*`, `shared/parser.ts`) are read-only and stay that way. They never write into a project, a catalogue, memory or the anvi store. What they do today besides reading files: spawn `git`, `gh` and `node` to ask questions (log, show, ls-tree, `gh pr view`, `gh search prs`, `gh issue list`, anvi's structure guard), and the structure reader makes a scratch folder under `ANVIDECK_STRUCTURE_TMP` (default `/private/tmp/claude-501/anvideck-structure`) for the guard's temporary checkouts.
+- **The agent host** (planned, #75) is the only code that acts. It runs Claude Code agents through the Claude Agent SDK's `query()`: start, stream, stop, resume, and the permission callback. Every other write AnviDeck makes goes through it or through the action log.
+- A test will fail if a reader imports the agent host or writes a file (#76, planned).
 
-**Still needed (future phases):**
-- Server reader for Ground Truth doc inventory (scan `artifacts/ref/GROUND_TRUTH_*.md`)
-- ProjectView grounding status panel (bar chart: grounded vs ungrounded)
-- CatalogueTree REF display (clickable links to Ground Truth docs)
-- BrainView Ground Truth layer (show which boundaries have Ground Truth docs)
-- Command Center grounding health metric
+**What AnviDeck will write once the workspace lands** (none of this is on `main` yet):
+- Agent actions: start an agent (#75), in its own worktree and branch for an issue (#78); stop and resume it; answer its permission requests (#77); send it messages and diff comments (#79).
+- Merge a PR, only when you press **Merge**, and only the head you reviewed (#85).
+- Edit a file from the Code screen, only one no running agent is touching (#88).
+- Its own records, in AnviDeck's own folder in the store: the action log (#76), your calls on blocked edits (#86), the agent registry (#75).
 
-### Current State
+**Changed only by agents, not by AnviDeck directly:** catalogues (`.anvi/`), memory and Ground Truth docs. A change to them (Re-check a batch, Promote) starts an agent with that task (#89); the agent makes the change, as in a terminal session.
 
-Phases 1-7 COMPLETE (~7,000 lines). UX polish pass done. App builds and runs (`bun run dev`).
+### Safety model
 
-| Done | Remaining |
-|------|-----------|
-| Data layer + REST API | Phase 8: Brain View (project cognitive state — situation map + flow + evolution) |
-| Command Center + Project View | Phase 9: GitHub Trace (knowledge → artifact → outcome loop via `gh` CLI) |
-| Timeline slider with diff mode | Phase 10: Ground Truth Visualization (three-layer grounding observability) |
-| Real-time session trace (WebSocket + hooks) | |
-| System Lens dashboard (contribution matrix) | |
-| Cross-project intelligence (pattern recognition) | |
-| Context routing visualization (three-tier diagram) | |
-| UX polish (selective re-render, loading states, cross-linking) | |
+| Guard | Status |
+|---|---|
+| This machine only: listens on `127.0.0.1` unless `HOST` is set; refuses a request whose Host is not a loopback name or whose Origin is another page (`server/access.ts`, `tests/access.test.ts`) | On `main` (#66) |
+| Every write endpoint requires the same origin **and** a per-server token placed in the page; anything else is refused | Planned (#76) |
+| Every action (what, target, result, time) is appended to the action log and shown in History | Planned (#76, #90) |
+| Agents run on the installed Claude Code and its claude.ai login, never an API key: API-key and provider variables are removed from each agent's environment, and an agent whose init message reports an `apiKeySource` other than `none` is stopped at once | Planned (#75) |
+| Your normal permission rules apply, as in the terminal; only calls they don't cover come to AnviDeck. A request nobody answers keeps waiting, and a timeout never allows it | Planned (#77) |
+| Agents never merge; Merge is a button only you press | Planned (#78, #85) |
+| Deleting the old views needs the owner's go on the PR | Planned (#92) |
 
-**6 views in sidebar:** Command Center, Live Trace, System Lens, Cross-Project, Routing, + Project Deep Dive (via project click)
+### Current state (`main` at `dd71c3e`, 2026-11-05)
 
-**Next:** Phase 8 — Brain View. Three tabs: State (situation map with strata), Flow (cognitive trace timeline with activation spikes), Evolution (learning across sessions). See BUILD.md Phase 8.
+Builds and runs (`bun run dev`; port 4000 unless `PORT` is set). Tests: `bun test`. Types: `bunx tsc --noEmit -p .`.
 
-### Architecture Decisions
+Sidebar views today (`ui/app.ts`): **Home** (`CommandCenter.ts`: one queue of PRs and agents, a one-line status, the project list; each row's action is a link), **Live Sessions**, **Agents** (one project's terminal-started sessions replayed from their transcripts; it can't act on them), **Map** (projects, design blocks, files and imports from anvi's structure guard, with agents replayed on them), **Live Trace**, **Brain**, **System Lens**, **Cross-Project**, **Routing**. Reached from links: **Project** (catalogues, memory, grounding; with the timeline strip, also on Home) and **GitHub Trace**.
 
-**Hono server** — lightweight TypeScript, zero-config. No Express.
+What the workspace adds is in `BUILD.md` under "The workspace". Six of today's views (Live Sessions, Live Trace, Brain, System Lens, Cross-Project, Routing) are to be retired once Notes, History and Agents carry what's useful from them (#92).
 
-**Plain TypeScript UI** — no React/Vue/Svelte. Components are functions returning DOM elements. The UI is information-dense and read-heavy — reactivity frameworks add build complexity without proportional benefit.
+### Architecture decisions that still hold
 
-**No build pipeline** — single esbuild pass via `bun run build.ts`. No webpack, no vite.
+**Bun + Hono server**: lightweight TypeScript, zero-config. No Express.
 
-**Filesystem-only data** — all data read from `~/.claude/` (git repo, catalogues, memory). No database, no API keys, no external services.
+**Plain TypeScript UI**: no React/Vue/Svelte. Components are functions returning DOM elements. The UI is information-dense; a reactivity framework adds build complexity without proportional benefit.
 
-**No Neo4j/graph DB** — investigated (2026-04-01): catalogue data is 41 nodes, 27 edges, 1.6% density. Stratified by cognitive function, not networked. Tables and strata are the correct representation.
+**One esbuild pass**: `bun run build.ts`. No webpack, no vite.
 
-**Dark theme, monospace** — engineering instrument aesthetic. Grafana/Bloomberg, not Notion.
+**No database**: data comes from the filesystem, git and `gh`. AnviDeck's own records (action log, calls, agent registry) are files in its own store folder.
 
-**Selective DOM updates** — app.ts preserves header, sidebar, timeline across navigations. Only main content area swaps. No full-page flicker.
+**No Neo4j/graph DB**: investigated 2026-04-01: catalogue data was 41 nodes, 27 edges, 1.6% density, stratified by cognitive function rather than networked. Tables and strata are the right representation.
 
-**Nav object for cross-linking** — all components receive a `Nav` object with `toHome()`, `toProject()`, `toTrace()`, `toSystemLens()`, `toCrossProject()`, `toRouting()`. Enables click-through between views.
+**Dark theme, monospace**: an engineering instrument (Grafana/Bloomberg), not Notion.
 
-### Data Sources
+**Selective DOM updates**: `ui/app.ts` keeps the header, sidebar and timeline across navigations; only the main content swaps. The new shell (#80) keeps this.
 
-| Data | Location | Access |
+**Nav object for cross-linking**: components receive a `Nav` (`toHome`, `toProject`, `toTrace`, `toSystemLens`, `toCrossProject`, `toRouting`, `toBrain`, `toGitHubTrace`, `toSessions`, `render`). Agents and Map are addressed by URL hash (`#agents?…`, `#map?…`). The new shell (#80) moves every screen to URL hashes and a ⌘K palette.
+
+**Every figure says where it came from**: a reader that could not look reports `unreadable` or `partial`, never "nothing found" (`server/readers/read-status.ts`).
+
+### Decisions added for the workspace (2026-11-05, #93)
+
+- **Same repo, not a new app**: the readers, their tests and Home / Agents / Map are reused.
+- **Agent host on the Claude Agent SDK**: a spike on 2026-11-05 ran it under Bun on the existing login; it loaded the user's settings and anvi's hooks and handed permission requests to the callback (details in #75). The SDK is not yet a dependency in `package.json`.
+- **Claude Code login, never an API key** (#75): agents start with `pathToClaudeCodeExecutable` set to the installed `claude`; the screen shows which login they run on (method and plan, not the email). Each agent is a full Claude Code session and counts toward the plan's usage limits.
+- **Catalogue changes are done by agents**, never written by AnviDeck directly.
+
+### Data sources (readers)
+
+| Data | Location | Reader |
 |------|----------|--------|
-| Framework principles | `~/.claude/CLAUDE.md` | Parse markdown sections |
-| Global memory | `~/.claude/memory/*.md` | Parse frontmatter + content |
-| Project memory | `~/.claude/projects/*/memory/*.md` | Glob + parse |
-| Catalogues | `{project}/.anvi/*.md` or `{project}/artifacts/.anvi/*.md` | Glob + parse |
-| Version history | `~/.claude/.git` | git log, git show |
-| Hook activity | `/tmp/anvi-hook-{session_id}.log` | Tail + watch via WebSocket |
-| Routing decisions | `/tmp/anvi-route-{session_id}.log` | PostToolUse hook via WebSocket |
-| Active sessions | `/tmp/claude-ctx-{session_id}.json` | Read + watch |
-| GitHub artifacts | `gh` CLI (issues, PRs, commits) | Phase 9 — on-demand query |
-
-### What This Dashboard Observes (the Three-Tier Architecture)
-
-The Anvi framework loads context in three tiers:
-- **Tier 1 (always, ~7k tokens):** CLAUDE.md + project CLAUDE.md + base-layer.md
-- **Tier 2 (per-action, hook):** catalogue-context-injector reads dharana from disk on Write|Edit
-- **Tier 3 (per-activity, routing):** Context Routing Protocol classifies user message, loads relevant spec files
-
-AnviDeck visualizes all three tiers: what's always loaded (static), what the hook injected (per-action), and what the routing loaded (per-activity). The Context Budget view shows the combined context usage. The Brain View (Phase 8) will show the full cognitive trace timeline.
-
-### The Cognitive Loop (Phase 9 will close this)
-
-```
-OBSERVE (session) → LEARN (new entry) → ACTIVATE (hook fires)
-  → ACT (Claude uses it) → PRODUCE (issue/PR/commit)
-    → VERIFY (fix works?) → REFINE (entry updated) → loop
-```
+| Framework principles, routing table | `~/.claude/CLAUDE.md` | `server/readers/routing.ts`, `server/routes/api.ts` |
+| Global memory | `~/.claude/memory/*.md` | `server/readers/memory.ts` |
+| Project memory | `~/.claude/projects/<encoded-path>/memory/*.md` | `server/readers/memory.ts` |
+| Projects | `~/.claude/projects/<encoded-path>/` (path from the transcripts' `cwd`) | `server/readers/projects.ts` |
+| Catalogues, Ground Truth docs | first existing of `{project}/.anvi`, `{project}/artifacts/.anvi`, `~/.anvideck/projects/{name}/.anvi` (same for `ref`) | `shared/anvi-paths.ts`, `server/readers/catalogue.ts`, `server/readers/ground-truth.ts` |
+| Session transcripts | `~/.claude/projects/<encoded-cwd>/<session>.jsonl` | `server/readers/replay.ts`, `server/readers/home.ts` |
+| Live sessions | `~/.claude/sessions/*.json` | `server/readers/sessions.ts` |
+| Hook and routing activity | `/tmp/anvi-hook-*.log`, `/tmp/anvi-route-*.log` | `server/watchers/hook-logger.ts` → WebSocket `/ws` |
+| Framework history | `~/.claude` git repo | `server/readers/git-history.ts` |
+| Design structure | anvi's structure guard (`~/.claude/anvi/scripts/structure-guard.js`) and its registries | `server/readers/structure.ts`, `server/readers/structure-lock.ts` |
+| Notes currency | `~/.anvideck/projects/anvi/instances` (`ANVIDECK_HEALTH_DIR`) | `server/readers/home.ts` |
+| GitHub | `gh` (PR state, your open PRs, issues and PRs for GitHub Trace) | `server/readers/home.ts`, `server/readers/replay.ts`, `server/routes/api.ts` |
 
 ### Constraints
 
-- Zero config — point at `~/.claude/` and it works
-- Offline-first — no external services, no cloud, no telemetry
-- Fast startup — lazy file reads, immediate UI render
-- Read-heavy, write-light — observe, don't modify (except staleness marking and pruning)
-- Bun as runtime (fast, TypeScript-native)
-- No external databases — filesystem + `gh` CLI only
+- Zero config: point it at `~/.claude/` and `~/.anvideck/` and it works. Overrides are environment variables (`PORT`, `HOST`, `ANVIDECK_HEALTH_DIR`, `ANVIDECK_STRUCTURE_TMP`, `ANVIDECK_STRUCTURE_GUARD`).
+- This machine only, by default (#66).
+- No cloud service of AnviDeck's own and no telemetry. Network use is GitHub through `gh`, and, once #75 lands, the agents' own Claude Code sessions on the user's login.
+- Fast startup: lazy file reads, immediate UI render.
+- Readers stay read-only; every action goes through the agent host or the action log, guarded by origin and token (#76).
+- Bun as runtime. No external databases.
