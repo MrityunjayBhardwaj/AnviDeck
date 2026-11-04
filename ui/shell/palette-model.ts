@@ -1,9 +1,10 @@
 /**
  * The ⌘K palette's entries and its filter (#80). Pure: the DOM part is palette.ts.
  *
- * An entry either opens something (`hash` or `href`) or is listed as not wired yet
- * (`pending` names the issue that wires it). This PR makes no write requests, so every
- * command that would act (start an agent, run /anvi:debug in a new agent) is pending.
+ * An entry opens something (`hash` or `href`), runs a command of this page (`command`), or is
+ * listed as not wired yet (`pending` names the issue that wires it). "Start an agent on an
+ * issue" (#78) opens its dialog; the commands that start an agent on a task with no issue
+ * (/anvi:debug, /anvi:currency) are pending until #130.
  */
 import { SCREENS, hashFor, type ScreenId } from "./routes";
 import type { StripAgent } from "./activity";
@@ -21,9 +22,14 @@ export interface PaletteEntry {
   href?: string;
   /** Picks a project in the switcher. */
   project?: string;
+  /** Runs a command of this page (opens its dialog). */
+  command?: PaletteCommand;
   /** Not wired yet: shown, never run. */
   pending?: string;
 }
+
+/** Commands an entry can run in this page. */
+export type PaletteCommand = "start-from-issue";
 
 export interface PaletteInput {
   projects: { name: string; path: string }[];
@@ -82,9 +88,14 @@ export function paletteEntries(inp: PaletteInput): PaletteEntry[] {
     pending: "#85",
   });
   out.push(
-    { group: "Commands", label: "Start an agent on an issue", hint: "in its own worktree", pending: "#78" },
-    { group: "Commands", label: "/anvi:debug · systematic diagnosis in a new agent", pending: "#78" },
-    { group: "Commands", label: "/anvi:currency · re-check drifted notes in a new agent", pending: "#78" },
+    {
+      group: "Commands",
+      label: "Start an agent on an issue",
+      hint: `in its own worktree and branch${inp.currentProject ? ` · ${inp.currentProject}` : ""}`,
+      command: "start-from-issue",
+    },
+    { group: "Commands", label: "/anvi:debug · systematic diagnosis in a new agent", pending: "#130" },
+    { group: "Commands", label: "/anvi:currency · re-check drifted notes in a new agent", pending: "#130" },
     { group: "Commands", label: "Open the agent host page", hint: "temporary page from #75: start, watch, stop agents", href: "/agent-host" },
   );
   return out;

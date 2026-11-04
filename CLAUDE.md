@@ -17,7 +17,7 @@ AnviDeck started as an observability dashboard that only read the framework's fi
 - A test fails if a reader imports the agent host, the action log or the write guard, or calls a file write API (#76, on `main`: `tests/reader-actor-split.test.ts`; the structure reader's scratch folder is its one listed exemption).
 
 **What AnviDeck will write once the workspace lands** (none of this is on `main` yet):
-- Agent actions: start an agent (#75), in its own worktree and branch for an issue (#78); stop and resume it; answer its permission requests (#77); send it messages and diff comments (#79).
+- Agent actions: start an agent (#75), in its own worktree and branch for an issue (#78, on main: `POST /api/agents/from-issue`); stop and resume it; answer its permission requests (#77); send it messages and diff comments (#79).
 - Merge a PR, only when you press **Merge**, and only the head you reviewed (#85).
 - Edit a file from the Code screen, only one no running agent is touching (#88).
 - Its own records, in AnviDeck's own folder in the store: the action log (#76), your calls on blocked edits (#86), the agent registry (#75).
@@ -33,7 +33,7 @@ AnviDeck started as an observability dashboard that only read the framework's fi
 | Every action (what, target, result, time) is appended to the action log (`actions.jsonl` in the agent registry folder; `GET /api/actions`) and shown in History | Logged on `main` (#76); History planned (#90) |
 | Agents run on the installed Claude Code and its claude.ai login, never an API key: API-key and provider variables are removed from each agent's environment, and an agent whose init message reports an `apiKeySource` other than `none` is stopped at once | Planned (#75) |
 | Your normal permission rules apply, as in the terminal; only calls they don't cover come to AnviDeck, on Home and the agent's row of `/agent-host`, with Allow / Deny (`POST /api/agents/:id/permissions/:requestId`, `shared/permission-requests.ts`, `tests/permission-requests.test.ts`). A request nobody answers keeps waiting, and a timeout never allows it; if the agent stops it is withdrawn | On `main` (#77) |
-| Agents never merge; Merge is a button only you press | Planned (#78, #85) |
+| Agents never merge; Merge is a button only you press | An agent started from an issue is told so in its prompt (#78, on main); Merge button planned (#85) |
 | Deleting the old views needs the owner's go on the PR | Planned (#92) |
 
 ### Current state (`main` at `dd71c3e`, 2026-11-05)

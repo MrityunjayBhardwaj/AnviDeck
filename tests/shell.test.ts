@@ -147,11 +147,18 @@ describe("palette", () => {
     expect(e.some((x) => x.group === "Commands" && x.label.startsWith("/anvi:debug"))).toBe(true);
   });
 
-  test("this PR makes no write requests: commands that act are pending, never runnable", () => {
+  test("'Start an agent on an issue' runs its dialog (#78); task commands with no issue stay pending", () => {
     const e = paletteEntries(input());
-    for (const x of e.filter((x) => /start|\/anvi:/i.test(x.label))) {
-      expect(x.pending).toBe("#78");
-      expect(x.hash ?? x.href ?? x.project).toBeUndefined();
+    const start = e.filter((x) => /^start an agent on an issue/i.test(x.label));
+    expect(start).toHaveLength(1);
+    expect(start[0]!.command).toBe("start-from-issue");
+    expect(start[0]!.pending).toBeUndefined();
+    expect(start[0]!.hint).toContain("alpha");
+    const tasks = e.filter((x) => /\/anvi:/i.test(x.label));
+    expect(tasks).toHaveLength(2);
+    for (const x of tasks) {
+      expect(x.pending).toBe("#130");
+      expect(x.hash ?? x.href ?? x.project ?? x.command).toBeUndefined();
     }
     // Issues: no route lists a project's open issues yet, so it is pending, not an empty list.
     const issues = e.filter((x) => x.group === "Issues");
@@ -211,7 +218,7 @@ describe("review follow-ups: the palette's first row and hashes that must not cr
     expect(rows.length).toBeGreaterThan(0);
     expect(rows[0]!.group).toBe("Commands");
     expect(rows[0]!.label.toLowerCase()).toContain("debug");
-    // The debug command is pending until #78, so nothing is selected and Enter runs nothing.
+    // The debug command is pending until #130, so nothing is selected and Enter runs nothing.
     expect(rows[0]!.pending).toBeTruthy();
     expect(initialSelection(rows, "debug")).toBe(-1);
     expect(initialSelection(filterEntries(paletteEntries(realInput), "notes"), "notes")).toBe(0);
