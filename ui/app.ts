@@ -3,28 +3,31 @@ import { CommandCenter } from "./components/CommandCenter";
 import { ProjectView } from "./components/ProjectView";
 import { Timeline, type TimelineState } from "./components/Timeline";
 import { DiffViewer } from "./components/DiffViewer";
-import {
-  CognitiveTrace,
-  addHookEntry,
-  addRouteEntry,
-  resetTrace,
-} from "./components/CognitiveTrace";
+import { CognitiveTrace, addHookEntry, addRouteEntry } from "./components/CognitiveTrace";
 import { SystemLens } from "./components/SystemLens";
 import { CrossProject } from "./components/CrossProject";
 import { RoutingView, addRouteToLog } from "./components/RoutingView";
-import {
-  ContextBudget,
-  addHookToBudget,
-  addRouteToBudget,
-  resetBudget,
-} from "./components/ContextBudget";
+import { ContextBudget, addHookToBudget, addRouteToBudget } from "./components/ContextBudget";
 import { BrainView, addBrainHookEvent, addBrainRouteEvent } from "./components/BrainView";
 import { GitHubTrace } from "./components/GitHubTrace";
 import { LiveSessions } from "./components/LiveSessions";
-import { AgentsView, parseAgentsHash, type AgentsRoute } from "./components/AgentsView";
+import { AgentsView, parseAgentsHash } from "./components/AgentsView";
 import { needsCount, badgeText, stripText, type NeedsCount } from "./home-count";
 import type { HomeResponse } from "../shared/home-types";
 import { MapView } from "./components/MapView";
+import { parseRoute, screen, type Route, type ScreenId } from "./shell/routes";
+import type { AgentsRead, StripAgent } from "./shell/activity";
+import { paletteEntries, screenHash, type PaletteEntry } from "./shell/palette-model";
+import { createPalette } from "./shell/palette";
+import {
+  closePopoversOnOutsideClick,
+  olderViews,
+  paintRail,
+  paintStrip,
+  paintTopBar,
+  placeholder,
+  unknownScreenNote,
+} from "./shell/frame";
 import type {
   ProjectSummary,
   ProjectState,
@@ -35,6 +38,8 @@ import type {
 } from "../shared/types";
 
 // --- Navigation API (passed to all components for cross-linking) ---
+// Every method sets the URL hash; the hashchange handler routes, so each screen has a URL
+// that survives a reload (#80).
 export interface Nav {
   toHome: () => void;
   toProject: (name: string) => void;
@@ -49,12 +54,14 @@ export interface Nav {
 }
 
 // State
-type ViewName = "home" | "project" | "trace" | "system-lens" | "cross-project" | "routing" | "brain" | "github-trace" | "sessions" | "agents" | "map";
-let agentsRoute: AgentsRoute | null = null; // seeded from #agents?… (#17)
-let currentBrainProject: string | null = null;
-let currentView: ViewName = "home";
+let route: Route = parseRoute(location.hash);
 let projects: ProjectSummary[] = [];
+/** The project switcher's pick: kept across reloads, overridden by a project named in the URL. */
+const PROJECT_KEY = "anvideck.project";
+let currentProjectName: string | null = localStorage.getItem(PROJECT_KEY);
 let currentProject: ProjectState | null = null;
+/** Set when the project deep dive could not be read: shown, never a blank screen. */
+let projectError: string | null = null;
 let timelinePoints: TimelinePoint[] = [];
 /** Set when the history could not be read (#35): shown in the timeline strip, never as "no history". */
 let timelineError: string | null = null;
@@ -62,238 +69,200 @@ let timelineState: TimelineState | null = null;
 let diffContent: string | null = null;
 let wsConnected = false;
 let loading = false;
-let firstVisit = true;
 // Home (#18): the queue and its ONE count, set together in setHome() only.
 let home: HomeResponse | null = null;
 let count: NeedsCount = needsCount(null);
+// The activity strip (#80): AnviDeck-started agents from /api/agents, updated by the WebSocket.
+let hostAgents: AgentsRead = { state: "loading" };
+let stripOpen = false;
+const recentEvents: { kind: "ok" | "info" | "warn" | "bad"; text: string }[] = [];
+
+function go(hash: string) {
+  if (location.hash === hash) routeTo(parseRoute(hash));
+  else location.hash = hash;
+}
 
 const nav: Nav = {
-  toHome: () => navigateTo("home"),
-  toProject: (name: string) => navigateToProject(name),
-  toTrace: () => navigateTo("trace"),
+  toHome: () => go("#home"),
+  toProject: (name: string) => go(screenHash("project", name)),
+  toTrace: () => go("#trace"),
   toSystemLens: (project?: string) => {
-    navigateTo("system-lens");
-    if (project) {
-      // SystemLens will pick this up
-      (window as any).__systemLensProject = project;
-    }
+    // SystemLens picks this up when it mounts.
+    if (project) (window as any).__systemLensProject = project;
+    go("#system-lens");
   },
-  toCrossProject: () => navigateTo("cross-project"),
-  toRouting: () => navigateTo("routing"),
-  toBrain: (project: string) => {
-    currentBrainProject = project;
-    navigateTo("brain");
-  },
-  toGitHubTrace: (project?: string) => {
-    if (project) currentBrainProject = project;
-    navigateTo("github-trace");
-  },
-  toSessions: () => navigateTo("sessions"),
+  toCrossProject: () => go("#cross-project"),
+  toRouting: () => go("#routing"),
+  toBrain: (project: string) => go(screenHash("brain", project)),
+  toGitHubTrace: (project?: string) => go(screenHash("github-trace", project ?? currentProjectName)),
+  toSessions: () => go("#sessions"),
   render,
 };
 
-// DOM refs — preserved across renders to prevent flicker
-let headerEl: HTMLElement | null = null;
-let sidebarEl: HTMLElement | null = null;
-let sidebarToggle: HTMLElement | null = null;
-let mainEl: HTMLElement | null = null;
-let timelineEl: HTMLElement | null = null;
-let sidebarCollapsed = false;
+// The frame: created once, never rebuilt. Only the main area swaps between screens.
+let topEl: HTMLElement;
+let railEl: HTMLElement;
+let mainEl: HTMLElement;
+let timelineEl: HTMLElement;
+let stripEl: HTMLElement;
 
 const app = document.getElementById("app")!;
 
 function ensureStructure() {
-  if (!headerEl) {
-    app.innerHTML = "";
-
-    headerEl = document.createElement("div");
-    headerEl.className = "deck-header";
-    app.appendChild(headerEl);
-
-    const body = document.createElement("div");
-    body.className = "deck-body";
-
-    const sidebarWrap = document.createElement("div");
-    sidebarWrap.className = "sidebar-wrap";
-
-    sidebarToggle = document.createElement("button");
-    sidebarToggle.className = "sidebar-toggle";
-    sidebarToggle.innerHTML = `<span class="sidebar-toggle-icon">◀</span>`;
-    sidebarToggle.addEventListener("click", () => {
-      sidebarCollapsed = !sidebarCollapsed;
-      sidebarWrap.classList.toggle("collapsed", sidebarCollapsed);
-      sidebarToggle!.querySelector(".sidebar-toggle-icon")!.textContent = sidebarCollapsed ? "▶" : "◀";
-    });
-    sidebarWrap.appendChild(sidebarToggle);
-
-    sidebarEl = document.createElement("div");
-    sidebarEl.className = "sidebar";
-    sidebarWrap.appendChild(sidebarEl);
-
-    body.appendChild(sidebarWrap);
-
-    mainEl = document.createElement("div");
-    mainEl.className = "main-content";
-    body.appendChild(mainEl);
-
-    app.appendChild(body);
-
-    timelineEl = document.createElement("div");
-    timelineEl.className = "timeline-wrapper";
-    app.appendChild(timelineEl);
-  }
+  if (topEl) return;
+  app.innerHTML = "";
+  app.className = "sh-app";
+  topEl = document.createElement("header");
+  topEl.className = "sh-top";
+  railEl = document.createElement("nav");
+  railEl.className = "sh-rail";
+  railEl.setAttribute("aria-label", "Screens");
+  mainEl = document.createElement("main");
+  mainEl.className = "sh-main main-content";
+  timelineEl = document.createElement("div");
+  timelineEl.className = "sh-timeline timeline-wrapper";
+  stripEl = document.createElement("footer");
+  stripEl.className = "sh-strip";
+  stripEl.setAttribute("aria-label", "Live activity");
+  app.append(topEl, railEl, mainEl, timelineEl, stripEl);
+  closePopoversOnOutsideClick(topEl);
 }
 
 function render() {
   ensureStructure();
-  renderHeader();
-  renderSidebar();
+  renderTop();
+  renderRail();
   renderMain();
   renderTimeline();
+  renderStrip();
 }
 
-function renderHeader() {
-  headerEl!.innerHTML = `
-    <h1 class="header-title">ANVI DECK</h1>
-    <span class="live-strip" title="from /api/home: live sessions and the Home queue">${stripText(count)}</span>
-    <span class="status ${wsConnected ? "live" : "disconnected"}" role="status" aria-label="WebSocket ${wsConnected ? "connected" : "disconnected"}">${wsConnected ? "live" : "disconnected"}</span>
-  `;
+function sortedProjects(): ProjectSummary[] {
+  const n = (p: ProjectSummary) => (p.sharesNotesWith ? 0 : Object.values(p.catalogueCounts).reduce((s, x) => s + x, 0));
+  return [...projects].sort((a, b) => n(b) - n(a));
 }
 
-function renderSidebar() {
-  sidebarEl!.innerHTML = "";
-
-  // Navigation
-  const navSection = document.createElement("div");
-  navSection.className = "sidebar-section";
-  navSection.innerHTML = `<h3>Views</h3>`;
-
-  const views: { id: ViewName; label: string; extra?: string }[] = [
-    { id: "home", label: "Home", extra: `<span class="badge home-badge${count.state === "ok" && count.n === 0 ? " zero" : ""}" title="things that need you (same count as the Home headline)">${badgeText(count)}</span>` },
-    { id: "sessions", label: "Live Sessions" },
-    { id: "agents", label: "Agents" },
-    { id: "map", label: "Map" },
-    { id: "trace", label: "Live Trace", extra: wsConnected ? '<span class="ws-indicator connected"></span>' : '<span class="ws-indicator"></span>' },
-    { id: "brain", label: "Brain" },
-    { id: "system-lens", label: "System Lens" },
-    { id: "cross-project", label: "Cross-Project" },
-    { id: "routing", label: "Routing" },
-  ];
-
-  for (const v of views) {
-    const item = document.createElement("button");
-    item.className = `nav-item${currentView === v.id ? " active" : ""}`;
-    item.innerHTML = `${v.label} ${v.extra ?? ""}`;
-    item.addEventListener("click", () => navigateTo(v.id));
-    navSection.appendChild(item);
-  }
-
-  sidebarEl!.appendChild(navSection);
-
-  // Projects
-  const section = document.createElement("div");
-  section.className = "sidebar-section";
-  section.innerHTML = `<h3>Projects</h3>`;
-
-  const sorted = [...projects].sort((a, b) => {
-    const aCount = a.sharesNotesWith ? 0 : Object.values(a.catalogueCounts).reduce((s, n) => s + n, 0);
-    const bCount = b.sharesNotesWith ? 0 : Object.values(b.catalogueCounts).reduce((s, n) => s + n, 0);
-    return bCount - aCount;
+function renderTop() {
+  paintTopBar(topEl, {
+    projects: sortedProjects(),
+    current: currentProjectName,
+    onProject: setProject,
+    onPalette: () => palette.open(),
   });
+}
 
-  for (const p of sorted) {
-    const catCount = p.sharesNotesWith ? 0 : Object.values(p.catalogueCounts).reduce((s, n) => s + n, 0);
-    const item = document.createElement("button");
-    item.className = `project-item${currentView === "project" && currentProject?.name === p.name ? " active" : ""}`;
-    item.innerHTML = `
-      <span class="name">${p.name}</span>
-      ${p.sharesNotesWith ? `<span class="badge dim" title="same notes store as ${p.sharesNotesWith}">↪ ${p.sharesNotesWith}</span>` : ""}
-      ${catCount > 0 ? `<span class="badge has-catalogues">${catCount}</span>` : ""}
-      ${!p.sharesNotesWith && p.fatalitySignals > 0 ? `<span class="badge fatality">!</span>` : ""}
-    `;
-    item.addEventListener("click", () => navigateToProject(p.name));
-    section.appendChild(item);
-  }
+function renderRail() {
+  paintRail(railEl, screen(route.screen).rail, { text: badgeText(count), zero: count.state === "ok" && count.n === 0 }, currentProjectName);
+}
 
-  sidebarEl!.appendChild(section);
+function renderStrip() {
+  paintStrip(stripEl, {
+    wsConnected,
+    agents: hostAgents,
+    terminals: stripText(count),
+    events: recentEvents,
+    open: stripOpen,
+    onToggle: () => {
+      stripOpen = !stripOpen;
+      renderStrip();
+    },
+  });
+}
+
+function setProject(name: string) {
+  if (!name || !projects.some((p) => p.name === name)) return;
+  currentProjectName = name;
+  localStorage.setItem(PROJECT_KEY, name);
+  renderTop();
+  renderRail();
+  // Screens that show one project follow the switcher.
+  const s = route.screen;
+  if (s === "project" || s === "brain" || s === "github-trace" || s === "agents") go(screenHash(s, name));
+  else if (screen(s).group === "project" || s === "older") renderMain();
 }
 
 function renderMain() {
-  const prevView = mainEl!.dataset.view;
-  const sameView = prevView === currentView;
-  const scrollTop = sameView ? mainEl!.scrollTop : 0;
+  const id = route.screen;
+  const prevView = mainEl.dataset.view;
+  const sameView = prevView === id;
+  const scrollTop = sameView ? mainEl.scrollTop : 0;
 
-  mainEl!.innerHTML = "";
-  mainEl!.dataset.view = currentView;
+  mainEl.innerHTML = "";
+  mainEl.dataset.view = id;
 
   if (loading) {
-    mainEl!.innerHTML = `<div class="loading-state"><div class="loading-spinner"></div><span>Loading...</span></div>`;
+    mainEl.innerHTML = `<div class="loading-state"><div class="loading-spinner"></div><span>Loading...</span></div>`;
     return;
   }
+  if (route.unknown) mainEl.appendChild(unknownScreenNote(route.unknown));
 
-  if (currentView === "home") {
-    mainEl!.appendChild(CommandCenter(projects, nav, home, count));
-  } else if (currentView === "project" && currentProject) {
-    mainEl!.appendChild(ProjectView(currentProject, nav));
-  } else if (currentView === "trace") {
-    mainEl!.appendChild(CognitiveTrace(nav));
-    mainEl!.appendChild(ContextBudget());
-  } else if (currentView === "system-lens") {
-    mainEl!.appendChild(SystemLens(projects, nav));
-  } else if (currentView === "cross-project") {
-    mainEl!.appendChild(CrossProject(nav));
-  } else if (currentView === "sessions") {
-    mainEl!.appendChild(LiveSessions(nav));
-  } else if (currentView === "agents") {
-    mainEl!.appendChild(AgentsView(projects.map((p) => p.name), agentsRoute));
-    agentsRoute = null;
-  } else if (currentView === "map") {
-    mainEl!.appendChild(MapView(nav));
-  } else if (currentView === "routing") {
-    mainEl!.appendChild(RoutingView(nav));
-  } else if (currentView === "github-trace") {
-    const gtProject = currentBrainProject ?? projects[0]?.name ?? "";
-    const projectNames = projects.map((p) => p.name);
-    mainEl!.appendChild(GitHubTrace(projectNames, gtProject, nav));
-  } else if (currentView === "brain") {
-    const brainProject = currentBrainProject ?? projects[0]?.name;
-    if (brainProject) {
-      mainEl!.appendChild(BrainView(brainProject, nav, projects.map((p) => p.name)));
-    } else {
-      mainEl!.innerHTML = `<div class="brain-empty"><div class="brain-empty-title">No project selected</div><div class="brain-empty-desc">Click a project in the sidebar to view its brain.</div></div>`;
-    }
+  const def = screen(id);
+  if (def.buildsIn) {
+    mainEl.appendChild(placeholder(id, currentProjectName));
+  } else if (id === "home") {
+    mainEl.appendChild(CommandCenter(projects, nav, home, count));
+  } else if (id === "older") {
+    mainEl.appendChild(olderViews(currentProjectName));
+  } else if (id === "project") {
+    if (currentProject) mainEl.appendChild(ProjectView(currentProject, nav));
+    else mainEl.appendChild(message(projectError ? `Could not read the project — ${projectError}` : "Pick a project in the switcher above."));
+  } else if (id === "trace") {
+    mainEl.appendChild(CognitiveTrace(nav));
+    mainEl.appendChild(ContextBudget());
+  } else if (id === "system-lens") {
+    mainEl.appendChild(SystemLens(projects, nav));
+  } else if (id === "cross-project") {
+    mainEl.appendChild(CrossProject(nav));
+  } else if (id === "sessions") {
+    mainEl.appendChild(LiveSessions(nav));
+  } else if (id === "agents") {
+    const r = parseAgentsHash(`#agents${location.hash.includes("?") ? location.hash.slice(location.hash.indexOf("?")) : ""}`) ?? {};
+    if (!r.project && currentProjectName) r.project = currentProjectName;
+    mainEl.appendChild(AgentsView(projects.map((p) => p.name), r));
+  } else if (id === "map") {
+    mainEl.appendChild(MapView(nav));
+  } else if (id === "routing") {
+    mainEl.appendChild(RoutingView(nav));
+  } else if (id === "github-trace") {
+    const gtProject = route.params.get("project") ?? currentProjectName ?? projects[0]?.name ?? "";
+    mainEl.appendChild(GitHubTrace(projects.map((p) => p.name), gtProject, nav));
+  } else if (id === "brain") {
+    const brainProject = route.params.get("project") ?? currentProjectName ?? projects[0]?.name;
+    if (brainProject) mainEl.appendChild(BrainView(brainProject, nav, projects.map((p) => p.name)));
+    else mainEl.innerHTML = `<div class="brain-empty"><div class="brain-empty-title">No project selected</div><div class="brain-empty-desc">Pick a project in the switcher above to view its brain.</div></div>`;
   }
 
-  if (diffContent !== null) {
-    mainEl!.appendChild(DiffViewer(diffContent));
-  }
+  if (diffContent !== null) mainEl.appendChild(DiffViewer(diffContent));
+  if (sameView) mainEl.scrollTop = scrollTop;
+}
 
-  if (sameView) {
-    mainEl!.scrollTop = scrollTop;
-  }
+function message(text: string): HTMLElement {
+  const d = document.createElement("div");
+  d.className = "sh-message";
+  d.textContent = text;
+  return d;
 }
 
 function renderTimeline() {
-  const showTimeline = currentView === "home" || currentView === "project";
+  const showTimeline = route.screen === "home" || route.screen === "project";
   if (timelineError && showTimeline) {
-    timelineEl!.innerHTML = "";
-    timelineEl!.style.display = "";
+    timelineEl.innerHTML = "";
+    timelineEl.style.display = "";
     const bar = document.createElement("div");
     bar.className = "timeline-bar";
     const msg = document.createElement("div");
     msg.className = "timeline-empty";
     msg.textContent = `Could not read the history — ${timelineError}`;
     bar.appendChild(msg);
-    timelineEl!.appendChild(bar);
+    timelineEl.appendChild(bar);
   } else if (timelinePoints.length > 0 && showTimeline) {
-    timelineEl!.innerHTML = "";
-    timelineEl!.style.display = "";
+    timelineEl.innerHTML = "";
+    timelineEl.style.display = "";
     const initialIndex = timelineState?.selectedIndex ?? 0;
-    const timeline = Timeline(timelinePoints, initialIndex, onTimelineChange);
-    timelineEl!.appendChild(timeline);
+    timelineEl.appendChild(Timeline(timelinePoints, initialIndex, onTimelineChange));
   } else {
-    timelineEl!.innerHTML = "";
-    timelineEl!.style.display = "none";
+    timelineEl.innerHTML = "";
+    timelineEl.style.display = "none";
   }
 }
 
@@ -314,64 +283,122 @@ async function onTimelineChange(state: TimelineState) {
   renderMain();
 }
 
-function navigateTo(view: ViewName) {
-  if (view !== "agents" && location.hash.startsWith("#agents")) history.replaceState(null, "", location.pathname);
-  if (view !== "map" && location.hash.startsWith("#map")) history.replaceState(null, "", location.pathname);
-  currentView = view;
-  currentProject = null;
-  diffContent = null;
-  loading = false;
-  firstVisit = false;
-  render();
-}
+/** Bumped on every route: a project read that comes back after the user moved on is dropped. */
+let routeSeq = 0;
 
-async function navigateToProject(name: string) {
-  if (location.hash.startsWith("#agents")) history.replaceState(null, "", location.pathname);
-  currentView = "project";
-  loading = true;
-  diffContent = null;
-  firstVisit = false;
-  render();
-  try {
-    currentProject = await api.project(name);
-  } catch (err) {
-    console.error("Failed to load project:", err);
+function routeTo(next: Route) {
+  const prev = route;
+  route = next;
+  // A project named in the URL wins over the stored pick.
+  const named = next.params.get(next.screen === "project" ? "name" : "project");
+  if (named && named !== currentProjectName && projects.some((p) => p.name === named)) {
+    currentProjectName = named;
+    localStorage.setItem(PROJECT_KEY, named);
+    renderTop();
+  }
+  // The Map keeps its own state in its hash and listens for its own changes.
+  if (prev.screen === "map" && next.screen === "map" && mainEl.dataset.view === "map") return;
+  if (prev.screen !== next.screen) diffContent = null;
+  const seq = ++routeSeq;
+  if (next.screen === "project") {
+    const name = next.params.get("name") ?? currentProjectName;
+    currentProject = null;
+    projectError = null;
+    if (name) {
+      loading = true;
+      renderRail();
+      renderMain();
+      renderTimeline();
+      api.project(name).then(
+        (p) => {
+          if (seq !== routeSeq) return;
+          currentProject = p;
+        },
+        (err: Error) => {
+          if (seq !== routeSeq) return;
+          projectError = err.message;
+          console.error("Failed to load project:", err);
+        },
+      ).finally(() => {
+        if (seq !== routeSeq) return;
+        loading = false;
+        renderMain();
+      });
+      return;
+    }
   }
   loading = false;
-  render();
+  renderRail();
+  renderMain();
+  renderTimeline();
 }
 
+// The palette (#80)
+function paletteData(): PaletteEntry[] {
+  return paletteEntries({
+    projects: sortedProjects().map((p) => ({ name: p.name, path: p.path })),
+    currentProject: currentProjectName,
+    hostAgents: hostAgents.state === "ok" ? hostAgents.agents : null,
+    terminalAgents: home?.agents ?? [],
+  });
+}
+
+const palette = createPalette({
+  entries: paletteData,
+  choose: (e) => {
+    if (e.project) setProject(e.project);
+    else if (e.hash) go(e.hash);
+    else if (e.href) location.href = e.href;
+  },
+});
+
 // WebSocket
-let ws: WebSocket | null = null;
-let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+function pushEvent(kind: "ok" | "info" | "warn" | "bad", text: string) {
+  recentEvents.unshift({ kind, text });
+  recentEvents.length = Math.min(recentEvents.length, 3);
+  renderStrip();
+}
+
+function upsertAgent(a: StripAgent) {
+  if (hostAgents.state !== "ok") return; // the next full read brings it in
+  const i = hostAgents.agents.findIndex((x) => x.id === a.id);
+  const prev = i === -1 ? null : hostAgents.agents[i];
+  if (i === -1) hostAgents.agents.unshift(a);
+  else hostAgents.agents[i] = a;
+  if (!prev || prev.status !== a.status) {
+    const kind = a.status === "failed" ? "bad" : a.pendingPermissions.length ? "warn" : a.status === "done" ? "ok" : "info";
+    pushEvent(kind, `${a.id} · ${a.pendingPermissions.length ? "waiting for permission" : a.status}`);
+  } else renderStrip();
+}
 
 function connectWebSocket(): void {
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
   const url = `${protocol}//${location.host}/ws`;
   try {
-    ws = new WebSocket(url);
+    const ws = new WebSocket(url);
     ws.onopen = () => {
       wsConnected = true;
-      renderHeader();
-      renderSidebar();
+      renderStrip();
+      loadAgents(); // anything missed while disconnected
     };
     ws.onclose = () => {
       wsConnected = false;
-      ws = null;
-      renderHeader();
-      renderSidebar();
-      reconnectTimer = setTimeout(connectWebSocket, 3000);
+      renderStrip();
+      setTimeout(connectWebSocket, 3000);
     };
     ws.onerror = () => {};
     ws.onmessage = (evt) => {
       try {
-        const msg: WSMessage = JSON.parse(evt.data);
+        const msg = JSON.parse(evt.data) as WSMessage | { type: "agent"; data: StripAgent };
         if (msg.type === "heartbeat") return;
-        if (msg.type === "hook") {
+        if (msg.type === "agent") {
+          upsertAgent(msg.data as StripAgent);
+        } else if (msg.type === "hook") {
           const entry = msg.data as HookLogEntry;
           addHookEntry(entry);
           addHookToBudget(entry);
           addBrainHookEvent(entry);
+          pushEvent(entry.fatality ? "warn" : "info", `hook · ${entry.file.split("/").pop()}`);
         } else if (msg.type === "route") {
           const entry = msg.data as RouteLogEntry;
           addRouteEntry(entry);
@@ -382,17 +409,22 @@ function connectWebSocket(): void {
       } catch {}
     };
   } catch {
-    reconnectTimer = setTimeout(connectWebSocket, 3000);
+    setTimeout(connectWebSocket, 3000);
   }
+}
+
+async function loadAgents() {
+  hostAgents = await api.agentsRead();
+  renderStrip();
 }
 
 // Home (#18): the queue loads after the page, so a slow source never holds up the first paint.
 function setHome(next: HomeResponse | null, failed = false) {
   home = next;
   count = needsCount(home, failed);
-  renderHeader();
-  renderSidebar();
-  if (currentView === "home" && !loading) renderMain();
+  renderRail();
+  renderStrip();
+  if (route.screen === "home" && !loading) renderMain();
 }
 
 /** A load that came back with sources still reading asks again soon, not in a minute (#61). */
@@ -400,9 +432,9 @@ let homeRetry: ReturnType<typeof setTimeout> | null = null;
 const HOME_READING_RETRY_MS = 5_000;
 
 /**
- * Home's count shows in the header on every view, so it is re-read every minute while the
- * tab is visible. A hidden tab asks nothing (each read asks GitHub); it catches up as soon
- * as it is shown again (#46).
+ * Home's count shows in the rail and the strip on every screen, so it is re-read every minute
+ * while the tab is visible. A hidden tab asks nothing (each read asks GitHub); it catches up as
+ * soon as it is shown again (#46).
  */
 const HOME_REFRESH_MS = 60_000;
 let homeLoadedAt = 0;
@@ -423,7 +455,8 @@ async function loadHome() {
 
 async function init() {
   ensureStructure();
-  mainEl!.innerHTML = `<div class="loading-state"><div class="loading-spinner"></div><span>Loading projects...</span></div>`;
+  renderStrip();
+  mainEl.innerHTML = `<div class="loading-state"><div class="loading-spinner"></div><span>Loading projects...</span></div>`;
   try {
     // The history loads on its own: a git failure must not read as "server down" (#35).
     const [projectsData, timeline] = await Promise.all([
@@ -436,15 +469,16 @@ async function init() {
     projects = projectsData;
     timelinePoints = timeline.points;
     timelineError = timeline.error;
-    agentsRoute = parseAgentsHash(location.hash);
-    if (agentsRoute) currentView = "agents";
-    if (location.hash.startsWith("#map")) currentView = "map"; // e.g. #map?project=stave&zoom=files
-    render();
+    if (!currentProjectName || !projects.some((p) => p.name === currentProjectName)) currentProjectName = sortedProjects()[0]?.name ?? null;
+    renderTop();
+    routeTo(parseRoute(location.hash));
   } catch (err) {
-    mainEl!.innerHTML = `<div class="error-state">Failed to connect to AnviDeck server. Is it running on port 3000?</div>`;
+    mainEl.innerHTML = `<div class="error-state">Failed to connect to the AnviDeck server: ${(err as Error).message}</div>`;
     console.error(err);
   }
+  window.addEventListener("hashchange", () => routeTo(parseRoute(location.hash)));
   connectWebSocket();
+  loadAgents();
   loadHome();
   setInterval(() => {
     if (!tabHidden()) loadHome();

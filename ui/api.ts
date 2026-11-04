@@ -1,6 +1,7 @@
 import type { ProjectSummary, ProjectState, MemoryEntry, TimelinePoint, HookLogSession, CrossProjectData, RoutingArchitecture, BrainFlowEvent, GitHubTrace, LiveSession, EntryDates, EntryDatesRead } from "../shared/types";
 
 import type { HomeResponse } from "../shared/home-types";
+import type { AgentsRead, StripAgent } from "./shell/activity";
 
 const BASE = "/api";
 
@@ -44,7 +45,25 @@ async function entryDatesComplete(name: string, everyMs = 1000): Promise<EntryDa
   }
 }
 
+/**
+ * GET /api/agents for the activity strip (#80). A 503 is the host saying it is off (its reason
+ * kept); any other failure is "could not read", never an empty list.
+ */
+async function agentsRead(): Promise<AgentsRead> {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/agents`);
+  } catch (e) {
+    return { state: "failed", reason: (e as Error).message };
+  }
+  const body = (await res.json().catch(() => null)) as { agents?: StripAgent[]; error?: string } | null;
+  if (res.ok && body && Array.isArray(body.agents)) return { state: "ok", agents: body.agents };
+  if (res.status === 503 && body?.error) return { state: "off", reason: body.error };
+  return { state: "failed", reason: `${res.status} ${body?.error ?? (res.statusText || "no readable answer")}` };
+}
+
 export const api = {
+  agentsRead,
   projects: () => get<ProjectSummary[]>("/projects"),
   project: (name: string) => get<ProjectState>(`/project/${encodeURIComponent(name)}`),
   projectCatalogues: (name: string) => get<ProjectState["catalogues"]>(`/project/${encodeURIComponent(name)}/catalogues`),
