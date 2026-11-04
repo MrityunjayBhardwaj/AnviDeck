@@ -2,7 +2,7 @@
  * Single-pass build: bundle ui/app.ts → dist/app.js
  */
 const result = await Bun.build({
-  entrypoints: ["./ui/app.ts"],
+  entrypoints: ["./ui/app.ts", "./ui/agent-host.ts"],
   outdir: "./dist",
   target: "browser",
   format: "esm",
@@ -18,4 +18,4 @@ if (!result.success) {
   process.exit(1);
 }
 
-console.log("Built ui/app.ts → dist/app.js");
+console.log("Built ui/app.ts → dist/app.js, ui/agent-host.ts → dist/agent-host.js");

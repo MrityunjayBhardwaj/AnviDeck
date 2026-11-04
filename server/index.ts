@@ -19,6 +19,11 @@ app.route("/api/home", (await import("./routes/home")).default);
 app.route("/api", api);
 app.route("/api/replay", (await import("./routes/replay")).default);
 
+// Agent host (#75): the only code that runs agents.
+const agents = (await import("./routes/agents")).createAgentHost(broadcast);
+app.route("/api/agents", agents.api);
+app.route("/", agents.page);
+
 // Mount WebSocket route
 app.route("/", ws);
 
@@ -72,6 +77,7 @@ process.on("SIGINT", () => {
   console.log("\nShutting down...");
   stopWatching();
   stopHookLogs();
+  agents.host.stopAll("AnviDeck shut down");
   process.exit(0);
 });
 
