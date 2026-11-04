@@ -13,8 +13,11 @@ const ROOT = resolve(import.meta.dir, "..");
 const READERS = join(ROOT, "server", "readers");
 const WRITERS = [join(ROOT, "server", "agents"), join(ROOT, "server", "action-log"), join(ROOT, "server", "guard")];
 
+// Write calls by name; any ".write(" except Bun.write (already named) and the process's own
+// stdout/stderr; and open()/openSync() with a literal flag that writes (w, a or +). An open whose
+// flag is a variable is not caught: name such a reader in ALLOWED with why.
 const WRITE_CALL =
-  /(?<![\w$])(?:writeFile|writeFileSync|appendFile|appendFileSync|mkdir|mkdirSync|mkdtemp|mkdtempSync|rename|renameSync|rm|rmSync|rmdir|rmdirSync|unlink|unlinkSync|copyFile|copyFileSync|cp|cpSync|truncate|truncateSync|createWriteStream|symlink|symlinkSync|link|linkSync|chmod|chmodSync|utimes|utimesSync)\s*\(|\bBun\.write\s*\(|\.writer\s*\(/g;
+  /(?<![\w$])(?:writeFile|writeFileSync|appendFile|appendFileSync|writeSync|writev|writevSync|ftruncate|ftruncateSync|mkdir|mkdirSync|mkdtemp|mkdtempSync|rename|renameSync|rm|rmSync|rmdir|rmdirSync|unlink|unlinkSync|copyFile|copyFileSync|cp|cpSync|truncate|truncateSync|createWriteStream|symlink|symlinkSync|link|linkSync|chmod|chmodSync|utimes|utimesSync)\s*\(|\bBun\.write\s*\(|\.writer\s*\(|(?<!\bBun|process\.stdout|process\.stderr)\.write\s*\(|(?<![\w$])open(?:Sync)?\s*\([^()]*,\s*["'][^"']*[wa+][^"']*["']/g;
 
 const IMPORT = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*import\s+)["']([^"']+)["']/gm;
 
@@ -69,10 +72,10 @@ describe("reader/actor split", () => {
   });
 
   test("the detectors fire on writes and writer imports, and not on reads or prose", () => {
-    for (const w of ["writeFileSync(p, x)", "fs.appendFile(p, x)", "await Bun.write(p, x)", "mkdirSync(d)", "rmSync(d)", "await rename(a, b)", "Bun.file(p).writer()", "unlinkSync(p)"]) {
+    for (const w of ["writeFileSync(p, x)", "fs.appendFile(p, x)", "await Bun.write(p, x)", "mkdirSync(d)", "rmSync(d)", "await rename(a, b)", "Bun.file(p).writer()", "unlinkSync(p)", "await Bun.file(p).write(x)", "fs.writeSync(fd, x)", "openSync(p, \"w\")", "await fs.promises.open(p, 'a+')", "ftruncateSync(fd)"]) {
       expect(writesIn(w).length).toBe(1);
     }
-    for (const r of ["readFileSync(p)", "// writeFileSync(p) in a comment", "/* Bun.write(x) */", "const re = /writeFileSync\\(/", "permissions.rm", "confirm(x)", "form(x)"]) {
+    for (const r of ["readFileSync(p)", "// writeFileSync(p) in a comment", "/* Bun.write(x) */", "const re = /writeFileSync\\(/", "permissions.rm", "confirm(x)", "form(x)", "openSync(file, \"r\")", "openSync(p)", "process.stdout.write(x)", "reopen(p, 'w')"]) {
       expect(writesIn(r)).toEqual([]);
     }
     const f = join(READERS, "x.ts");
