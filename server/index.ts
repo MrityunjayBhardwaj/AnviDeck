@@ -22,6 +22,7 @@ app.route("/api/actions", actionRoutes(actionLog));
 // Mount API routes
 app.route("/api/structure", (await import("./routes/structure")).default);
 app.route("/api/home", (await import("./routes/home")).default);
+app.route("/api/changes", (await import("./routes/changes")).default);
 app.route("/api", api);
 app.route("/api/replay", (await import("./routes/replay")).default);
 
