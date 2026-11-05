@@ -1,0 +1,17 @@
+/* Your call on a blocked edit (ui/components/RefusalCall.ts, #86). */
+.rc { display: flex; flex-direction: column; gap: 4px; border-top: 1px solid var(--sh-line); padding-top: 8px; font-size: 12px; }
+.rc-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rc-k { color: var(--sh-ink-3); text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
+.rc-line { font-family: var(--font-mono); }
+.rc-line.ok { color: var(--green, #4ade80); }
+.rc-line.bad { color: var(--red, #f87171); }
+.rc-line.none { color: var(--sh-ink-3); }
+.rc-line.warn, .rc-warn { color: var(--amber, #fbbf24); }
+.rc-btn { border: 1px solid var(--sh-line); background: var(--sh-panel); color: var(--sh-ink); border-radius: 6px; padding: 3px 10px; font: inherit; cursor: pointer; }
+.rc-btn.ok:hover { border-color: var(--green, #4ade80); }
+.rc-btn.bad:hover { border-color: var(--red, #f87171); }
+.rc-btn:disabled { opacity: .5; cursor: default; }
+.rc-note { flex: 1; min-width: 160px; background: var(--bg-0); border: 1px solid var(--sh-line); border-radius: 6px; padding: 3px 8px; color: var(--sh-ink); font: inherit; }
+.rc-quote, .rc-earlier { color: var(--sh-ink-2, var(--sh-ink)); }
+.rc-earlier { color: var(--sh-ink-3); }
+.rc-out { color: var(--sh-ink-3); min-height: 0; }

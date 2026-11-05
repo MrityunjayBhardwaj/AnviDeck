@@ -29,6 +29,7 @@ app.route("/api/notes", (await import("./routes/notes")).notesRoutes()); // Note
 app.route("/api", api);
 app.route("/api/replay", (await import("./routes/replay")).default);
 app.route("/api/agents-screen", (await import("./routes/agents-screen")).default);
+app.route("/api", (await import("./routes/refusals")).refusalRoutes()); // refusals and your calls on them (#86)
 
 // Agent host (#75): the only code that runs agents.
 const agents = (await import("./routes/agents")).createAgentHost(broadcast);
