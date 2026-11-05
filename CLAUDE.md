@@ -44,6 +44,8 @@ Sidebar views today (`ui/app.ts`): **Home** (`CommandCenter.ts`: one queue of PR
 
 What the workspace adds is in `BUILD.md` under "The workspace". Six of today's views (Live Sessions, Live Trace, Brain, System Lens, Cross-Project, Routing) are to be retired once Notes, History and Agents carry what's useful from them (#92).
 
+Home is now `HomeScreen.ts` (#81), in place of the `CommandCenter.ts` named above: one queue, soonest first, where a permission request is answered in place, a PR links to GitHub with why it is or is not ready to merge (what its body claims is worded as a claim), and a ready PR goes to its row on Work with the head it was judged at; the health line with guards, rule breaks, out-of-date notes and notes backed by source, each dated; the agents.
+
 ### Architecture decisions that still hold
 
 **Bun + Hono server**: lightweight TypeScript, zero-config. No Express.

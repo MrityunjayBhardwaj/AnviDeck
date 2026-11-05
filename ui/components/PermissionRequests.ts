@@ -116,6 +116,9 @@ export function setPermissionAgents(read: AgentsRead): void {
 }
 
 function paint(): void {
+  // Only while the section is on a page: painting it detached would pull the shared cards out of
+  // wherever they are shown now (Home's queue rows, #81). PermissionQueue() paints on mount.
+  if (!section.isConnected) return;
   const head = el("div", "home-perms-head");
   if (last.state !== "ok") {
     // Could not look is never shown as "no requests".
@@ -144,6 +147,7 @@ function paint(): void {
 
 /** Home's permission section: the same element every time. */
 export function PermissionQueue(): HTMLElement {
+  queueMicrotask(paint);
   return section;
 }
 
