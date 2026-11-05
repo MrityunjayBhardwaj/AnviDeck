@@ -7,6 +7,7 @@ import { write, type WriteMethod } from "./write";
 
 import { messagesIn, parseMessageRequest, renderForAgent } from "../shared/agent-messages";
 import type { PendingPermission } from "../shared/permission-requests";
+import { elsewhereText, type RunsElsewhere } from "../shared/agent-elsewhere";
 import { agentRequests, keepCardsOf, onAnswerSent } from "./components/PermissionRequests";
 
 interface Agent {
@@ -29,6 +30,7 @@ interface Agent {
   runs: number;
   messageCount: number;
   running: boolean;
+  runsElsewhere?: RunsElsewhere;
   pendingPermissions: PendingPermission[];
 }
 interface Line { seq: number; at: string; from: "sdk" | "host"; message: Record<string, unknown> }
@@ -225,7 +227,9 @@ function renderList(): void {
   for (const a of rows) {
     const live = a.running;
     const actions = el("td", {});
-    if (live) {
+    if (a.runsElsewhere) {
+      actions.append(el("span", { class: "k", "data-elsewhere": String(a.runsElsewhere.port ?? "") }, `${elsewhereText(a.runsElsewhere)}; act on it there`));
+    } else if (live) {
       const b = el("button", { "data-act": "stop" }, "Stop");
       b.onclick = (ev) => { ev.stopPropagation(); void act(() => call("POST", `/${a.id}/stop`)); };
       actions.append(b);

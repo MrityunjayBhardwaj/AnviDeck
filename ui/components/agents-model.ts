@@ -577,6 +577,8 @@ export interface HostAgent {
   sessionId?: string;
   reason?: string;
   running: boolean;
+  /** Another AnviDeck server sharing the registry runs it (#104): act on it there. */
+  runsElsewhere?: { pid: number; port?: number };
   createdAt: string;
   updatedAt: string;
   model?: string;

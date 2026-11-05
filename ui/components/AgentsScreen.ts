@@ -18,6 +18,7 @@
 import { write, WriteError } from "../write";
 import { agentRequests, keepCardsOf } from "./PermissionRequests";
 import { refusalCall } from "./RefusalCall";
+import { elsewhereText, elsewhereUrl } from "../../shared/agent-elsewhere";
 import type { AgentsRead } from "../shell/activity";
 import type { AgentSessionResponse } from "../../shared/agents-screen-types";
 import type { ReplaySessionsResponse } from "../../shared/replay-types";
@@ -404,7 +405,18 @@ function controls(a: HostAgent, out: HTMLElement): HTMLElement {
       out.textContent = `${label} refused: ${(e as Error).message}`;
     }
   };
-  if (a.running) {
+  if (a.runsElsewhere) {
+    // Another server runs it (#104): no Stop or Resume here, say where it is instead.
+    const note = el("span", "aw-note", `${elsewhereText(a.runsElsewhere)}; act on it there `);
+    note.dataset.elsewhere = String(a.runsElsewhere.port ?? "");
+    const url = elsewhereUrl(a.runsElsewhere, location, `#agents?agent=${encodeURIComponent(a.id)}`);
+    if (url) {
+      const link = el("a", "", "open");
+      link.setAttribute("href", url);
+      note.append(link);
+    }
+    box.append(note);
+  } else if (a.running) {
     const stop = el("button", "aw-btn sm bad", "Stop");
     stop.dataset.act = "stop";
     stop.onclick = () => void act("Stop", `/api/agents/${encodeURIComponent(a.id)}/stop`);

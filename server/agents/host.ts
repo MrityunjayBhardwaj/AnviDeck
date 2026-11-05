@@ -7,10 +7,11 @@ import type {
   SDKMessage,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import { AgentRegistry, LIVE_STATUSES, type AgentRecord, type AgentStatus, type TranscriptLine } from "./registry";
+import { AgentRegistry, LIVE_STATUSES, pidAlive, type AgentOwner, type AgentRecord, type AgentStatus, type TranscriptLine } from "./registry";
 import { explainStartFailure, loginOnlyEnv, resolveClaude, type AgentEnv, type ClaudeBinary } from "./login";
 import { messagesIn, parseMessageRequest, renderForAgent, type SentMessage } from "../../shared/agent-messages";
 import { parsePermissionAnswer, type PendingPermission } from "../../shared/permission-requests";
+import { elsewhereText, type RunsElsewhere } from "../../shared/agent-elsewhere";
 
 export type { PendingPermission };
 
@@ -145,8 +146,16 @@ export type HostEvent =
   | { type: "agent"; data: AgentView }
   | { type: "agent-message"; data: { id: string; line: TranscriptLine } };
 
-/** `running`: a Claude Code process is alive for it (a "done" agent can still be exiting). */
-export type AgentView = AgentRecord & { running: boolean; pendingPermissions: PendingPermission[] };
+/**
+ * `running`: a Claude Code process is alive for it in THIS server (a "done" agent can still be
+ * exiting). `runsElsewhere`: another AnviDeck server that is still alive runs it (#104); only
+ * that server can stop it, answer it or send it a message.
+ */
+export type AgentView = AgentRecord & {
+  running: boolean;
+  pendingPermissions: PendingPermission[];
+  runsElsewhere?: RunsElsewhere;
+};
 
 export interface HostDeps {
   registry?: AgentRegistry;
@@ -156,6 +165,10 @@ export interface HostDeps {
   /** How many agents may run at once. */
   cap?: number;
   emit?: (e: HostEvent) => void;
+  /** This server, as its agents name it. Default: this process, PORT (else 4000), a fresh instance id. */
+  owner?: Partial<AgentOwner>;
+  /** Is the server that owns an agent still alive? Default: see AgentHost.ownerAliveDefault. */
+  ownerAlive?: (o: AgentOwner) => boolean;
 }
 
 export const DEFAULT_CAP = 3;
@@ -172,6 +185,14 @@ export class AgentHost {
   private readonly resolve: () => ClaudeBinary | null;
   private readonly envFn: () => AgentEnv;
   private emitFn: (e: HostEvent) => void;
+  /** This server, as the agents it runs name it in the registry (#104). */
+  readonly owner: AgentOwner;
+  private readonly ownerAlive: (o: AgentOwner) => boolean;
+  /**
+   * Agents this host started or resumed. Every other agent in the registry (another server's,
+   * or one from before a restart) is read from the file when asked for, never held here, so
+   * this host never writes over a record it does not run.
+   */
   private readonly agents = new Map<string, AgentRecord>();
   private readonly live = new Map<string, Live>();
   private readonly seq = new Map<string, number>();
@@ -183,43 +204,145 @@ export class AgentHost {
     this.envFn = deps.env ?? (() => loginOnlyEnv());
     this.cap = deps.cap ?? capFromEnv();
     this.emitFn = deps.emit ?? (() => {});
-    for (const a of this.registry.load()) {
-      this.agents.set(a.id, a);
-      // The transcript is the truth for numbering: messageCount is only saved on status changes.
-      const lines = this.registry.readTranscript(a.id).lines;
-      const last = lines.length ? lines[lines.length - 1].seq : 0;
-      a.messageCount = Math.max(a.messageCount, last);
-      this.seq.set(a.id, a.messageCount);
-      // A message still queued when the last server went away never reached the agent: say so.
-      for (const s of messagesIn(lines)) {
-        if (s.state === "queued") {
-          this.record(a.id, "host", { event: "message-not-delivered", messageId: s.messageId, reason: "AnviDeck restarted before the agent read it" });
+    const port = Number.parseInt(process.env.PORT ?? "4000", 10);
+    this.owner = {
+      pid: process.pid,
+      port: Number.isFinite(port) ? port : undefined,
+      instance: randomUUID(),
+      startedAt: new Date().toISOString(),
+      ...deps.owner,
+    };
+    this.ownerAlive = deps.ownerAlive ?? ((o) => this.ownerAliveDefault(o));
+    this.sweep();
+  }
+
+  /**
+   * Is the server that owns an agent alive? This host is; another host in this same process
+   * is a predecessor (a process runs one host), so it is gone; any other pid is asked of the OS.
+   */
+  private ownerAliveDefault(o: AgentOwner): boolean {
+    if (o.instance === this.owner.instance) return true;
+    if (o.pid === process.pid) return false;
+    return pidAlive(o.pid);
+  }
+
+  /** Another server that is still alive runs this agent: this host must not touch it. */
+  private elsewhere(a: AgentRecord): { pid: number; port?: number } | undefined {
+    if (!LIVE_STATUSES.has(a.status) || !a.owner || a.owner.instance === this.owner.instance) return undefined;
+    return this.ownerAlive(a.owner) ? { pid: a.owner.pid, port: a.owner.port } : undefined;
+  }
+
+  /** Why a live-looking agent whose server is gone is stopped. */
+  private goneReason(a: AgentRecord): string {
+    const who = a.owner
+      ? `its AnviDeck server (${a.owner.port !== undefined ? `port ${a.owner.port}, ` : ""}pid ${a.owner.pid}) stopped or restarted`
+      : "AnviDeck restarted (the record names no server; it was written before servers were recorded)";
+    return `${who} while this agent was ${a.status}`;
+  }
+
+  /**
+   * At start: agents whose server is gone are written down as stopped, and a message still
+   * queued in one of their transcripts as not delivered. Agents run by another live server are
+   * left exactly as they are (#104). Done under the registry's lock, so two servers starting at
+   * once do not both record it.
+   */
+  private sweep(): void {
+    this.registry.update((agents) => {
+      let changed = false;
+      const next = agents.map((a) => {
+        if (a.owner && this.ownerAlive(a.owner)) return a;
+        const out = { ...a };
+        // The transcript is the truth for numbering: messageCount is only saved on status changes.
+        const lines = this.registry.readTranscript(a.id).lines;
+        let seq = Math.max(a.messageCount, lines.length ? lines[lines.length - 1].seq : 0);
+        for (const s of messagesIn(lines)) {
+          if (s.state !== "queued") continue;
+          seq += 1;
+          this.registry.append(a.id, {
+            seq,
+            at: new Date().toISOString(),
+            from: "host",
+            message: { event: "message-not-delivered", messageId: s.messageId, reason: "AnviDeck restarted before the agent read it" },
+          });
         }
-      }
-    }
-    // Agents that were live before a restart are now stopped: write that down.
-    if (this.agents.size) this.persist();
+        if (seq !== a.messageCount) {
+          out.messageCount = seq;
+          changed = true;
+        }
+        if (LIVE_STATUSES.has(a.status)) {
+          out.status = "stopped";
+          out.reason = this.goneReason(a);
+          out.updatedAt = new Date().toISOString();
+          changed = true;
+        }
+        return out;
+      });
+      return { agents: changed ? next : undefined, out: undefined };
+    });
   }
 
   onEvent(fn: (e: HostEvent) => void): void {
     this.emitFn = fn;
   }
 
-  /** How many Claude Code processes the host is running right now. */
+  /** How many Claude Code processes this host is running right now. */
   get running(): number {
     return this.live.size;
   }
 
+  /**
+   * Every agent in the registry, as the file says now, with this host's own running agents from
+   * memory. `unread` names why the file could not be read; the agents listed are then only this
+   * host's, never presented as all there are.
+   */
+  snapshot(): { agents: AgentView[]; unread?: string } {
+    let disk: AgentRecord[] = [];
+    let unread: string | undefined;
+    try {
+      disk = this.registry.load();
+    } catch (e) {
+      unread = `the agent registry could not be read: ${(e as Error).message}`;
+    }
+    const byId = new Map(disk.map((a) => [a.id, a]));
+    for (const [id, mine] of this.agents) {
+      const there = byId.get(id);
+      // Ours unless another server has resumed it since (it then names itself the owner).
+      if (this.live.has(id) || !there || !there.owner || there.owner.instance === this.owner.instance) byId.set(id, mine);
+      else this.agents.delete(id);
+    }
+    const agents = [...byId.values()].map((a) => this.view(a)).sort((x, y) => y.createdAt.localeCompare(x.createdAt));
+    return unread ? { agents, unread } : { agents };
+  }
+
   list(): AgentView[] {
-    return [...this.agents.values()]
-      .map((a) => this.view(a))
-      .sort((x, y) => y.createdAt.localeCompare(x.createdAt));
+    return this.snapshot().agents;
+  }
+
+  private find(id: string): AgentRecord | undefined {
+    if (this.live.has(id)) return this.agents.get(id);
+    let disk: AgentRecord | undefined;
+    try {
+      disk = this.registry.load().find((a) => a.id === id);
+    } catch (e) {
+      const mine = this.agents.get(id);
+      if (mine) return mine;
+      throw new HostError(503, `the agent registry could not be read: ${(e as Error).message}`);
+    }
+    const mine = this.agents.get(id);
+    if (mine && (!disk || !disk.owner || disk.owner.instance === this.owner.instance)) return mine;
+    return disk;
   }
 
   get(id: string): AgentView {
-    const a = this.agents.get(id);
+    const a = this.find(id);
     if (!a) throw new HostError(404, `no agent ${id}`);
     return this.view(a);
+  }
+
+  /** 409 for an agent another live server runs: name where it is. */
+  private refuseElsewhere(a: AgentRecord, doing: string, detail: Record<string, unknown> = {}): void {
+    const where = this.elsewhere(a);
+    if (where) throw new HostError(409, `${elsewhereText(where)}; ${doing} there`, { runsElsewhere: where, status: a.status, ...detail });
   }
 
   transcript(id: string) {
@@ -250,6 +373,7 @@ export class AgentHost {
     const now = new Date().toISOString();
     const rec: AgentRecord = {
       id: `a${Date.now().toString(36)}${randomUUID().slice(0, 6)}`,
+      owner: this.owner,
       cwd,
       prompt,
       issue,
@@ -267,23 +391,42 @@ export class AgentHost {
 
   /** Resume a finished, failed or stopped agent's session with a new prompt. */
   resume(id: string, promptIn: unknown): AgentView {
-    const rec = this.agents.get(id);
-    if (!rec) throw new HostError(404, `no agent ${id}`);
+    const found = this.find(id);
+    if (!found) throw new HostError(404, `no agent ${id}`);
     if (this.live.has(id)) throw new HostError(409, "agent is still running");
-    if (!rec.sessionId) throw new HostError(409, "agent never reached Claude Code, so there is no session to resume; start a new one");
+    this.refuseElsewhere(found, "resume it");
+    if (!found.sessionId) throw new HostError(409, "agent never reached Claude Code, so there is no session to resume; start a new one");
     const prompt = typeof promptIn === "string" && promptIn.trim() ? promptIn.trim() : "Continue.";
     this.checkCap();
     const claude = this.requireClaude();
+    // Claim it under the lock: if another server resumed it a moment ago, it now runs there.
+    const rec = this.registry.update((agents) => {
+      const i = agents.findIndex((a) => a.id === id);
+      const now = i >= 0 ? agents[i]! : found;
+      this.refuseElsewhere(now, "resume it");
+      const claimed: AgentRecord = { ...now, owner: this.owner, status: "starting", reason: undefined, updatedAt: new Date().toISOString() };
+      const next = [...agents];
+      if (i >= 0) next[i] = claimed;
+      else next.push(claimed);
+      return { agents: next, out: claimed };
+    });
+    this.agents.set(id, rec);
+    const lines = this.registry.readTranscript(id).lines;
+    rec.messageCount = Math.max(rec.messageCount, lines.length ? lines[lines.length - 1].seq : 0);
+    this.seq.set(id, rec.messageCount);
     this.launch(rec, prompt, claude, rec.sessionId);
     return this.view(rec);
   }
 
   /** Stop a running agent at once. */
   stop(id: string, reason = "stopped by you"): AgentView {
-    const rec = this.agents.get(id);
-    if (!rec) throw new HostError(404, `no agent ${id}`);
     const live = this.live.get(id);
-    if (!live) throw new HostError(409, `agent is not running (${rec.status})`);
+    const rec = live ? this.agents.get(id) : this.find(id);
+    if (!rec) throw new HostError(404, `no agent ${id}`);
+    if (!live) {
+      this.refuseElsewhere(rec, "stop it");
+      throw new HostError(409, `agent is not running (${this.view(rec).status})`);
+    }
     this.endRun(id, live, { status: "stopped", reason });
     return this.view(rec);
   }
@@ -295,21 +438,24 @@ export class AgentHost {
    * failed, stopped, or ending) refuses with 409 and says whether it can be resumed instead.
    */
   message(id: string, body: Record<string, unknown>): { agent: AgentView; message: SentMessage } {
-    const rec = this.agents.get(id);
+    const live = this.live.get(id);
+    const rec = live ? this.agents.get(id) : this.find(id);
     if (!rec) throw new HostError(404, `no agent ${id}`);
     const req = parseMessageRequest(body);
     if ("error" in req) throw new HostError(400, req.error);
-    const live = this.live.get(id);
+    if (!live) this.refuseElsewhere(rec, "the message was not sent; send it", { resumable: false });
     if (!live || live.ending || !live.input.open) {
+      // A live-looking agent whose server is gone reads as stopped (see view).
+      const shown = this.view(rec);
       const why = live?.ending
         ? `the agent is being ${live.ending.status === "stopped" ? "stopped" : "ended"} (${live.ending.reason})`
         : live
           ? `the agent has finished its turn (${rec.status}) and is exiting`
-          : `the agent is not running (${rec.status}${rec.reason ? `: ${rec.reason}` : ""})`;
+          : `the agent is not running (${shown.status}${shown.reason ? `: ${shown.reason}` : ""})`;
       const resumable = rec.sessionId !== undefined;
       throw new HostError(409, `${why}; the message was not sent${resumable ? ". Resume the agent with it instead" : ", and the agent never reached Claude Code, so it cannot be resumed"}`, {
         resumable,
-        status: rec.status,
+        status: shown.status,
       });
     }
     const messageId = randomUUID();
@@ -330,14 +476,17 @@ export class AgentHost {
    * (it is not interrupted, so it can reply to it). 409 when the request is no longer waiting.
    */
   answer(id: string, requestId: string, body: Record<string, unknown>): AgentView {
-    const rec = this.agents.get(id);
+    const live = this.live.get(id);
+    const rec = live ? this.agents.get(id) : this.find(id);
     if (!rec) throw new HostError(404, `no agent ${id}`);
     const a = parsePermissionAnswer(body);
     if ("error" in a) throw new HostError(400, a.error);
-    const p = this.live.get(id)?.pending.get(requestId);
+    if (!live) this.refuseElsewhere(rec, "answer it");
+    const p = live?.pending.get(requestId);
     if (!p) {
-      throw new HostError(409, `request ${requestId} is no longer waiting: it was answered already, or withdrawn because the agent stopped (${rec.status})`, {
-        status: rec.status,
+      const status = this.view(rec).status;
+      throw new HostError(409, `request ${requestId} is no longer waiting: it was answered already, or withdrawn because the agent stopped (${status})`, {
+        status,
       });
     }
     const result: PermissionResult =
@@ -389,6 +538,12 @@ export class AgentHost {
     const pendingPermissions = live
       ? [...live.pending.values()].map(({ resolve: _r, ...p }) => p)
       : [];
+    if (!live && LIVE_STATUSES.has(a.status)) {
+      const where = this.elsewhere(a);
+      if (where) return { ...a, running: false, pendingPermissions, runsElsewhere: where };
+      // Its server is gone since this host started: shown as stopped (the next write records it).
+      return { ...a, status: "stopped", reason: this.goneReason(a), running: false, pendingPermissions };
+    }
     return { ...a, running: live !== undefined, pendingPermissions };
   }
 
@@ -630,13 +785,14 @@ export class AgentHost {
 
   private changed(rec: AgentRecord): void {
     rec.updatedAt = new Date().toISOString();
-    this.persist();
+    this.persist(rec);
     this.emitFn({ type: "agent", data: this.view(rec) });
   }
 
-  private persist(): void {
+  /** Write this one record over its own entry; every other server's records stay as they are on disk (#104). */
+  private persist(rec: AgentRecord): void {
     try {
-      this.registry.save([...this.agents.values()]);
+      this.registry.upsert(rec);
     } catch (e) {
       console.error(`[agents] could not write the registry: ${(e as Error).message}`);
     }
