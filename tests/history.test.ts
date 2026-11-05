@@ -275,7 +275,21 @@ describe("rulings (your calls)", () => {
     expect(r.events.map((e) => [(e as { call: string }).call, (e as { superseded: boolean }).superseded])).toEqual([["wrong", true], ["right", false]]);
     expect(r.lane.status).toBe("ok");
     // How many were recorded without a measured refusal to check against: said every time, 0 included (#178).
+    // These two lines carry no projectFrom: written before keys were checked, so never counted as checked.
     expect(r.lane.detail).toContain("0 of 2 calls on this project were recorded without a measured refusal");
+    expect(r.lane.detail).toContain("and 2 were recorded before keys were checked at all");
+  });
+
+  test("calls recorded since keys are checked: an unverified one and a checked one are told apart from one written before", () => {
+    const d = dir();
+    writeFileSync(join(d, "calls.jsonl"), [
+      line({ at: "2026-10-22T10:00:00Z", key: "k1", project: "p", call: "wrong" }),
+      line({ at: "2026-10-22T11:00:00Z", key: "k2", project: "p", call: "right", projectFrom: "the page", unverified: "no measured answer" }),
+      line({ at: "2026-10-22T12:00:00Z", key: "k3", project: "p", call: "right", projectFrom: "the page" }),
+    ].join("\n") + "\n");
+    const r = readRulingLane("p", W, 10, d);
+    expect(r.lane.detail).toContain("1 of 3 calls on this project were recorded without a measured refusal");
+    expect(r.lane.detail).toContain("and 1 were recorded before keys were checked at all");
   });
 
   test("no file is none (and says nothing was recorded); a file that cannot be read is unreadable", () => {

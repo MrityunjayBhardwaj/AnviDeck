@@ -200,10 +200,12 @@ export interface CallRecord {
   call: CallVerdict;
   note?: string;
   /** What the page showed when you made the call, so the record says what it was about. */
-  refusal?: { session?: string; tool?: string; file?: string; at?: string };
+  refusal?: { session?: string; tool?: string; file?: string; at?: string; /** The edited file's absolute path: names the package whose answer should list the key. */ path?: string };
   /**
-   * How `project` was decided (#179): "the page" when the page named it; else from the agent's
-   * folder through its git common dir, or the folder's own name when no known project owns it.
+   * How `project` was decided (#179): "the page" when the page named it; else the measured answer
+   * that lists the key, the edited file's registered package, or the agent's folder through its git
+   * common dir (its main checkout's name when that is no known project). Absent on a call recorded
+   * before keys were checked: such a call's key was never checked either.
    */
   projectFrom?: string;
   /**

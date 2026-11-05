@@ -327,7 +327,12 @@ export function readRulingLane(project: string, w: HistoryWindow, cap: number, d
     ...(c.refusal ? { refusal: c.refusal } : {}),
     superseded: latestAt.get(c.key) !== c.at,
   }));
-  const unverified = `${read.unverified} of ${read.calls.length} calls on this project were recorded without a measured refusal to check their key against`;
+  // A call written before keys were checked carries neither mark (no `projectFrom`, no `unverified`):
+  // its key was never checked, so it is counted apart, never as checked.
+  const before = read.calls.filter((c) => c.projectFrom === undefined && c.unverified === undefined).length;
+  const unverified =
+    `${read.unverified} of ${read.calls.length} calls on this project were recorded without a measured refusal to check their key against, ` +
+    `and ${before} were recorded before keys were checked at all`;
   const detail = read.exists
     ? [read.unreadableLines ? `${read.unreadableLines} of ${read.lines} lines are not calls and are not shown.` : "", `${unverified}.`].filter(Boolean).join(" ")
     : "no call has been recorded yet (the file does not exist)";

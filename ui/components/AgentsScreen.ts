@@ -42,6 +42,7 @@ import {
   type HostLoad,
   type Item,
   type Refusal,
+  refusalCallTarget,
   type SavedFocus,
   type Timeline,
   type ToolCall,
@@ -769,8 +770,7 @@ function refusalCard(r: Refusal, t: ToolCall, cwd: string | undefined): HTMLElem
   const whole = el("details", "", el("summary", "aw-note", "The refusal as the agent read it"), el("pre", "", r.text));
   card.append(whole);
   // Your call on it (#86), keyed by the refused call's tool_use id; the project is the screen's, else
-  // the server finds it from the agent's folder through its git common dir (#179).
-  card.append(refusalCall({ key: t.id, ...(S.deps?.project ? { project: S.deps.project } : { cwd }),
-    refusal: { tool: t.name, file: r.file, at: t.at ?? undefined } }));
+  // the server finds it from the key's measured answer, the edited file's package or the agent's folder (#179).
+  card.append(refusalCall(refusalCallTarget(t, r, S.deps?.project, cwd)));
   return card;
 }

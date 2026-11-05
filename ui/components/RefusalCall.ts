@@ -27,7 +27,7 @@ export interface RefusalCallTarget {
   project?: string;
   cwd?: string;
   /** What the card shows about the blocked edit; recorded with the call so the record says what it was about. */
-  refusal?: { session?: string; tool?: string; file?: string; at?: string };
+  refusal?: { session?: string; tool?: string; file?: string; at?: string; path?: string };
 }
 
 let load: CallsLoad | null = null;

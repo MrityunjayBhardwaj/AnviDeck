@@ -30,6 +30,7 @@ import {
   windowOf,
 } from "../server/readers/refusals";
 import { callLine, shortDay, withRecorded } from "../ui/components/refusal-call-model";
+import { refusalCallTarget } from "../ui/components/agents-model";
 import type { CallRecord, CallsRead, RefusalsMeasured, RefusalsResponse, RefusalWindow } from "../shared/refusal-types";
 
 const dirs: string[] = [];
@@ -574,6 +575,16 @@ describe("your call on each refusal", () => {
     expect(r.calls.status).toBe("unreadable");
     expect(r.refusals.map((x) => x.call.state)).toEqual(["unknown"]);
   }, 30_000);
+
+  test("a project's answer counts only that project's unverified calls, as ofProject and notListed beside it do", async () => {
+    clearRefusalsCache();
+    const p = registered();
+    const mark = (key: string, project: string): CallRecord => ({ ...call(key, "right", "2026-10-27T09:00:00Z"), project, projectFrom: "the page", unverified: "no measured answer" });
+    writeFileSync(join(p.top, "calls.jsonl"), [mark("toolu_MINE", p.name), mark("toolu_OTHER1", "tmp"), mark("toolu_OTHER2", "AnviDeck")].map((c) => JSON.stringify(c)).join("\n") + "\n");
+    const run = injected(() => "good", [{ key: "toolu_R", at: "2026-10-22T16:16:24Z" }]).run;
+    const r = (await readRefusals(p.name, { registry: p.registry, run, wait: true, callsDir: p.top })).response as RefusalsMeasured;
+    expect({ unverified: r.calls.unverified, ofProject: r.calls.ofProject, notListed: r.calls.notListed }).toEqual({ unverified: 1, ofProject: 1, notListed: 1 });
+  }, 30_000);
 });
 
 // ── what the card says ─────────────────────────────────────────────────────────────────────
@@ -610,19 +621,45 @@ describe("a call on a key that is no refusal", () => {
   const WIN2: RefusalWindow = { since: "2026-10-06T00:00:00.000Z", until: null, chosenBy: "test" };
   const A = measuredAnswer("proj", "/pkg", WIN2, [{ key: "toolu_REAL", at: "2026-10-22T16:16:24Z" }], "2026-11-05T12:00:00.000Z");
 
+  const IN = "/pkg/src/a.ts";
   test("checkKey: listed, refused only when an answer could have seen it, else unverified with the reason", () => {
-    expect(checkKey("toolu_REAL", "2026-10-22T16:16:24Z", [A])).toEqual({ state: "listed", measuredAt: "2026-11-05T12:00:00.000Z" });
-    const no = checkKey("toolu_TYPO", "2026-10-22T16:16:24Z", [A]);
+    expect(checkKey("toolu_REAL", { at: "2026-10-22T16:16:24Z", path: IN }, [A])).toEqual({ state: "listed", measuredAt: "2026-11-05T12:00:00.000Z" });
+    const no = checkKey("toolu_TYPO", { at: "2026-10-22T16:16:24Z", path: IN }, [A]);
     expect(no.state).toBe("not-listed");
     if (no.state === "not-listed") expect(no.reason).toContain("lists no refusal with key toolu_TYPO");
     // Nothing measured: recorded, marked.
-    expect(checkKey("toolu_TYPO", "2026-10-22T16:16:24Z", []).state).toBe("unverified");
+    expect(checkKey("toolu_TYPO", { at: "2026-10-22T16:16:24Z", path: IN }, []).state).toBe("unverified");
     // Newer than the run (an agent blocked a minute ago): a real refusal not measured yet, never refused.
-    expect(checkKey("toolu_NEW", "2026-11-05T12:01:00Z", [A]).state).toBe("unverified");
+    expect(checkKey("toolu_NEW", { at: "2026-11-05T12:01:00Z", path: IN }, [A]).state).toBe("unverified");
     // Before the window: the answer could not have seen it.
-    expect(checkKey("toolu_OLD", "2026-09-01T00:00:00Z", [A]).state).toBe("unverified");
+    expect(checkKey("toolu_OLD", { at: "2026-09-01T00:00:00Z", path: IN }, [A]).state).toBe("unverified");
     // No time given: cannot tell what could have seen it.
-    expect(checkKey("toolu_TYPO", undefined, [A]).state).toBe("unverified");
+    expect(checkKey("toolu_TYPO", { path: IN }, [A]).state).toBe("unverified");
+  });
+
+  test("checkKey: an answer asked ?until later than its run never refuses a refusal made after the run", () => {
+    // Asked until 2026-11-10, run at 2026-11-05 12:00: a refusal at 2026-11-07 is inside the window but
+    // after the run, so the run could not have seen it.
+    const U = measuredAnswer("proj", "/pkg", { ...WIN2, until: "2026-11-10T00:00:00.000Z" }, [], "2026-11-05T12:00:00.000Z");
+    const late = checkKey("toolu_AFTER_RUN", { at: "2026-11-07T00:00:00Z", path: IN }, [U]);
+    expect(late.state).toBe("unverified");
+    // Before the run, inside the window: that answer could have seen it, so it is refused.
+    expect(checkKey("toolu_BEFORE_RUN", { at: "2026-11-01T00:00:00Z", path: IN }, [U]).state).toBe("not-listed");
+  });
+
+  test("checkKey: an answer measures one package; a refusal in another package is never refused by it", () => {
+    const pkgA = measuredAnswer("proj", "/m/pkgA", WIN2, [{ key: "toolu_IN_A", at: "2026-10-22T16:16:24Z" }]);
+    const inB = checkKey("toolu_REAL_IN_PKG_B", { at: "2026-10-22T16:16:24Z", path: "/m/pkgB/src/x.ts" }, [pkgA]);
+    expect(inB.state).toBe("unverified");
+    if (inB.state === "unverified") expect(inB.reason).toContain("no measured answer is of the package holding /m/pkgB/src/x.ts");
+    // A sibling folder whose name starts with the package's is not inside it.
+    expect(checkKey("toolu_X", { at: "2026-10-22T16:16:24Z", path: "/m/pkgA2/x.ts" }, [pkgA]).state).toBe("unverified");
+    // The same refusal in package A is refused by A's answer.
+    expect(checkKey("toolu_TYPO", { at: "2026-10-22T16:16:24Z", path: "/m/pkgA/src/x.ts" }, [pkgA]).state).toBe("not-listed");
+    // No path: which package's answer should list it is unknown, so unverified, never refused.
+    const noPath = checkKey("toolu_TYPO", { at: "2026-10-22T16:16:24Z" }, [pkgA]);
+    expect(noPath.state).toBe("unverified");
+    if (noPath.state === "unverified") expect(noPath.reason).toContain("did not name the edited file's absolute path");
   });
 
   test("through the route and the reader's own cache: a key the measured answer does not list is refused (400) and not recorded", async () => {
@@ -631,7 +668,7 @@ describe("a call on a key that is no refusal", () => {
     const run = injected(() => "good", [{ key: "toolu_REAL", at: "2026-10-22T16:16:24Z" }]).run;
     await readRefusals(p.name, { registry: p.registry, run, wait: true, callsDir: p.top, now: () => Date.parse("2026-11-05T12:00:00Z") });
     const s = server();
-    const bad = await s.post("toolu_TYPO", h, { project: p.name, call: "wrong", refusal: { at: "2026-10-22T16:16:24Z" } });
+    const bad = await s.post("toolu_TYPO", h, { project: p.name, call: "wrong", refusal: { at: "2026-10-22T16:16:24Z", path: join(p.pkg, "src/a.ts") } });
     expect(bad.status).toBe(400);
     expect(((await bad.json()) as { error: string }).error).toContain("lists no refusal with key toolu_TYPO");
     expect(existsSync(s.store.file)).toBe(false);
@@ -671,8 +708,56 @@ describe("the project of a call made from an agent's folder", () => {
     const reg = join(root, "registry.json");
     writeFileSync(reg, JSON.stringify({ packages: [{ dir: join(main, "pkg"), design: join(root, "d.json"), baseline: join(root, "b.json") }] }));
     const registry = { locked: join(root, "no-lock.json"), user: reg };
-    return { root, main, wt, projects: () => discoverProjects(readRegistry(registry)) };
+    return { root, main, wt, projects: () => discoverProjects(readRegistry(registry)), known: { projects: () => discoverProjects(readRegistry(registry)), packages: () => readRegistry(registry).packages } };
   }
+
+  test("a parent folder that is a known project never claims a repository below it; the main checkout's name is used", () => {
+    const parent = scratch("refusals-parent-");
+    const repo = join(parent, "other-repo");
+    mkdirSync(repo);
+    g(repo, "init", "-q");
+    // The parent is known (Claude was once run there), the repository is not.
+    const pick = projectOfFolder(join(repo), () => [{ name: basename(parent), path: parent }]);
+    expect(pick.project).toBe("other-repo");
+    expect(pick.projectFrom).toContain("the main checkout's name");
+    // A worktree of it, too: the main checkout's name, not the parent's and not the worktree folder's.
+    g(repo, "commit", "-q", "--allow-empty", "-m", "init");
+    const wt = join(parent, "other-repo-wt");
+    expect(g(repo, "worktree", "add", "-q", "-b", "x", wt).status).toBe(0);
+    expect(projectOfFolder(wt, () => [{ name: basename(parent), path: parent }]).project).toBe("other-repo");
+  });
+
+  test("an agent started in another repo editing a package: the call goes to the project of the answer listing its key, checked", async () => {
+    clearRefusalsCache();
+    const r = repoWithWorktree();
+    const other = scratch("refusals-elsewhere-");
+    g(other, "init", "-q");
+    const WINX: RefusalWindow = { since: "2026-10-06T00:00:00.000Z", until: null, chosenBy: "test" };
+    const answer = measuredAnswer("calproj", join(r.main, "pkg"), WINX, [{ key: "toolu_ELSEWHERE", at: "2026-10-22T16:16:24Z" }]);
+    const s = server(undefined, { known: r.known, measured: () => [answer] });
+    const res = await s.post("toolu_ELSEWHERE", h, { cwd: other, call: "wrong", refusal: { at: "2026-10-22T16:16:24Z" } });
+    expect(res.status).toBe(201);
+    const rec = ((await res.json()) as { recorded: CallRecord }).recorded;
+    expect(rec.project).toBe("calproj");
+    expect(rec.unverified).toBeUndefined();
+    expect(rec.projectFrom).toContain("lists this key");
+    expect(((await (await s.get("/api/calls?project=calproj")).json()) as CallsRead).calls.map((c) => c.key)).toEqual(["toolu_ELSEWHERE"]);
+  });
+
+  test("with no answer listing the key, the edited file's registered package names the project, not the agent's folder", async () => {
+    clearRefusalsCache();
+    const r = repoWithWorktree();
+    const other = scratch("refusals-elsewhere-");
+    g(other, "init", "-q");
+    const s = server(undefined, { known: r.known, measured: () => [] });
+    const res = await s.post("toolu_NEWER", h, { cwd: other, call: "right", refusal: { at: "2026-11-05T12:30:00Z", path: join(r.wt, "pkg", "a.ts") } });
+    // The worktree's copy of the package is not the registered folder: only the registered package counts.
+    expect(((await res.json()) as { recorded: CallRecord }).recorded.project).toBe(basename(other));
+    const res2 = await s.post("toolu_NEWER2", h, { cwd: other, call: "right", refusal: { at: "2026-11-05T12:30:00Z", path: join(r.main, "pkg", "a.ts") } });
+    const rec = ((await res2.json()) as { recorded: CallRecord }).recorded;
+    expect(rec.project).toBe("calproj");
+    expect(rec.projectFrom).toContain("registered package");
+  });
 
   test("a worktree maps through its git common dir to the main checkout's project, not the folder name", () => {
     const r = repoWithWorktree();
@@ -694,7 +779,7 @@ describe("the project of a call made from an agent's folder", () => {
   test("POST with the agent's worktree folder: GET /api/calls?project=<main project> returns the call", async () => {
     clearRefusalsCache();
     const r = repoWithWorktree();
-    const s = server(undefined, { projectOf: (cwd) => projectOfFolder(cwd, r.projects) });
+    const s = server(undefined, { known: r.known, measured: () => [] });
     const res = await s.post("toolu_WT", h, { cwd: r.wt, call: "wrong", refusal: { file: "pkg/a.ts", at: "2026-10-22T16:16:24Z" } });
     expect(res.status).toBe(201);
     const byProject = (await (await s.get("/api/calls?project=calproj")).json()) as CallsRead;
@@ -704,9 +789,22 @@ describe("the project of a call made from an agent's folder", () => {
     expect(byFolder.calls).toEqual([]);
   });
 
-  test("neither a project nor an absolute folder is a 400, nothing recorded", async () => {
-    const s = server();
+  test("neither a project nor an absolute folder or file, nor a listed key, is a 400, nothing recorded", async () => {
+    const s = server(undefined, { measured: () => [] });
     expect((await s.post("k", h, { cwd: "relative/dir", call: "right" })).status).toBe(400);
+    expect((await s.post("k", h, { call: "right", refusal: { path: "rel/a.ts" } })).status).toBe(400);
     expect(existsSync(s.store.file)).toBe(false);
+  });
+
+  test("the Agents card sends the screen's project, else the agent's folder, and the edited file's absolute path from the call's input", () => {
+    const t = { id: "toolu_C", name: "Edit", input: { file_path: "/r/pkg/src/a.ts" }, at: "2026-10-22T16:16:24Z" };
+    expect(refusalCallTarget(t, { file: "src/a.ts" }, null, "/r/wt")).toEqual({
+      key: "toolu_C", cwd: "/r/wt", refusal: { tool: "Edit", file: "src/a.ts", path: "/r/pkg/src/a.ts", at: "2026-10-22T16:16:24Z" },
+    });
+    expect(refusalCallTarget(t, { file: "src/a.ts" }, "stave", "/r/wt")).toMatchObject({ project: "stave" });
+    expect(refusalCallTarget(t, { file: "src/a.ts" }, "stave", "/r/wt")).not.toHaveProperty("cwd");
+    // No folder and no project: neither is invented (no "unknown", no folder-name guess); the server finds it from the key or the file.
+    const bare = refusalCallTarget({ ...t, input: { notebook_path: "/r/pkg/n.ipynb" }, at: null }, { file: "n.ipynb" }, undefined, undefined);
+    expect(bare).toEqual({ key: "toolu_C", refusal: { tool: "Edit", file: "n.ipynb", path: "/r/pkg/n.ipynb" } });
   });
 });

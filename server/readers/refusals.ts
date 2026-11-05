@@ -323,13 +323,14 @@ const inflight = new Map<string, { started: string; job: Promise<Entry> }>();
 export function clearRefusalsCache() { cache.clear(); }
 
 /**
- * The measured answers this server holds for a project (every package and window asked so far),
- * without starting a run. The call route checks a key against them (#178); an empty list means
- * "nothing to check against", never "no refusals".
+ * Every measured answer this server holds (every project, package and window asked so far),
+ * without starting a run. The call route looks a key up across them (#178, #179): a tool_use id
+ * names one blocked edit, so the answer listing it is the refusal's whatever project the agent ran
+ * in. An empty list means "nothing to check against", never "no refusals".
  */
-export function measuredFor(project: string): RefusalsMeasured[] {
+export function measuredAll(): RefusalsMeasured[] {
   const out: RefusalsMeasured[] = [];
-  for (const e of cache.values()) if (e.value.status === "measured" && e.value.project === project) out.push(e.value);
+  for (const e of cache.values()) if (e.value.status === "measured") out.push(e.value);
   return out;
 }
 
@@ -369,7 +370,9 @@ function withCalls(r: RefusalsResponse, opts: ReadOptions): RefusalsResponse {
   const listed = new Set(r.refusals.map((x) => x.key));
   const mine = Object.values(read.byKey).filter((s) => s.latest.project === r.project);
   const notListed = mine.filter((s) => !listed.has(s.latest.key)).length;
-  return { ...r, calls: { ...meta, ofProject: mine.length, notListed }, refusals: r.refusals.map((x) => ({ ...x, call: callStateOf(read, x.key) })) };
+  // `unverified` beside them counts this project's calls too, not the whole file's.
+  const unverified = read.calls.filter((c) => c.project === r.project && typeof c.unverified === "string").length;
+  return { ...r, calls: { ...meta, unverified, ofProject: mine.length, notListed }, refusals: r.refusals.map((x) => ({ ...x, call: callStateOf(read, x.key) })) };
 }
 
 function withCache(e: Entry, now: number, refreshing: boolean): RefusalsResponse {

@@ -178,7 +178,7 @@ export function DesignScreen(projectName: string | null, params: URLSearchParams
       const table = el("table", { class: "dz-table" }, el("tr", {}, el("th", {}, "when"), el("th", {}, "edge"), el("th", {}, "file"), el("th", {}, "refused by")));
       for (const row of rows) {
         table.append(el("tr", { "data-key": row.key }, el("td", { class: "dz-mono" }, day(row.at).slice(5)), el("td", { class: "dz-mono" }, arrow(row.edge)), el("td", { class: "dz-mono", title: row.file }, row.file.split("/").pop() ?? row.file), el("td", {}, row.refusedBy, row.design ? el("span", { class: "sh-dim" }, ` · design ${row.design}`) : el("span", { class: "sh-dim" }, " · before refusals named a design"))));
-        table.append(el("tr", { class: "dz-callrow" }, el("td", { colspan: "4" }, refusalCall({ key: row.key, project, refusal: { session: row.session, tool: row.tool, file: row.file, at: row.at } }))));
+        table.append(el("tr", { class: "dz-callrow" }, el("td", { colspan: "4" }, refusalCall({ key: row.key, project, refusal: { session: row.session, tool: row.tool, file: row.file, at: row.at, ...(r.status === "measured" ? { path: `${r.package}/${row.file}` } : {}) } }))));
       }
       card.append(table);
     }

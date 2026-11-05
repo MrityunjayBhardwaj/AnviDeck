@@ -3,7 +3,7 @@ import { DEFAULT_AGENT_DIR } from "./agents/registry";
 import { CALLS_FILE } from "./readers/calls";
 import { join } from "node:path";
 import type { CallRecord, CallVerdict } from "../shared/refusal-types";
-import { projectOfFolder, type ProjectPick } from "./call-project";
+import { knownFromRegistry, locateProject, type ProjectPick } from "./call-project";
 
 /**
  * Record your call on a blocked edit (#86): one JSON line appended to calls.jsonl in AnviDeck's
@@ -29,19 +29,31 @@ export const MAX_NOTE = 2000;
 const str = (v: unknown, max: number): string | undefined =>
   typeof v === "string" && v !== "" ? v.slice(0, max) : undefined;
 
+/** The fields a project is found from when the page names none (#179). */
+export interface LocateContext { key: string; cwd?: string; path?: string }
+
 /**
  * Check a call's body and build the line it records. Throws CallError(400) with the reason.
- * `project` is the page's when it names one; else `cwd` (the agent's folder) is mapped to its
- * project through its git common dir (#179), and the record says how (`projectFrom`).
+ * `project` is the page's when it names one; else `locate` finds it from the measured answer that
+ * lists the key, the edited file's package (`refusal.path`) or the agent's folder (`cwd`), and the
+ * record says how (`projectFrom`; server/call-project.ts).
  */
-export function callFrom(key: string, body: Record<string, unknown>, now: () => Date = () => new Date(), projectOf: (cwd: string) => ProjectPick = (c) => projectOfFolder(c)): CallRecord {
+export function callFrom(
+  key: string,
+  body: Record<string, unknown>,
+  now: () => Date = () => new Date(),
+  locate: (ctx: LocateContext) => ProjectPick | null = (ctx) => locateProject(ctx, [], knownFromRegistry()),
+): CallRecord {
   if (!KEY_RE.test(key)) throw new CallError(400, `the refusal key ${JSON.stringify(key)} is not one this server records (letters, digits, _ : -)`);
   let project = body.project;
   let projectFrom = "the page";
   if (project === undefined || project === null) {
-    const cwd = body.cwd;
-    if (typeof cwd !== "string" || !cwd.startsWith("/") || cwd.length > 1000) throw new CallError(400, "project must be a project name, or cwd the agent's folder (an absolute path) to find it from");
-    ({ project, projectFrom } = projectOf(cwd));
+    const abs = (v: unknown) => (typeof v === "string" && v.startsWith("/") && v.length <= 1000 ? v : undefined);
+    const r = body.refusal && typeof body.refusal === "object" ? (body.refusal as Record<string, unknown>) : {};
+    const pick = locate({ key, cwd: abs(body.cwd), path: abs(r.path) });
+    if (!pick)
+      throw new CallError(400, "project must be a project name; without one, the call must name the agent's folder (cwd) or the edited file (refusal.path) as an absolute path, or a key a measured answer lists");
+    ({ project, projectFrom } = pick);
   }
   if (typeof project !== "string" || !PROJECT_RE.test(project)) throw new CallError(400, "project must be a project name");
   const call = body.call;
@@ -55,7 +67,7 @@ export function callFrom(key: string, body: Record<string, unknown>, now: () => 
   const r = body.refusal;
   if (r && typeof r === "object" && !Array.isArray(r)) {
     const o = r as Record<string, unknown>;
-    const refusal = { session: str(o.session, 200), tool: str(o.tool, 40), file: str(o.file, 1000), at: str(o.at, 40) };
+    const refusal = { session: str(o.session, 200), tool: str(o.tool, 40), file: str(o.file, 1000), path: str(o.path, 1000), at: str(o.at, 40) };
     if (Object.values(refusal).some((v) => v !== undefined)) rec.refusal = JSON.parse(JSON.stringify(refusal));
   }
   return rec;
