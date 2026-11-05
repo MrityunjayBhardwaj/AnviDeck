@@ -43,6 +43,7 @@ import {
   type HostLoad,
   type Item,
   type Refusal,
+  refusalCallTarget,
   type SavedFocus,
   type Timeline,
   type ToolCall,
@@ -787,8 +788,8 @@ function refusalCard(r: Refusal, t: ToolCall, cwd: string | undefined): HTMLElem
   card.append(el("div", "aw-note", `${r.designId ? `Judged under design ${r.designId}. ` : ""}The edit did not land; the agent read this refusal.`));
   const whole = el("details", "", el("summary", "aw-note", "The refusal as the agent read it"), el("pre", "", r.text));
   card.append(whole);
-  // Your call on it (#86), keyed by the refused call's tool_use id; the project is the screen's, else the agent's folder name.
-  card.append(refusalCall({ key: t.id, project: S.deps?.project ?? cwd?.split("/").filter(Boolean).pop() ?? "unknown",
-    refusal: { tool: t.name, file: r.file, at: t.at ?? undefined } }));
+  // Your call on it (#86), keyed by the refused call's tool_use id; the project is the screen's, else
+  // the server finds it from the key's measured answer, the edited file's package or the agent's folder (#179).
+  card.append(refusalCall(refusalCallTarget(t, r, S.deps?.project, cwd)));
   return card;
 }

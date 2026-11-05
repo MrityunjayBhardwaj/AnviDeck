@@ -86,7 +86,7 @@ function refusals(rs: Refusal[], over: Partial<RefusalsMeasured> = {}): Refusals
     notices: {}, refusals: rs, timeouts: [], unrecognised: [],
     exposure: { chances: rs.length, refused: rs.length, missed: 0 }, defaultBranch: null, byDesign: [], trialReading: null, report: "",
     cache: { at: "", ageMs: 0, refreshing: false, ttlMs: 1 },
-    calls: { file: "/c.jsonl", exists: true, status: "ok", lines: 0, unreadableLines: 0, readAt: "" },
+    calls: { file: "/c.jsonl", exists: true, status: "ok", lines: 0, unreadableLines: 0, unverified: 0, ofProject: 0, notListed: 0, readAt: "" },
     ...over,
   };
 }

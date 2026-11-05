@@ -183,6 +183,22 @@ const REFUSAL_HEAD = /BLOCKED: this edit to (\S+) adds \d+ imports? that erode (
 const VIOLATION = /^[ \t]*· ([\w-]+): (\S+) -> (\S+)\n[ \t]+(.+)$/gm;
 
 /**
+ * What a refusal card sends with your call (#86, #179): keyed by the refused call's tool_use id;
+ * the screen's project when it has one, else the agent's folder; and the edited file's absolute
+ * path from the call's own input, which names the package whose measured answer should list the
+ * key. The server finds the project from these; a card never invents one (no folder-name guess).
+ */
+export function refusalCallTarget(t: Pick<ToolCall, "id" | "name" | "input" | "at">, r: Pick<Refusal, "file">, project: string | null | undefined, cwd: string | undefined) {
+  const p = t.input.file_path ?? t.input.notebook_path;
+  const path = typeof p === "string" && p.startsWith("/") ? p : undefined;
+  return {
+    key: t.id,
+    ...(project ? { project } : cwd ? { cwd } : {}),
+    refusal: { tool: t.name, file: r.file, ...(path ? { path } : {}), ...(t.at ? { at: t.at } : {}) },
+  };
+}
+
+/**
  * The design guard's refusal in a refused call's result (structure-guard-hook.js refusalText):
  * "BLOCKED: this edit to <file> adds N import(s) that erode <pkg>'s declared structure:" then
  * one "  · <rule>: <from> -> <to>" line per violation with its detail below, the design id, and
