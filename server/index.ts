@@ -24,6 +24,7 @@ app.route("/api/structure", (await import("./routes/structure")).default);
 app.route("/api/home", (await import("./routes/home")).default);
 app.route("/api", api);
 app.route("/api/replay", (await import("./routes/replay")).default);
+app.route("/api/agents-screen", (await import("./routes/agents-screen")).default);
 
 // Agent host (#75): the only code that runs agents.
 const agents = (await import("./routes/agents")).createAgentHost(broadcast);

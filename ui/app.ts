@@ -12,6 +12,8 @@ import { BrainView, addBrainHookEvent, addBrainRouteEvent } from "./components/B
 import { GitHubTrace } from "./components/GitHubTrace";
 import { LiveSessions } from "./components/LiveSessions";
 import { AgentsView, parseAgentsHash } from "./components/AgentsView";
+import { AgentsScreen, agentsScreenAgents, agentsScreenLine } from "./components/AgentsScreen";
+import { parseAgentsScreenParams } from "./components/agents-model";
 import { needsCount, badgeText, stripText, type HostAsks, type NeedsCount } from "./home-count";
 import { permissionQueue, type AskingAgent } from "../shared/permission-requests";
 import type { HomeResponse } from "../shared/home-types";
@@ -218,6 +220,9 @@ function renderMain() {
     mainEl.appendChild(CrossProject(nav));
   } else if (id === "sessions") {
     mainEl.appendChild(LiveSessions(nav));
+  } else if (id === "agents" && !parseAgentsScreenParams(route.params).replay) {
+    // The Agents screen (#82); the replay view below stays reachable at #agents?view=replay.
+    mainEl.appendChild(AgentsScreen({ project: currentProjectName, route: parseAgentsScreenParams(route.params), hostAgents, go, newAgent: () => startAgent.open(currentProjectName) }));
   } else if (id === "agents") {
     const r = parseAgentsHash(`#agents${location.hash.includes("?") ? location.hash.slice(location.hash.indexOf("?")) : ""}`) ?? {};
     if (!r.project && currentProjectName) r.project = currentProjectName;
@@ -376,6 +381,7 @@ function upsertAgent(a: StripAgent) {
   if (i === -1) hostAgents.agents.unshift(a);
   else hostAgents.agents[i] = a;
   setPermissionAgents(hostAgents);
+  agentsScreenAgents(hostAgents);
   recountAsks();
   if (!prev || prev.status !== a.status) {
     const kind = a.status === "failed" ? "bad" : a.pendingPermissions.length ? "warn" : a.status === "done" ? "ok" : "info";
@@ -405,6 +411,9 @@ function connectWebSocket(): void {
         if (msg.type === "heartbeat") return;
         if (msg.type === "agent") {
           upsertAgent(msg.data as StripAgent);
+        } else if ((msg as { type: string }).type === "agent-message") {
+          const m = (msg as unknown as { data: { id: string; line: Parameters<typeof agentsScreenLine>[1] } }).data;
+          agentsScreenLine(m.id, m.line);
         } else if (msg.type === "hook") {
           const entry = msg.data as HookLogEntry;
           addHookEntry(entry);
@@ -446,6 +455,7 @@ function recountAsks() {
 async function loadAgents() {
   hostAgents = await api.agentsRead();
   setPermissionAgents(hostAgents);
+  agentsScreenAgents(hostAgents);
   recountAsks();
   renderStrip();
 }
