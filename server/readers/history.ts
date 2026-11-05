@@ -12,9 +12,10 @@
  *                 committer time: when the commit was made, not when it was authored
  *   catalogue     git log of the catalogue folder, in whatever repository holds it; a folder in
  *                 no repository has no history source, and the lane says so
- *   actions       actions.jsonl in AnviDeck's own folder, the lines that name this project
+ *   actions       actions.jsonl in AnviDeck's own folder: the lines that name this project, one of
+ *                 its folders (its own or a worktree's), or an agent the registry places in one
  *
- * Read-only: it reads files and asks git (log, rev-list, rev-parse, show, diff); it writes nothing.
+ * Read-only: it reads files and asks git (log, rev-list, rev-parse, show, diff, worktree list); it writes nothing.
  */
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -270,8 +271,10 @@ export async function readTranscriptLanes(sessionsRead: ReplaySessionsResponse, 
 
 // ── refusals and rulings ───────────────────────────────────────────────────────────────────
 
-export function readRefusalLane(r: RefusalsResponse, w: HistoryWindow, cap: number) {
+/** `waiting`: this window needs a run of its own that has not started, because another is going (the route allows one at a time). */
+export function readRefusalLane(r: RefusalsResponse, w: HistoryWindow, cap: number, waiting?: string) {
   const source = "anvi's structure-refusals.js (GET /api/refusals): edits the design guard refused";
+  if (waiting) return { lane: failedLane("refusal", source, "measuring", waiting), events: [] };
   if (r.status === "measuring") return { lane: failedLane("refusal", source, "measuring", `the instrument is running since ${r.startedAt} (it reads every transcript on the machine; minutes)`), events: [] };
   if (r.status === "no-design" || r.status === "not-measured") return { lane: failedLane("refusal", source, "not-available", r.reason), events: [] };
   if (r.status === "unreadable") return { lane: failedLane("refusal", source, "unreadable", r.reason), events: [] };
@@ -405,10 +408,63 @@ export async function readCatalogueLane(projectPath: string, w: HistoryWindow, c
 
 // ── AnviDeck's own actions ─────────────────────────────────────────────────────────────────
 
-/** actions.jsonl lines that name this project (body.project, or an agent started in its folder). Read here: readers may not import the action log. */
-export function readActionLane(project: string, projectPath: string, w: HistoryWindow, cap: number, dir?: string) {
+/** What ties an action line to this project besides body.project: its folders and its agents. */
+export interface ActionOwnership {
+  /** The project's folder and its git worktrees' folders (git worktree list), as given and resolved. */
+  folders: string[];
+  /** Agent id → its folder, from the agent registry (agents.json beside actions.jsonl). */
+  agents: Record<string, string>;
+  /** Why the registry could not be read, when it could not: agent actions then cannot be placed. */
+  registryError?: string;
+}
+
+/** The agent registry beside the action log, read as a file (readers may not import the agent host). */
+export function readAgentFolders(dir?: string): { agents: Record<string, string>; error?: string } {
+  const file = join(dir ?? callsDir(), "agents.json");
+  if (!existsSync(file)) return { agents: {} };
+  try {
+    const raw = JSON.parse(readFileSync(file, "utf8"));
+    const agents: Record<string, string> = {};
+    for (const a of Array.isArray(raw?.agents) ? raw.agents : []) if (a && typeof a.id === "string" && typeof a.cwd === "string") agents[a.id] = a.cwd;
+    return { agents };
+  } catch (e) {
+    return { agents: {}, error: `${file}: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}` };
+  }
+}
+
+/** The project's folder and every worktree git lists for it, each as given and resolved. */
+export async function projectFolders(projectPath: string): Promise<string[]> {
+  const realProject = realOr(projectPath);
+  const out = new Set([projectPath, realProject]);
+  const r = await gitRead(projectPath, ["worktree", "list", "--porcelain"]);
+  if (r.ok)
+    for (const l of r.out.split("\n"))
+      if (l.startsWith("worktree ")) {
+        const p = realOr(l.slice("worktree ".length));
+        out.add(p);
+        // Also as spelled under the project's own path (/var/... for /private/var/...): a cut-short folder can only be matched as logged.
+        if (realProject !== projectPath && p.startsWith(realProject + "/")) out.add(projectPath + p.slice(realProject.length));
+      }
+  return [...out];
+}
+
+/** Whether a logged folder is one of `folders`. The action log cuts strings past 80 chars to "<first 80>… (N chars)"; those match on that prefix and length. */
+export function folderMatches(logged: string, folders: string[]): boolean {
+  const cut = /^([\s\S]*)… \((\d+) chars\)$/.exec(logged);
+  if (cut) return folders.some((f) => f.length === Number(cut[2]) && f.startsWith(cut[1]));
+  const r = realOr(logged);
+  return folders.some((f) => f === logged || f === r);
+}
+
+/**
+ * actions.jsonl lines that belong to this project: body.project names it, or the agent the line
+ * acts on (its target: POST /api/agents/:id/..., or the id a start answered) was started in one of
+ * its folders, or body.cwd is one of them. Lines of another project, and lines that name none (a
+ * start refused with an empty body), are counted apart. Read here: readers may not import the action log.
+ */
+export function readActionLane(project: string, projectPath: string, w: HistoryWindow, cap: number, dir?: string, own?: ActionOwnership) {
   const file = join(dir ?? callsDir(), "actions.jsonl");
-  const source = `AnviDeck's action log: ${file} (lines naming this project)`;
+  const source = `AnviDeck's action log: ${file} (lines naming this project, one of its folders or one of its agents)`;
   if (!existsSync(file)) return lane("action", source, [], w, cap, "none", "nothing has been logged yet (the file does not exist)");
   let text: string;
   try {
@@ -416,9 +472,13 @@ export function readActionLane(project: string, projectPath: string, w: HistoryW
   } catch (e) {
     return { lane: failedLane("action", source, "unreadable", `${file}: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}`), events: [] as HistoryEvent[] };
   }
+  const folders = own?.folders ?? [projectPath, realOr(projectPath)];
+  const reg = own ? { agents: own.agents, error: own.registryError } : readAgentFolders(dir);
   const lines = text.split("\n").filter((l) => l.trim());
   let bad = 0;
-  let otherOrNone = 0;
+  let other = 0;
+  let none = 0;
+  let unplaced = 0;
   const events: ActionEvent[] = [];
   lines.forEach((l, n) => {
     let r: any;
@@ -433,16 +493,31 @@ export function readActionLane(project: string, projectPath: string, w: HistoryW
       return;
     }
     const body = r.body && typeof r.body === "object" ? r.body : {};
-    const mine = body.project === project || (typeof body.cwd === "string" && realOr(body.cwd) === realOr(projectPath));
+    const target = typeof r.target === "string" && r.target ? r.target : undefined;
+    const agentCwd = r.area === "agents" && target ? reg.agents[target] : undefined;
+    let mine: boolean;
+    if (typeof body.project === "string") mine = body.project === project;
+    else if (agentCwd !== undefined) mine = folderMatches(agentCwd, folders);
+    else if (typeof body.cwd === "string") mine = folderMatches(body.cwd, folders);
+    else {
+      if (r.area === "agents" && target) unplaced++;
+      else none++;
+      return;
+    }
     if (!mine) {
-      otherOrNone++;
+      other++;
       return;
     }
     if (!inWindow(r.at, w)) return;
-    events.push({ kind: "action", at: r.at, id: `${n}`, method: r.method, path: String(r.path ?? ""), result: String(r.result ?? ""), status: Number(r.status) || 0, ...(r.reason ? { reason: String(r.reason) } : {}), ...(r.target ? { target: String(r.target) } : {}) });
+    events.push({ kind: "action", at: r.at, id: `${n}`, method: r.method, path: String(r.path ?? ""), result: String(r.result ?? ""), status: Number(r.status) || 0, ...(r.reason ? { reason: String(r.reason) } : {}), ...(target ? { target } : {}) });
   });
-  const detail = `${otherOrNone} of ${lines.length} logged actions name another project or none and are not on this timeline${bad ? `; ${bad} lines are not actions` : ""}.`;
-  return lane("action", source, events, w, cap, bad ? "partial" : undefined, detail);
+  const parts = [
+    `${other} of ${lines.length} logged actions belong to another project`,
+    `${none} name no project, folder or agent (such as a start refused before it had a body) and are on no project's timeline`,
+    ...(unplaced ? [`${unplaced} act on an agent the registry does not list${reg.error ? ` (${reg.error})` : ""}, so whose they are is not known`] : []),
+    ...(bad ? [`${bad} lines are not actions`] : []),
+  ];
+  return lane("action", source, events, w, cap, bad || unplaced ? "partial" : undefined, `${parts.join("; ")}.`);
 }
 
 // ── the whole timeline ─────────────────────────────────────────────────────────────────────
@@ -452,6 +527,8 @@ export interface HistoryOptions {
   path: string;
   window: HistoryWindow;
   refusals: RefusalsResponse;
+  /** Set when this window's refusals run is waiting for another to finish (see readRefusalLane). */
+  refusalsWaiting?: string;
   sessions?: ReplaySessionsResponse;
   callsDir?: string;
   anviDir?: string | null;
@@ -464,15 +541,17 @@ export async function readHistory(o: HistoryOptions): Promise<HistoryResponse> {
   const w = o.window;
   const sessionsRead = o.sessions ?? listReplaySessions(o.project);
   const tr = await readTranscriptLanes(sessionsRead, w, o.path, cap);
-  const [commit, catalogue] = await Promise.all([readCommitLane(o.path, w, cap), readCatalogueLane(o.path, w, cap, o.anviDir)]);
+  const [commit, catalogue, folders] = await Promise.all([readCommitLane(o.path, w, cap), readCatalogueLane(o.path, w, cap, o.anviDir), projectFolders(o.path)]);
+  const reg = readAgentFolders(o.callsDir);
+  const own: ActionOwnership = { folders, agents: reg.agents, ...(reg.error ? { registryError: reg.error } : {}) };
   const parts: Record<HistoryKind, { lane: LaneRead; events: HistoryEvent[] }> = {
     turn: tr.turn,
     edit: tr.edit,
-    refusal: readRefusalLane(o.refusals, w, cap),
+    refusal: readRefusalLane(o.refusals, w, cap, o.refusalsWaiting),
     ruling: readRulingLane(o.project, w, cap, o.callsDir),
     commit,
     catalogue,
-    action: readActionLane(o.project, o.path, w, cap, o.callsDir),
+    action: readActionLane(o.project, o.path, w, cap, o.callsDir, own),
   };
   const lanes = Object.fromEntries(HISTORY_KINDS.map((k) => [k, parts[k].lane])) as Record<HistoryKind, LaneRead>;
   const events = HISTORY_KINDS.flatMap((k) => parts[k].events).sort((a, b) => a.at.localeCompare(b.at) || a.kind.localeCompare(b.kind));

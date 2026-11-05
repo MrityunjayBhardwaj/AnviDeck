@@ -20,7 +20,7 @@ import {
   scanTranscript,
   windowFrom,
 } from "../server/readers/history";
-import { historyRoutes } from "../server/routes/history";
+import { historyRoutes, wideRefusals } from "../server/routes/history";
 import { defaultSince } from "../server/readers/refusals";
 import {
   ROWS,
@@ -273,7 +273,34 @@ describe("AnviDeck's own actions", () => {
     const r = readActionLane("p", d, W, 10, d);
     expect(r.events.map((e) => (e as { path: string }).path)).toEqual(["/api/prs/1/merge", "/api/agents"]);
     expect(r.lane.status).toBe("partial");
-    expect(r.lane.detail).toContain("2 of 5 logged actions name another project or none");
+    expect(r.lane.detail).toContain("1 of 5 logged actions belong to another project; 1 name no project, folder or agent");
+  });
+
+  test("an action on an agent (stop, message, permission answer) is placed by the registry: started in the project's folder or one of its worktrees; a cut-short folder matches by prefix and length", async () => {
+    const d = dir();
+    const repo = repoWithMain();
+    commitFile(repo, "a.txt", "a", "2026-10-01T00:00:00Z", "first");
+    const wt = join(repo, ".claude", "worktrees", "issue-7-with-a-folder-name-long-enough-to-be-cut-short-by-the-log");
+    git(repo, ["worktree", "add", "-q", "-b", "issue-7", wt]);
+    const other = dir();
+    writeFileSync(join(d, "agents.json"), JSON.stringify({ version: 1, agents: [
+      { id: "a1", cwd: repo }, { id: "a2", cwd: wt }, { id: "a3", cwd: other },
+    ] }));
+    const cut = (s: string) => `${s.slice(0, 80)}… (${s.length} chars)`;
+    writeFileSync(join(d, "actions.jsonl"), [
+      line({ at: "2026-10-22T10:00:00Z", method: "POST", path: "/api/agents/a1/permissions/r1", area: "agents", target: "a1", status: 200, result: "accepted", body: { decision: "allow" } }),
+      line({ at: "2026-10-22T10:01:00Z", method: "POST", path: "/api/agents/a2/stop", area: "agents", target: "a2", status: 200, result: "accepted" }),
+      line({ at: "2026-10-22T10:02:00Z", method: "POST", path: "/api/agents/a3/stop", area: "agents", target: "a3", status: 200, result: "accepted" }),
+      line({ at: "2026-10-22T10:03:00Z", method: "POST", path: "/api/agents", area: "agents", status: 400, result: "failed", body: { cwd: cut(wt) } }),
+      line({ at: "2026-10-22T10:04:00Z", method: "POST", path: "/api/agents/gone/stop", area: "agents", target: "gone", status: 404, result: "failed" }),
+    ].join("\n"));
+    const h = await readHistory({ project: "p", path: repo, window: W, refusals: measured([]), sessions: { timezone: "UTC", project: "p", status: "none", searched: [], sessions: [] }, callsDir: d, anviDir: null });
+    expect(h.lanes.action.total).toBe(3);
+    expect(h.events.filter((e) => e.kind === "action").map((e) => (e as { path: string }).path)).toEqual(["/api/agents/a1/permissions/r1", "/api/agents/a2/stop", "/api/agents"]);
+    // a3 is another project's; "gone" is an agent nobody can place: the lane says so and is partial.
+    expect(h.lanes.action.status).toBe("partial");
+    expect(h.lanes.action.detail).toContain("1 of 5 logged actions belong to another project");
+    expect(h.lanes.action.detail).toContain("1 act on an agent the registry does not list");
   });
 });
 
@@ -377,6 +404,44 @@ describe("the route", () => {
     expect(asked[0]).toBeNull();
     await app.request(`/?project=p&since=2026-01-01T05:00:00Z&until=2026-02-01T00:00:00Z`);
     expect(asked[1]).toBe(defaultSince() > "2026-01-01" ? "2026-01-01T00:00:00.000Z" : null);
+  });
+
+  test("windows older than the reader's default share one wide run per project, and only one wide run goes at a time", async () => {
+    const now = () => new Date("2026-11-05T12:00:00Z");
+    const asked: { project: string; since: string | null | undefined; wait: boolean }[] = [];
+    let finish = () => {};
+    const refusals = async (project: string, o: { since?: string | null; wait?: boolean }) => {
+      asked.push({ project, since: o.since, wait: !!o.wait });
+      if (o.wait) await new Promise<void>((res) => (finish = res));
+      return { response: { status: "no-design", project, reason: "x" } as RefusalsResponse };
+    };
+    const forWindow = wideRefusals(refusals, now);
+    // The review's case: windows from 08-10, 08-11, 08-12 and one from 10-05T18:30Z (just before the default 10-06).
+    for (const s of ["2026-08-10T00:00:00.000Z", "2026-08-11T00:00:00.000Z", "2026-08-12T00:00:00.000Z", "2026-10-05T18:30:00.000Z"]) expect((await forWindow("stave", s)).waiting).toBeUndefined();
+    const runs = asked.filter((a) => a.wait);
+    expect(runs).toEqual([{ project: "stave", since: "2026-08-01T00:00:00.000Z", wait: true }]);
+    expect(new Set(asked.map((a) => a.since))).toEqual(new Set(["2026-08-01T00:00:00.000Z"]));
+    // Another project, or an older month, while that run goes: told it waits, and no second run starts.
+    const other = await forWindow("p", "2026-09-01T00:00:00.000Z");
+    expect(other.waiting).toContain("starts when that one ends");
+    expect((await forWindow("stave", "2026-07-15T00:00:00.000Z")).waiting).toContain("from 2026-07-01");
+    expect(asked.filter((a) => a.wait)).toHaveLength(1);
+    // Inside the default window: the shared default run, never a wide one.
+    await forWindow("stave", "2026-10-20T00:00:00.000Z");
+    expect(asked.at(-1)).toEqual({ project: "stave", since: null, wait: false });
+    // When the run ends, the older month gets its run, which then serves every later window.
+    finish();
+    await new Promise((r) => setTimeout(r, 0));
+    expect((await forWindow("stave", "2026-07-15T00:00:00.000Z")).waiting).toBeUndefined();
+    expect(asked.filter((a) => a.wait).map((a) => a.since)).toEqual(["2026-08-01T00:00:00.000Z", "2026-07-01T00:00:00.000Z"]);
+    expect((await forWindow("stave", "2026-08-20T00:00:00.000Z")).waiting).toBeUndefined();
+    expect(asked.at(-1)!.since).toBe("2026-07-01T00:00:00.000Z");
+  });
+
+  test("the refusals lane says it is waiting when another run holds the slot, so the page keeps asking", () => {
+    const r = readRefusalLane(measured([]), W, 10, "waiting: another run");
+    expect(r.lane.status).toBe("measuring");
+    expect(r.lane.detail).toBe("waiting: another run");
   });
 
   test("compare needs two times", async () => {
