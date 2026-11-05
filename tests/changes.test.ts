@@ -1,5 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { boundaryId, dharanaBoundaries, layersFor, logFileMatches, sessionOfTranscript } from "../shared/changes";
 import {
   boundariesTouched,
@@ -12,7 +14,8 @@ import {
   parseDiff,
   pickPr,
 } from "../ui/components/changes-model";
-import { readHookLog } from "../server/readers/changes";
+import { findPrSessions, readHookLog } from "../server/readers/changes";
+import { encodeCwd } from "../server/readers/replay";
 import changesRoute from "../server/routes/changes";
 import { PR_SECTIONS_EXAMPLE } from "../shared/pr-evidence";
 import type { DharanaRead, PrFile, PrSession, SessionsRead } from "../shared/changes-types";
@@ -388,6 +391,62 @@ describe("the injector's log for a session", () => {
     expect(r.entries.map((e) => e.ts)).toEqual(["2026-11-01T00:00:00Z"]);
     expect([r.totalEntries, r.malformedLines]).toEqual([3, 1]);
     expect((readHookLog(sid, ["src/a.ts"], null) as any).entries.length).toBe(2);
+  });
+});
+
+describe("finding the PR's sessions across the repository's checkouts", () => {
+  const tmp = realpathSync(mkdtempSync(join(tmpdir(), "chg-sessions-")));
+  const main = join(tmp, "main");
+  const side = join(tmp, "side");
+  const projects = join(tmp, "projects");
+  const reg = join(tmp, "reg");
+  const sid = (n: string) => `chgtest-${process.pid}-${n}`;
+  const savedAgentDir = process.env.ANVIDECK_AGENT_DIR;
+  afterAll(() => {
+    if (savedAgentDir === undefined) delete process.env.ANVIDECK_AGENT_DIR;
+    else process.env.ANVIDECK_AGENT_DIR = savedAgentDir;
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test("pr-link in a sibling worktree, the branch in the main checkout, the registry agent for a closed issue; not another repo's folder", async () => {
+    const git = (cwd: string, ...a: string[]) => {
+      const p = Bun.spawnSync(["git", "-C", cwd, ...a], { stdout: "pipe", stderr: "pipe" });
+      if (p.exitCode !== 0) throw new Error(p.stderr.toString());
+    };
+    mkdirSync(main, { recursive: true });
+    git(main, "init", "-q", "-b", "main");
+    git(main, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "x");
+    git(main, "worktree", "add", "-q", "-b", "feat/9-x", side);
+    const put = (dir: string, file: string, line: string) => {
+      mkdirSync(join(projects, dir, file.includes("/") ? file.slice(0, file.lastIndexOf("/")) : ""), { recursive: true });
+      writeFileSync(join(projects, dir, file), line + "\n");
+    };
+    const url = `"prUrl":"https://github.com/o/r/pull/7"`;
+    put(encodeCwd(side), `${sid("S1")}.jsonl`, `{"type":"pr-link",${url},"prNumber":7}`);
+    put(encodeCwd(main), `${sid("S2")}.jsonl`, `{"type":"user","gitBranch":"feat/9-x"}`);
+    put(encodeCwd(main), `${sid("S3")}/subagents/w/agent-1.jsonl`, `{"type":"pr-link",${url}}`);
+    put("-elsewhere-other-repo", `${sid("S4")}.jsonl`, `{"type":"pr-link",${url}}`);
+    mkdirSync(reg, { recursive: true });
+    writeFileSync(join(reg, "agents.json"), JSON.stringify({ agents: [{ id: "a1", sessionId: sid("S1"), cwd: side }, { id: "a2", cwd: main, issue: 9 }, { id: "a3", cwd: "/elsewhere", issue: 9 }, { id: "a4", cwd: main, issue: 10 }] }));
+    process.env.ANVIDECK_AGENT_DIR = reg;
+
+    const pr = { number: 7, headRefName: "feat/9-x", closingIssues: [9], files: [{ path: "a.ts", additions: 1, deletions: 0 }], mergedAt: null, closedAt: null } as any;
+    const r = await findPrSessions(main, "o/r", pr, projects);
+    if (r.status === "unreadable") throw new Error(r.reason);
+    expect(r.errors).toEqual([]);
+    const got = r.sessions.map((s) => [s.sessionId, s.how.sort().join("+"), s.agentId ?? null]).sort((a, b) => String(a[0] ?? "").localeCompare(String(b[0] ?? "")));
+    expect(got).toEqual([
+      [null, "agent-issue", "a2"],
+      [sid("S1"), "pr-link", "a1"],
+      [sid("S2"), "branch", null],
+      [sid("S3"), "pr-link", null],
+    ]);
+    expect(r.sessions.find((s) => s.sessionId === sid("S1"))!.log).toEqual({ status: "absent", path: `/tmp/anvi-hook-${sid("S1")}.log` });
+  });
+
+  test("a transcripts folder that cannot be read is 'unreadable', not 'no session'", async () => {
+    const r = await findPrSessions(main, "o/r", { number: 7, headRefName: "x", closingIssues: [], files: [] } as any, join(tmp, "no-such-dir"));
+    expect(r.status).toBe("unreadable");
   });
 });
 

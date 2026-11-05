@@ -11,8 +11,9 @@
  *   - pr-link:     its transcript holds Claude Code's own "pr-link" record for this PR's URL;
  *   - branch:      its transcript ran on the PR's head branch;
  *   - agent-issue: AnviDeck started it (agent registry) on an issue this PR closes, in this project.
- * Transcripts are searched in the project's own folder under ~/.claude/projects and in the
- * folders of checkouts inside it (worktrees under .claude/worktrees), and in each registered agent's folder.
+ * Transcripts are searched in the ~/.claude/projects folders of every checkout of the repository
+ * (the project and each of its git worktrees, and folders inside them such as .claude/worktrees),
+ * and in each registered agent's folder. A separate clone of the same repository is not searched.
  */
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -261,24 +262,30 @@ export function readHookLog(sid: string, files: string[], until: string | null):
   return { status: "read", path, entries, totalEntries: total, malformedLines: malformed };
 }
 
-export async function findPrSessions(projectPath: string, repo: string, pr: PrMeta): Promise<SessionsRead> {
+export async function findPrSessions(projectPath: string, repo: string, pr: PrMeta, projectsDir = PROJECTS_DIR): Promise<SessionsRead> {
   let names: string[];
   try {
-    names = readdirSync(PROJECTS_DIR);
+    names = readdirSync(projectsDir);
   } catch (e) {
-    return { status: "unreadable", reason: errText(PROJECTS_DIR, e) };
+    return { status: "unreadable", reason: errText(projectsDir, e) };
   }
   const registry = readRegistry();
-  const enc = encodeCwd(projectPath);
-  const dirSet = new Set(names.filter((d) => d === enc || d.startsWith(enc + "--")).map((d) => join(PROJECTS_DIR, d)));
-  const ownAgents = registry.agents.filter((a) => typeof a.cwd === "string" && within(a.cwd, projectPath));
+  const errors: string[] = [];
+  if (registry.status === "unreadable") errors.push(`agent registry: ${registry.reason}`);
+  // Every checkout of this repository: the project itself and its git worktrees, wherever they are
+  // (a sibling folder like basher-ai, or a scratch worktree). An agent may have worked in any of them.
+  const roots = [projectPath];
+  const wt = await runAsync(["git", "-C", projectPath, "worktree", "list", "--porcelain"], 10000);
+  if (wt.ok) for (const l of wt.out.split("\n")) if (l.startsWith("worktree ")) roots.push(l.slice("worktree ".length));
+  if (!wt.ok) errors.push(`could not list ${projectPath}'s worktrees: ${wt.err || "git failed"}`);
+  const encs = [...new Set(roots.map(encodeCwd))];
+  const dirSet = new Set(names.filter((d) => encs.some((e) => d === e || d.startsWith(e + "--"))).map((d) => join(projectsDir, d)));
+  const ownAgents = registry.agents.filter((a) => typeof a.cwd === "string" && roots.some((r) => within(a.cwd, r)));
   for (const a of ownAgents) {
-    const d = join(PROJECTS_DIR, encodeCwd(a.cwd));
+    const d = join(projectsDir, encodeCwd(a.cwd));
     if (existsSync(d)) dirSet.add(d);
   }
   const dirs = [...dirSet];
-  const errors: string[] = [];
-  if (registry.status === "unreadable") errors.push(`agent registry: ${registry.reason}`);
 
   const sessions = new Map<string, PrSession>();
   const add = (sid: string | null, how: SessionMatch, transcript?: string, agentId?: string) => {
