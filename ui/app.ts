@@ -1,5 +1,5 @@
 import { api } from "./api";
-import { CommandCenter } from "./components/CommandCenter";
+import { HomeScreen, refreshHomeAgents, updateHomeScreen, type HomeInput } from "./components/HomeScreen";
 import { ProjectView } from "./components/ProjectView";
 import { Timeline, type TimelineState } from "./components/Timeline";
 import { DiffViewer } from "./components/DiffViewer";
@@ -16,6 +16,7 @@ import { needsCount, badgeText, stripText, type HostAsks, type NeedsCount } from
 import { permissionQueue, type AskingAgent } from "../shared/permission-requests";
 import type { HomeResponse } from "../shared/home-types";
 import { MapView } from "./components/MapView";
+import { WorkScreen } from "./components/WorkScreen";
 import { ChangesScreen } from "./components/ChangesScreen";
 import { createStartAgent } from "./shell/start-agent";
 import { parseRoute, screen, type Route, type ScreenId } from "./shell/routes";
@@ -60,6 +61,8 @@ export interface Nav {
 // State
 let route: Route = parseRoute(location.hash);
 let projects: ProjectSummary[] = [];
+/** When /api/projects was read: the date beside Home's "notes backed by source" (#81). */
+let projectsReadAt: string | null = null;
 /** The project switcher's pick: kept across reloads, overridden by a project named in the URL. */
 const PROJECT_KEY = "anvideck.project";
 let currentProjectName: string | null = localStorage.getItem(PROJECT_KEY);
@@ -179,6 +182,7 @@ function setProject(name: string) {
   localStorage.setItem(PROJECT_KEY, name);
   renderTop();
   renderRail();
+  if (route.screen === "home") return repaintHome(); // Home's grounding row is the picked project's (#81).
   // Screens that show one project follow the switcher.
   const s = route.screen;
   if (s === "project" || s === "brain" || s === "github-trace" || s === "agents") go(screenHash(s, name));
@@ -205,7 +209,7 @@ function renderMain() {
   if (def.buildsIn) {
     mainEl.appendChild(placeholder(id, currentProjectName));
   } else if (id === "home") {
-    mainEl.appendChild(CommandCenter(projects, nav, home, count));
+    mainEl.appendChild(HomeScreen(homeInput()));
   } else if (id === "older") {
     mainEl.appendChild(olderViews(currentProjectName));
   } else if (id === "project") {
@@ -226,6 +230,8 @@ function renderMain() {
     mainEl.appendChild(AgentsView(projects.map((p) => p.name), r));
   } else if (id === "map") {
     mainEl.appendChild(MapView(nav));
+  } else if (id === "work") {
+    mainEl.appendChild(WorkScreen(currentProjectName, route.params, { startAgent: (p, n) => startAgent.open(p, n) }));
   } else if (id === "changes") {
     mainEl.appendChild(ChangesScreen(route.params.get("project") ?? currentProjectName, route.params.get("pr")));
   } else if (id === "routing") {
@@ -439,12 +445,24 @@ function hostAsks(): HostAsks | undefined {
 
 /** Re-derive Home's one count after the host's agents changed (a request parked or answered). */
 function recountAsks() {
+  refreshHomeAgents(hostAgents); // Home's agents and answer rows follow the host (#81).
   if (!home) return;
   const next = needsCount(home, false, hostAsks());
   const changed = next.n !== count.n || next.state !== count.state || next.unread !== count.unread;
   count = next;
   renderRail();
-  if (changed && route.screen === "home" && !loading) renderMain();
+  if (changed && route.screen === "home" && !loading) repaintHome();
+}
+
+/** What Home is drawn from (#81). */
+function homeInput(): HomeInput {
+  const project = projects.find((p) => p.name === currentProjectName) ?? null;
+  return { home, count, failed: count.state === "failed", host: hostAgents, project, projectsReadAt };
+}
+
+/** Patch Home in place (an open permission card keeps focus); build it if it is not on the page. */
+function repaintHome() {
+  if (loading || !updateHomeScreen(homeInput())) renderMain();
 }
 
 async function loadAgents() {
@@ -460,7 +478,7 @@ function setHome(next: HomeResponse | null, failed = false) {
   count = needsCount(home, failed, hostAsks());
   renderRail();
   renderStrip();
-  if (route.screen === "home" && !loading) renderMain();
+  if (route.screen === "home" && !loading) repaintHome();
 }
 
 /** A load that came back with sources still reading asks again soon, not in a minute (#61). */
@@ -503,6 +521,7 @@ async function init() {
       ),
     ]);
     projects = projectsData;
+    projectsReadAt = new Date().toISOString();
     timelinePoints = timeline.points;
     timelineError = timeline.error;
     if (!currentProjectName || !projects.some((p) => p.name === currentProjectName)) currentProjectName = sortedProjects()[0]?.name ?? null;
