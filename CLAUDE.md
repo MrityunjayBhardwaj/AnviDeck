@@ -12,9 +12,9 @@ AnviDeck started as an observability dashboard that only read the framework's fi
 
 ### The rule that shapes the code: readers read, one module acts
 
-- **Readers** (`server/readers/*`, the GET routes in `server/routes/*`, `shared/parser.ts`) are read-only and stay that way. They never write into a project, a catalogue, memory or the anvi store. What they do today besides reading files: spawn `git`, `gh` and `node` to ask questions (log, show, ls-tree, `gh pr view`, `gh search prs`, `gh issue list`, anvi's structure guard), and the structure reader makes a scratch folder under `ANVIDECK_STRUCTURE_TMP` (default `/private/tmp/claude-501/anvideck-structure`) for the guard's temporary checkouts.
+- **Readers** (`server/readers/*`, the GET routes in `server/routes/*`, `shared/parser.ts`) are read-only and stay that way. They never write into a project, a catalogue, memory or the anvi store. What they do today besides reading files: spawn `git`, `gh` and `node` to ask questions (log, show, ls-tree, `gh pr view`, `gh search prs`, `gh issue list`, anvi's structure guard), the structure reader makes a scratch folder under `ANVIDECK_STRUCTURE_TMP` (default `/private/tmp/claude-501/anvideck-structure`) for the guard's temporary checkouts, and Work's conflict reader (`server/readers/work-conflicts.ts`) keeps a scratch bare repository per repo under `ANVIDECK_WORK_TMP` (default `/private/tmp/claude-501/anvideck-work`): it is cloned `--bare --shared` from the main checkout, fetches PR heads from GitHub into itself, and `git merge-tree --write-tree` writes trial-merge objects there, never into the project.
 - **The agent host** (planned, #75) is the only code that acts. It runs Claude Code agents through the Claude Agent SDK's `query()`: start, stream, stop, resume, and the permission callback. Every other write AnviDeck makes goes through it or through the action log.
-- A test fails if a reader imports the agent host, the action log or the write guard, or calls a file write API (#76, on `main`: `tests/reader-actor-split.test.ts`; the structure reader's scratch folder is its one listed exemption).
+- A test fails if a reader imports the agent host, the action log or the write guard, calls a file write API, or spawns a git or gh command that writes (#76, on `main`: `tests/reader-actor-split.test.ts`). The listed exemptions, each with why: the structure reader's scratch folder, and the Work conflict reader's clone, fetch and `merge-tree --write-tree` into its scratch repo (#85).
 
 **What AnviDeck will write once the workspace lands** (none of this is on `main` yet):
 - Agent actions: start an agent (#75), in its own worktree and branch for an issue (#78, on main: `POST /api/agents/from-issue`); stop and resume it; answer its permission requests (#77); send it messages and diff comments (#79).
@@ -33,16 +33,18 @@ AnviDeck started as an observability dashboard that only read the framework's fi
 | Every action (what, target, result, time) is appended to the action log (`actions.jsonl` in the agent registry folder; `GET /api/actions`) and shown in History | Logged on `main` (#76); History planned (#90) |
 | Agents run on the installed Claude Code and its claude.ai login, never an API key: API-key and provider variables are removed from each agent's environment, and an agent whose init message reports an `apiKeySource` other than `none` is stopped at once | Planned (#75) |
 | Your normal permission rules apply, as in the terminal; only calls they don't cover come to AnviDeck, on Home, the agent's card on Agents and its row of `/agent-host`, with Allow / Deny (`POST /api/agents/:id/permissions/:requestId`, `shared/permission-requests.ts`, `tests/permission-requests.test.ts`). A request nobody answers keeps waiting, and a timeout never allows it; if the agent stops it is withdrawn | On `main` (#77) |
-| Agents never merge; Merge is a button only you press | An agent started from an issue is told so in its prompt (#78, on main); Merge button planned (#85) |
+| Agents never merge; Merge is a button only you press | Partly. An agent started from an issue is told so in its prompt (#78, on main). Merge on Work squash-merges only the head and into the base the page showed, else 409 (#85). **Not enforced against agents:** any process on this machine, an agent's shell included, can fetch a page, read its write token and call `POST /api/prs/:n/merge`; it rests on agents not trying and on your permission rules for their commands (#147, open) |
 | Deleting the old views needs the owner's go on the PR | Planned (#92) |
 
 ### Current state (`main` at `dd71c3e`, 2026-11-05)
 
 Builds and runs (`bun run dev`; port 4000 unless `PORT` is set). Tests: `bun test`. Types: `bunx tsc --noEmit -p .`.
 
-Sidebar views today (`ui/app.ts`): **Home** (`CommandCenter.ts`: one queue of PRs and agents, a one-line status, the project list; each row's action is a link), **Live Sessions**, **Agents** (`AgentsScreen.ts`, #82: a tab per agent AnviDeck started and a 2×2 grid, each with its permission requests, message box, Stop/Resume, tool calls with the anvi hooks that ran, refusal cards; the project's terminal sessions after them, view only; the older replay view at `#agents?view=replay`), **Map** (projects, design blocks, files and imports from anvi's structure guard, with agents replayed on them), **Live Trace**, **Brain**, **System Lens**, **Cross-Project**, **Routing**. Reached from links: **Project** (catalogues, memory, grounding; with the timeline strip, also on Home) and **GitHub Trace**.
+Sidebar views today (`ui/app.ts`): **Home** (`CommandCenter.ts`: one queue of PRs and agents, a one-line status, the project list; each row's action is a link), **Live Sessions**, **Agents** (`AgentsScreen.ts`, #82: a tab per agent AnviDeck started and a 2×2 grid, each with its permission requests, message box, Stop/Resume, tool calls with the anvi hooks that ran, refusal cards; the project's terminal sessions after them, view only; the older replay view at `#agents?view=replay`), **Map** (projects, design blocks, files and imports from anvi's structure guard, with agents replayed on them), **Changes** (`ChangesScreen.ts`, #84: one PR's files, layers, boundaries and diff with the anvi context its agent's session received per file, line comments to its running AnviDeck agent, evidence, a guided tour in commit order), **Live Trace**, **Brain**, **System Lens**, **Cross-Project**, **Routing**. Reached from links: **Project** (catalogues, memory, grounding; with the timeline strip, also on Home) and **GitHub Trace**.
 
 What the workspace adds is in `BUILD.md` under "The workspace". Six of today's views (Live Sessions, Live Trace, Brain, System Lens, Cross-Project, Routing) are to be retired once Notes, History and Agents carry what's useful from them (#92).
+
+Home is now `HomeScreen.ts` (#81), in place of the `CommandCenter.ts` named above: one queue, soonest first, where a permission request is answered in place, a PR links to GitHub with why it is or is not ready to merge (what its body claims is worded as a claim), and a ready PR goes to its row on Work with the head it was judged at; the health line with guards, rule breaks, out-of-date notes and notes backed by source, each dated; the agents.
 
 ### Architecture decisions that still hold
 
@@ -90,7 +92,7 @@ What the workspace adds is in `BUILD.md` under "The workspace". Six of today's v
 
 ### Constraints
 
-- Zero config: point it at `~/.claude/` and `~/.anvideck/` and it works. Overrides are environment variables (`PORT`, `HOST`, `ANVIDECK_HEALTH_DIR`, `ANVIDECK_STRUCTURE_TMP`, `ANVIDECK_STRUCTURE_GUARD`).
+- Zero config: point it at `~/.claude/` and `~/.anvideck/` and it works. Overrides are environment variables (`PORT`, `HOST`, `ANVIDECK_HEALTH_DIR`, `ANVIDECK_STRUCTURE_TMP`, `ANVIDECK_STRUCTURE_GUARD`, `ANVIDECK_WORK_TMP`).
 - This machine only, by default (#66).
 - No cloud service of AnviDeck's own and no telemetry. Network use is GitHub through `gh`, and, once #75 lands, the agents' own Claude Code sessions on the user's login.
 - Fast startup: lazy file reads, immediate UI render.

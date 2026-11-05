@@ -32,12 +32,12 @@ The prototype's frame replaces today's sidebar:
 | **Home** | One queue, soonest first; each item has one action done in place: review a PR (with its deadline), answer a waiting agent, merge a PR that's ready. A health line ("Healthy · 1 thing to watch …") that opens to guards, allowed rule breaks, out-of-date notes and notes backed by source. The list of agents. | Today's Home readers + the agent host | #81 (takes over #47) |
 | **Map** | Projects, design blocks, files and imports, with agents replayed on them. **Exists** (#52); remaining gaps tracked. | Structure reader, replay reader | #48, #49 |
 | **Agents** | A tab per agent and a 2×2 grid; its plan with progress; its tool calls with which anvi hooks ran and what context they gave; a refusal card (layer path and rule) when the design guard blocks an edit; a message box. Terminal-started sessions still open, labelled as view only. | Agent host live stream; replay reader for terminal sessions; Claude Code's transcript, anvi's hook meter and the live hook log per session (`GET /api/agents-screen/session/:sid`) | #82 (on main once its PR merges; `/agent-host` stays until the owner retires it) |
-| **Changes** | A PR's files, the layers and boundaries it touches, the diff with the anvi context the agent received at each hunk, line comments that go back to the agent, the evidence, a guided tour, the self-review gaps. | `gh` diff, hook log joined per hunk, the evidence format | #84 (needs #79, #83) |
+| **Changes** | A PR's files, the layers and boundaries it touches, the diff with the anvi context the agent received at each hunk, line comments that go back to the agent, the evidence, a guided tour, the self-review gaps. | `gh` diff, hook log joined per hunk, the evidence format | #84 (needs #79, #83). **Partly built** (PR #145, part of #84): `GET /api/changes/prs`, `GET /api/changes/pr/:n` (`server/readers/changes.ts`); every file of the PR (GitHub's files API paged past gh's 100); the agent's session is found by Claude Code's pr-link record, the PR's branch, or the registry agent for an issue it closes; the context is shown **per file, not per hunk** (the hook log names files, not lines; #153); comments go through `POST /api/agents/:id/message`. **Not yet**: the per-hunk join (#153); the agent's reply under a comment and the currency of delivered entries, as in the prototype; a tour of claims rather than files in commit order (#173); checked on a real AnviDeck-agent PR in a project with a dharana.md |
 | **Notes** | Catalogues by kind with search; which catalogue is used when, per activity; freshness (drifted entries, oldest drifted entries still in use, **Re-check a batch** by subsystem); grounding (Ground Truth docs, their age, the entries citing them); project memory with **Promote**. Re-check and Promote start an agent. | Catalogue, currency, memory, grounding readers | #89 (needs #72, #73) |
 | **Project · Code** | File tree coloured by layer, with markers for refused edits, imports that break the design, and files agents touched; a file view with blame and known-trap lines. Editing is off while agents work, behind an **Enable editing** switch. | Structure reader, refusal log, agents' edits, `git blame` | #88 |
 | **Project · Design** | Five lenses: Armed (enforcement mode, allowed rule breaks, trial record), Placed (placement in review, "ask before writing"), Consolidated (where problems cluster, the cost curve of fixes, shown only where files per fix can be measured), Path to target (moves to the declared design, each linked to an issue), System flows. | Structure readers; your recorded calls | #87, #86 |
 | **Project · History** | One timeline of agent turns, edits, refusals, rulings, commits and catalogue changes, each event naming its source; a moment's details; compare two points (code, design, knowledge); replay a session. | Timeline, hook log, replay reader, action log | #90 |
-| **Project · Work** | The board (Todo / In Progress / Done from the GitHub project's Status field; a list if the project has no board), **Start agent**, **New issue**; for each PR your workflow as steps (Friction → Issue → Branch → Fix → Test → Observe → PR → Self-review → Merge, by you) with merge checks (CI green, closing reference parsed, no conflict with other open PRs). **Merge** is a button only you press. | `gh`, `gh project`, `git merge-tree` | #85 (needs #78) |
+| **Project · Work** | The board (Todo / In Progress / Done from the GitHub project's Status field; a list if the project has no board), **Start agent**, **New issue**; for each PR your workflow as steps (Friction → Issue → Branch → Fix → Test → Observe → PR → Self-review → Merge, by you) with merge checks (CI green, closing reference parsed, no conflict with other open PRs). **Merge** is a button only you press. | `gh`, `gh project`, `git merge-tree` | #85, on main: `GET /api/work/board`, `GET /api/work/prs`, `POST /api/issues`, `POST /api/prs/:n/merge { project, head, base }` (readers `server/readers/work.ts`, `work-conflicts.ts`, `boards.ts`, `repo.ts`; actions `server/work/act.ts`; routes `server/routes/work.ts` (GET) and `work-actions.ts` (POST)); conflicts are checked in a scratch bare clone under `ANVIDECK_WORK_TMP`, never in the project |
 | **Help** | Six guided flows played over the real screens: start a task, a blocked edit and your call, review a change, notes go out of date, place new code, fix a boundary. A step whose data isn't there is skipped, and the tour says so. | All screens | #91 |
 
 ---
@@ -58,7 +58,7 @@ The prototype's frame replaces today's sidebar:
                      └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Readers are read-only.** They read files, spawn `git`/`gh`/`node` to ask questions, and the structure reader keeps a scratch folder under `ANVIDECK_STRUCTURE_TMP` for anvi's structure guard. They never write into a project, a catalogue, memory or the store. A test will enforce that no reader imports the agent host or writes a file (#76).
+- **Readers are read-only.** They read files, spawn `git`/`gh`/`node` to ask questions, the structure reader keeps a scratch folder under `ANVIDECK_STRUCTURE_TMP` for anvi's structure guard, and Work's conflict reader keeps a scratch bare repo under `ANVIDECK_WORK_TMP` that it fetches PR heads into and runs `git merge-tree --write-tree` in. They never write into a project, a catalogue, memory or the store. A test will enforce that no reader imports the agent host or writes a file (#76).
 - **The agent host is the only module that acts** (#75). Everything AnviDeck does beyond reading goes through it or the action log.
 - **Catalogues, memory and Ground Truth docs are changed only by agents**, never by AnviDeck directly (#89, #93).
 
@@ -76,7 +76,7 @@ The prototype's frame replaces today's sidebar:
 
 ### Starting an agent from an issue (#78, on main)
 
-**Start agent** on an issue (⌘K "Start an agent on an issue", and a box on `/agent-host`; the Work and Home buttons come with #85 and #81): `POST /api/agents/from-issue { project | repo, issue, note? }`, previewed without writing by `GET /api/agents/from-issue/plan` (`server/agents/from-issue.ts`, `worktree.ts`, `issue-prompt.ts`, `board.ts`).
+**Start agent** on an issue (⌘K "Start an agent on an issue", and a box on `/agent-host`; Work's Start agent on each Todo issue (#85); Home's button comes with #81): `POST /api/agents/from-issue { project | repo, issue, note? }`, previewed without writing by `GET /api/agents/from-issue/plan` (`server/agents/from-issue.ts`, `worktree.ts`, `issue-prompt.ts`, `board.ts`).
 - Creates the worktree `<main checkout>/.claude/worktrees/issue-<n>` (beside Claude Code's own) on a new branch `feat|fix|chore/<n>-<slug>` (fix for a `bug` label, chore for `chore` or `documentation`, else feat), from the local default branch.
 - Links `.anvi` and `ref` into it, each to where the main checkout's resolves (what anvi's `worktreeLinkGap` says a linked worktree needs). A tracked `ref` stays the branch's own copy. A link the repo does not already ignore is added to its `info/exclude`. Each link is read back, and anvi's own `worktreeLinkGap` is asked what is still missing.
 - Starts the agent with a prompt built from the issue (repo, number, title, body) plus the workflow (issue → branch → fix → test and observe → PR → self-review; agents never merge) and `PR_SECTIONS_INSTRUCTIONS`. An optional note comes last and wins where it differs.
@@ -97,7 +97,8 @@ Agents AnviDeck starts write two PR-body sections with a fixed shape: **Evidence
 | Readers can't act: a test fails if a reader imports the agent host or writes a file | Planned (#76) |
 | Agents on the Claude Code login only (see Agent host) | Planned (#75) |
 | Your permission rules apply as in the terminal; only uncovered calls reach AnviDeck; no timeout allows a call | **Exists** (#77) |
-| Merge only by you, only the reviewed head; refused if the head moved after review | Planned (#85) |
+| Merge only the reviewed head, into the base the page showed; refused (409 with the current head or base) if either changed | **Exists** (#85) |
+| Merge only by you: no agent can cause a merge | **Partial**: the write token is in the page, so any process on this machine (an agent's shell included) can read it and call Merge; today this rests on agents not trying and on your permission rules (#147) |
 | Code-screen edits only to files no running agent is touching, each through the action log | Planned (#88) |
 
 ### Stack
@@ -128,7 +129,7 @@ Agents AnviDeck starts write two PR-body sections with a fixed shape: **Evidence
 | Notes currency | `~/.anvideck/projects/anvi/instances` |
 | GitHub | `gh`: PR state, your open PRs, issues and PRs |
 
-Planned additions: the agent registry, action log and your calls on blocked edits, in AnviDeck's own store folder (#75, #76, #86); the board via `gh project` (#85).
+Planned additions: the agent registry, action log and your calls on blocked edits, in AnviDeck's own store folder (#75, #76, #86). The Work screen reads the board via `gh project` (#85).
 
 ---
 
@@ -173,7 +174,7 @@ ui/
   app.ts                  shell (#80): rail, URL hash per screen, selective re-render, Nav, timeline strip, WebSocket
   shell/                  routes (every screen and its hash), frame (top bar, rail, placeholders, strip), ⌘K palette
   api.ts, home-count.ts   API client; Home badge count
-  components/             CommandCenter (Home), ProjectView, CatalogueTree, Timeline, DiffViewer,
+  components/             HomeScreen (+ home-model), CommandCenter (old Home), ProjectView, CatalogueTree, Timeline, DiffViewer,
                           LiveSessions, AgentsView, MapView (+ map-model), CognitiveTrace,
                           ContextBudget, BrainView, SystemLens, CrossProject, RoutingView, GitHubTrace
   styles/deck.css
@@ -186,7 +187,7 @@ ref/                      ANVI_THESIS.md, DATA_EXAMPLES.md
 
 | View | Shows | Fate |
 |---|---|---|
-| Home (`CommandCenter.ts`) | one queue of PRs and agents, a one-line status, project list; each row's action is a link | rebuilt as the workspace Home (#81) |
+| Old Home (`CommandCenter.ts`) | one queue of PRs and agents, a one-line status, project list; each row's action is a link | replaced by the workspace Home (`HomeScreen.ts`, #81); the file is left in place, no longer rendered |
 | Project (`ProjectView.ts`, `CatalogueTree.ts`) | catalogues with REF and an "ungrounded only" filter, memory, grounding, read status | not named in #92 |
 | Timeline strip (`Timeline.ts`, `DiffViewer.ts`) | `~/.claude` commits; diff between two | not named in #92 |
 | Live Sessions | active Claude Code sessions | retire (#92) |
@@ -227,7 +228,7 @@ ref/                      ANVI_THESIS.md, DATA_EXAMPLES.md
 
 **Every figure says where it came from.** A reader that could not look says so (`unreadable`, `partial`), never "nothing found". Nothing illustrative is shown as measured (#87).
 
-**Zero config.** Point it at `~/.claude/` and `~/.anvideck/` and it works. Overrides are environment variables (`PORT`, `HOST`, `ANVIDECK_HEALTH_DIR`, `ANVIDECK_STRUCTURE_TMP`, `ANVIDECK_STRUCTURE_GUARD`).
+**Zero config.** Point it at `~/.claude/` and `~/.anvideck/` and it works. Overrides are environment variables (`PORT`, `HOST`, `ANVIDECK_HEALTH_DIR`, `ANVIDECK_STRUCTURE_TMP`, `ANVIDECK_STRUCTURE_GUARD`, `ANVIDECK_WORK_TMP`).
 
 **Local by default.** This machine only; no cloud service of AnviDeck's own and no telemetry. Network use is GitHub through `gh` and the agents' own Claude Code sessions on your login.
 

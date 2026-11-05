@@ -53,7 +53,6 @@ export const SCREENS: readonly ScreenDef[] = [
     label: "Changes",
     group: "rail",
     rail: "changes",
-    buildsIn: 84,
     blurb:
       "A PR's files, the layers and boundaries it touches, the diff with the anvi context the agent received at each hunk, line comments that go back to the agent, the evidence and the self-review gaps.",
   },
@@ -88,7 +87,6 @@ export const SCREENS: readonly ScreenDef[] = [
     label: "Work",
     group: "project",
     rail: "project",
-    buildsIn: 85,
     blurb:
       "The board, Start agent, New issue, and each PR's workflow as steps with merge checks. Merge is a button only you press.",
   },

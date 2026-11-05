@@ -301,6 +301,67 @@ export function readNotesCurrency(dir = HEALTH_DIR): { value: NotesCurrency | nu
   }
 }
 
+// ── The dated health figures (#81): each says what date it is of ──────────────────────────
+
+/** The newest of some ISO dates; unparseable or missing ones are skipped. null when none parse. */
+export function newestDate(dates: (string | null | undefined)[]): string | null {
+  let best: string | null = null;
+  for (const d of dates) {
+    if (!d || Number.isNaN(Date.parse(d))) continue;
+    if (!best || Date.parse(d) > Date.parse(best)) best = d;
+  }
+  return best;
+}
+
+/** New and allowed rule breaks, dated by the newest commit measured (`measuredOf`). */
+export function structureMetrics(a: {
+  source: HomeSource;
+  reading: boolean;
+  newBreaks: number;
+  allowed: number;
+  measured: number;
+  measuredOf: string | null;
+}): HomeMetric[] {
+  const src = a.source.detail ? `${a.source.label}: ${a.source.detail}` : a.source.label;
+  return [
+    {
+      id: "new-breaks",
+      label: "New rule breaks",
+      state: a.source.status === "ok" ? (a.newBreaks > 0 ? "bad" : "ok") : a.source.status === "none" ? "ok" : "unknown",
+      value: a.source.status === "ok" || a.source.status === "partial" ? String(a.newBreaks) : a.reading ? "still measuring" : "not measured",
+      note: a.source.status === "none" ? "No project has a design, so nothing is checked." : "Imports added since the baseline that the design does not allow.",
+      source: src,
+      asOf: a.measuredOf,
+    },
+    {
+      id: "allowed-breaks",
+      label: "Allowed rule breaks",
+      state: a.measured ? "ok" : "unknown",
+      value: a.measured ? String(a.allowed) : a.reading ? "still measuring" : "not measured",
+      note: "Known imports the design does not allow yet, kept in the baseline until fixed.",
+      source: src,
+      asOf: a.measuredOf,
+    },
+  ];
+}
+
+/** Out-of-date notes, dated by the snapshot it comes from. */
+export function notesMetric(notes: { value: NotesCurrency | null; source: HomeSource }, now: number): HomeMetric {
+  const n = notes.value;
+  const stale = n ? n.red + n.yellow : 0;
+  return {
+    id: "notes",
+    label: "Out-of-date notes",
+    state: n ? (stale > 0 ? "warn" : "ok") : "unknown",
+    value: n ? `${stale.toLocaleString("en-US")} of ${n.examined.toLocaleString("en-US")}` : notes.source.status === "none" ? "no snapshot" : "could not read",
+    note: n
+      ? `Snapshot of ${n.date} (UTC), ${Math.round((now - Date.parse(n.date)) / 86400000)} days old: ${n.yellow.toLocaleString("en-US")} point at code that changed since checked, ${n.red} at files that are gone. ${n.projects} projects${n.unmeasured.length ? `; not measured: ${n.unmeasured.join(", ")}` : ""}.`
+      : notes.source.detail ?? "",
+    source: notes.source.label,
+    asOf: n ? n.date : null,
+  };
+}
+
 // ── The queue, ordered ────────────────────────────────────────────────────────────────────
 
 const KIND_ORDER: Record<QueueItem["kind"], number> = { "agent-waiting": 0, "rule-break": 1, "pr-review": 2 };
@@ -579,11 +640,13 @@ export async function readHome(budgetMs = HOME_BUDGET_MS): Promise<HomeResponse>
   const structureReading = structured === STILL_READING;
   const { list, results } = structureReading ? { list: null, results: [] } : structured;
   let newBreaks = 0, allowed = 0, measured = 0;
+  let measuredOf: string | null = null;
   const notMeasured: string[] = [];
   const measuredLines: string[] = [];
   for (const r of results) {
     if (r.status === "measured") {
       measured++;
+      measuredOf = newestDate([measuredOf, r.measuredAt.date]);
       const nNew = r.counts.divergence.new + r.counts.cycle.new;
       newBreaks += nNew;
       allowed += r.counts.divergence.grandfathered + r.counts.cycle.grandfathered;
@@ -632,35 +695,10 @@ export async function readHome(budgetMs = HOME_BUDGET_MS): Promise<HomeResponse>
   const notes = readNotesCurrency();
 
   // Metrics: four, each naming its source.
-  const metrics: HomeMetric[] = [];
-  metrics.push({
-    id: "new-breaks",
-    label: "New rule breaks",
-    state: structureSource.status === "ok" ? (newBreaks > 0 ? "bad" : "ok") : structureSource.status === "none" ? "ok" : "unknown",
-    value: structureSource.status === "ok" || structureSource.status === "partial" ? String(newBreaks) : structureReading ? "still measuring" : "not measured",
-    note: structureSource.status === "none" ? "No project has a design, so nothing is checked." : "Imports added since the baseline that the design does not allow.",
-    source: structureSource.detail ? `${structureSource.label}: ${structureSource.detail}` : structureSource.label,
-  });
-  metrics.push({
-    id: "allowed-breaks",
-    label: "Allowed rule breaks",
-    state: measured ? "ok" : "unknown",
-    value: measured ? String(allowed) : structureReading ? "still measuring" : "not measured",
-    note: "Known imports the design does not allow yet, kept in the baseline until fixed.",
-    source: structureSource.label,
-  });
-  const n = notes.value;
-  const stale = n ? n.red + n.yellow : 0;
-  metrics.push({
-    id: "notes",
-    label: "Out-of-date notes",
-    state: n ? (stale > 0 ? "warn" : "ok") : "unknown",
-    value: n ? `${stale.toLocaleString("en-US")} of ${n.examined.toLocaleString("en-US")}` : notes.source.status === "none" ? "no snapshot" : "could not read",
-    note: n
-      ? `Snapshot of ${n.date} (UTC), ${Math.round((now - Date.parse(n.date)) / 86400000)} days old: ${n.yellow.toLocaleString("en-US")} point at code that changed since checked, ${n.red} at files that are gone. ${n.projects} projects${n.unmeasured.length ? `; not measured: ${n.unmeasured.join(", ")}` : ""}.`
-      : notes.source.detail ?? "",
-    source: notes.source.label,
-  });
+  const metrics: HomeMetric[] = [
+    ...structureMetrics({ source: structureSource, reading: structureReading, newBreaks, allowed, measured, measuredOf }),
+    notesMetric(notes, now),
+  ];
   const sourceList = { sessions: sessionsSource, prs: prsSource, structure: structureSource, notes: notes.source };
   const unreadable = Object.entries(sourceList).filter(([, s]) => s.status === "could-not-read" || s.status === "partial" || s.status === "not-measured" || s.status === "reading");
   metrics.push({
