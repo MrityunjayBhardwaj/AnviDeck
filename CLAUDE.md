@@ -20,7 +20,7 @@ AnviDeck started as an observability dashboard that only read the framework's fi
 - Agent actions: start an agent (#75), in its own worktree and branch for an issue (#78, on main: `POST /api/agents/from-issue`); stop and resume it; answer its permission requests (#77); send it messages and diff comments (#79).
 - Merge a PR, only when you press **Merge**, and only the head you reviewed (#85).
 - Edit a file from the Code screen, only one no running agent is touching (#88).
-- Its own records, in AnviDeck's own folder in the store: the action log (#76), your calls on blocked edits (#86), the agent registry (#75).
+- Its own records, in AnviDeck's own folder in the store: the action log (#76), your calls on blocked edits (#86: recorded from the Agents screen's refusal card into `calls.jsonl`; Design and History will show them), the agent registry (#75).
 
 **Changed only by agents, not by AnviDeck directly:** catalogues (`.anvi/`), memory and Ground Truth docs. A change to them (Re-check a batch, Promote) starts an agent with that task (#89); the agent makes the change, as in a terminal session.
 
@@ -87,6 +87,8 @@ Home is now `HomeScreen.ts` (#81), in place of the `CommandCenter.ts` named abov
 | Hook and routing activity | `/tmp/anvi-hook-*.log`, `/tmp/anvi-route-*.log` | `server/watchers/hook-logger.ts` → WebSocket `/ws` |
 | Framework history | `~/.claude` git repo | `server/readers/git-history.ts` |
 | Design structure | anvi's structure guard (`~/.claude/anvi/scripts/structure-guard.js`) and its registries | `server/readers/structure.ts`, `server/readers/structure-lock.ts` |
+| Refusals by the design guard | anvi's `~/.claude/anvi/scripts/structure-refusals.js` | `server/readers/refusals.ts` |
+| Your calls on blocked edits | `calls.jsonl` in AnviDeck's own folder (written by `server/calls.ts`, #86) | `server/readers/calls.ts` |
 | Notes currency | `~/.anvideck/projects/anvi/instances` (`ANVIDECK_HEALTH_DIR`) | `server/readers/home.ts` |
 | GitHub | `gh` (PR state, your open PRs, issues and PRs for GitHub Trace) | `server/readers/home.ts`, `server/readers/replay.ts`, `server/routes/api.ts` |
 

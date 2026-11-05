@@ -17,6 +17,7 @@
  */
 import { write, WriteError } from "../write";
 import { agentRequests, keepCardsOf } from "./PermissionRequests";
+import { refusalCall } from "./RefusalCall";
 import type { AgentsRead } from "../shell/activity";
 import type { AgentSessionResponse } from "../../shared/agents-screen-types";
 import type { ReplaySessionsResponse } from "../../shared/replay-types";
@@ -748,12 +749,12 @@ function tool(t: ToolCall, _cwd: string | undefined): HTMLElement {
   if (t.result) body.append(el("div", "aw-note", `Result${t.result.isError ? " (error)" : ""} · ${hhmm(t.result.at)}`), el("pre", "", t.result.text));
   det.append(body);
   wrap.append(det);
-  if (t.refusal) wrap.append(refusalCard(t.refusal, t));
+  if (t.refusal) wrap.append(refusalCard(t.refusal, t, _cwd));
   return wrap;
 }
 
 /** A blocked edit: the layer path, the rule, and the guard's first remedy. Whole text one click away. */
-function refusalCard(r: Refusal, t: ToolCall): HTMLElement {
+function refusalCard(r: Refusal, t: ToolCall, cwd: string | undefined): HTMLElement {
   const card = el("div", "aw-refusal");
   card.dataset.refusal = r.file;
   card.append(el("div", "aw-card-head", el("b", "", `Blocked edit · ${r.file}`), el("span", "r", el("span", "aw-chip bad", `design guard · ${r.pkg}`), stamp(t.result?.at ?? t.at))));
@@ -767,5 +768,8 @@ function refusalCard(r: Refusal, t: ToolCall): HTMLElement {
   card.append(el("div", "aw-note", `${r.designId ? `Judged under design ${r.designId}. ` : ""}The edit did not land; the agent read this refusal.`));
   const whole = el("details", "", el("summary", "aw-note", "The refusal as the agent read it"), el("pre", "", r.text));
   card.append(whole);
+  // Your call on it (#86), keyed by the refused call's tool_use id; the project is the screen's, else the agent's folder name.
+  card.append(refusalCall({ key: t.id, project: S.deps?.project ?? cwd?.split("/").filter(Boolean).pop() ?? "unknown",
+    refusal: { tool: t.name, file: r.file, at: t.at ?? undefined } }));
   return card;
 }

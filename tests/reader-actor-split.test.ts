@@ -33,6 +33,12 @@ const ALLOWED: { file: string; call: string; count: number; why: string }[] = [
     count: 1,
     why: "creates the scratch dir under the OS temp folder that the structure guard runs in; no store or project file is written",
   },
+  {
+    file: "refusals.ts",
+    call: "mkdirSync(TMP_ROOT, { recursive: true })",
+    count: 1,
+    why: "the same scratch dir (TMP_ROOT, from structure.ts): TMPDIR for structure-refusals.js, whose default-branch section makes and removes a temporary git archive there",
+  },
 ];
 
 /**

@@ -1,0 +1,346 @@
+/**
+ * What the design guard refused, read by anvi's own instrument (#86).
+ *
+ * The source is ~/.claude/anvi/scripts/structure-refusals.js (its header says what it reads and
+ * why), run under node the way server/readers/structure.ts runs the structure guard. This reader
+ * finds the project's registered package, runs the instrument once per window, caches the answer
+ * (it reads every transcript on the machine: minutes, not seconds), and shapes it. Every count is
+ * the instrument's: its --json report (sent to a pipe on fd 3, never to a file) gives the calls
+ * and their outcomes, its text report gives the notice line and the trial reading verbatim, and
+ * its exported readTranscript gives back the guard's words for each refusal
+ * (refusals-driver.cjs), because the --json report drops them.
+ *
+ * Read-only: it writes nothing into any project or the store. The instrument's default-branch
+ * section makes a temporary `git archive` under TMPDIR, which this reader points at the structure
+ * reader's scratch folder (TMP_ROOT), and the instrument removes it itself.
+ */
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { spawn } from "node:child_process";
+import { listStructure, TMP_ROOT } from "./structure";
+import { readCalls } from "./calls";
+import type {
+  Refusal,
+  RefusalCache,
+  RefusalEdit,
+  RefusalInstrument,
+  RefusalsResponse,
+  RefusalTotals,
+  RefusalWindow,
+} from "../../shared/refusal-types";
+
+const HOME = process.env.HOME ?? homedir();
+export const REFUSALS_SCRIPT = process.env.ANVIDECK_REFUSALS_SCRIPT ?? join(HOME, ".claude", "anvi", "scripts", "structure-refusals.js");
+const DRIVER = join(import.meta.dir, "refusals-driver.cjs");
+/** The instrument reads every transcript on the machine: 3 min 17 s on 4,404 transcripts (2026-11-05). */
+const RUN_TIMEOUT_MS = 10 * 60_000;
+export const CACHE_TTL_MS = 15 * 60_000;
+/** The window when none is asked: the last 30 days, from midnight UTC, so the cache key holds all day. */
+export const DEFAULT_DAYS = 30;
+
+/** What each exit means, from the instrument's own header ("Exit:"). */
+export function exitMeaning(code: number | null): string {
+  if (code === 1) return "a person must read something: a refusal (right or wrong?), a missed chance, or a possible chance";
+  if (code === 2) return "not measured: no transcripts, no edit in the package in the window, a denial in a shape it does not know, or no design to compute exposure with";
+  if (code === 3) return "untested: no chance to refuse in the window";
+  return code === null ? "killed before it exited" : `exit ${code}, which the instrument's header does not define`;
+}
+
+export class RefusalsError extends Error {
+  constructor(readonly status: 400, message: string) {
+    super(message);
+  }
+}
+
+export function defaultSince(now: Date = new Date()): string {
+  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  d.setUTCDate(d.getUTCDate() - DEFAULT_DAYS);
+  return d.toISOString();
+}
+
+function isoOf(s: string, name: string): string {
+  const d = new Date(s);
+  if (!/^\d{4}-\d{2}-\d{2}/.test(s) || isNaN(d.getTime())) throw new RefusalsError(400, `${name} is not a time: ${JSON.stringify(s)}`);
+  return d.toISOString();
+}
+
+export function windowOf(since: string | null | undefined, until: string | null | undefined, now: Date = new Date()): RefusalWindow {
+  return {
+    since: since ? isoOf(since, "since") : defaultSince(now),
+    until: until ? isoOf(until, "until") : null,
+    chosenBy: since ? "?since" : `the last ${DEFAULT_DAYS} days (from midnight UTC)`,
+  };
+}
+
+// ── the package ────────────────────────────────────────────────────────────────────────────
+
+export type PackagePick = { dir: string } | { response: RefusalsResponse; notFound?: boolean };
+
+/** The project's package registered with the structure guard, as the structure reader finds it. */
+export function packageOf(project: string, opts: { path?: string | null; package?: string | null; registry?: { locked?: string; user?: string } } = {}): PackagePick {
+  const list = listStructure({ registry: opts.registry });
+  if (list.status !== "ok") return { response: { status: "unreadable", project, reason: list.reason ?? "the structure registry could not be read" } };
+  let named = list.projects.filter((p) => p.name === project);
+  if (!named.length) return { notFound: true, response: { status: "unreadable", project, reason: `no project named ${project} is known (~/.claude/projects or the structure registry)` } };
+  if (opts.path) named = named.filter((p) => p.path === opts.path);
+  if (named.length !== 1)
+    return { response: { status: "not-measured", project, reason: named.length
+      ? `${named.length} projects are named ${project} — pass ?path=<dir> to name one: ${named.map((p) => p.path).join(", ")}`
+      : `${opts.path} is not a project named ${project}` } };
+  const p = named[0];
+  if (!p.hasDesign)
+    return { response: { status: "no-design", project, reason: `${project} has no package registered with the structure guard, so no edit there is judged or refused (this is not "0 refusals")` } };
+  let pk = p.packages;
+  if (opts.package) pk = pk.filter((e) => e.dir === opts.package);
+  if (pk.length !== 1)
+    return { response: { status: "not-measured", project, reason: pk.length
+      ? `${project} has ${pk.length} registered packages — pass ?package=<dir> to name one: ${pk.map((e) => e.dir).join(", ")}`
+      : `${opts.package} is not a registered package of ${project}` } };
+  return { dir: pk[0].dir };
+}
+
+// ── running the instrument ─────────────────────────────────────────────────────────────────
+
+interface Spawned { code: number | null; signal: string | null; stdout: string; stderr: string; fd3: string; ms: number; startError?: string }
+
+function spawnNode(args: string[], withFd3: boolean, timeoutMs: number): Promise<Spawned> {
+  mkdirSync(TMP_ROOT, { recursive: true });
+  const t0 = Date.now();
+  return new Promise((resolve) => {
+    const child = spawn("node", args, {
+      env: { ...process.env, TMPDIR: TMP_ROOT },
+      stdio: withFd3 ? ["ignore", "pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "", stderr = "", fd3 = "";
+    child.stdout!.on("data", (d) => (stdout += d));
+    child.stderr!.on("data", (d) => (stderr += d));
+    if (withFd3) (child.stdio[3] as NodeJS.ReadableStream).on("data", (d) => (fd3 += d));
+    const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs);
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      resolve({ code: null, signal: null, stdout, stderr, fd3, ms: Date.now() - t0, startError: e.message });
+    });
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      resolve({ code, signal, stdout, stderr, fd3, ms: Date.now() - t0 });
+    });
+  });
+}
+
+function scriptIdentity(path: string): { sha256: string; mtime: string } | { error: string } {
+  try {
+    return { sha256: createHash("sha256").update(readFileSync(path)).digest("hex"), mtime: statSync(path).mtime.toISOString() };
+  } catch (e) {
+    return { error: `cannot read the instrument ${path}: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}` };
+  }
+}
+
+const firstError = (stderr: string) => {
+  const lines = stderr.trim().split("\n").filter(Boolean);
+  return lines.find((l) => /Error/.test(l)) ?? lines[0] ?? "";
+};
+
+/** "  notices said (not refused): on disk 1 · fixed 12 · …" → { "on disk": 1, fixed: 12, … }, every kind listed. */
+export function noticesFrom(report: string): Record<string, number> | null {
+  const line = report.split("\n").find((l) => /^\s*notices said \(not refused\):/.test(l));
+  if (!line) return null;
+  const out: Record<string, number> = {};
+  for (const part of line.replace(/^\s*notices said \(not refused\):\s*/, "").split(" · ")) {
+    const m = /^(.*\S)\s+(\d+)$/.exec(part.trim());
+    if (m) out[m[1]] = Number(m[2]);
+  }
+  return out;
+}
+
+const OUTCOME: Record<string, keyof RefusalTotals> = {
+  applied: "applied",
+  refused: "refused",
+  "refused by the check": "refusedByCheckAlone",
+  "denied otherwise": "deniedOtherwise",
+  errored: "erroredOtherwise",
+  "no result": "noResult",
+  "timed out": "timedOut",
+  cancelled: "cancelled",
+  unrecognised: "unrecognised",
+};
+
+export interface RunOptions {
+  script?: string;
+  /** --transcripts (the tests point it at fixtures); default: the instrument's own (~/.claude/projects). */
+  transcripts?: string | null;
+  timeoutMs?: number;
+}
+
+/** Run the instrument once on one package and window, and shape its answer (without the cache and calls). */
+export async function runInstrument(project: string, pkgDir: string, win: RefusalWindow, opts: RunOptions = {}): Promise<RefusalsResponse> {
+  const script = opts.script ?? REFUSALS_SCRIPT;
+  const id = scriptIdentity(script);
+  const args = ["--package", pkgDir, "--since", win.since, ...(win.until ? ["--until", win.until] : []),
+    ...(opts.transcripts ? ["--transcripts", opts.transcripts] : []), "--json", "/dev/fd/3"];
+  const ranAt = new Date().toISOString();
+  if ("error" in id) return { status: "unreadable", project, package: pkgDir, window: win, instrument: { name: "structure-refusals.js", path: script, args, ranAt }, reason: id.error };
+  const run = await spawnNode([script, ...args], true, opts.timeoutMs ?? RUN_TIMEOUT_MS);
+  const instrument: RefusalInstrument = { name: "structure-refusals.js", path: script, sha256: id.sha256, mtime: id.mtime, args, ranAt, ms: run.ms, exit: run.code, exitMeaning: exitMeaning(run.code) };
+  const base = { project, package: pkgDir, window: win, instrument };
+  if (run.startError) return { status: "unreadable", ...base, reason: `could not start node to run the instrument: ${run.startError}` };
+  if (run.signal) return { status: "unreadable", ...base, reason: `the instrument was stopped by ${run.signal}${run.ms >= (opts.timeoutMs ?? RUN_TIMEOUT_MS) ? ` after ${Math.round(run.ms / 1000)} s (the time limit)` : ""}` };
+  const report = run.stdout;
+  if (!run.fd3.trim()) {
+    // The instrument stops before its report when it cannot measure; it says why on its first line.
+    const stop = /structure-refusals: NOT MEASURED — (.*)/.exec(report);
+    if (stop) return { status: "not-measured", ...base, reason: stop[1].trim(), report };
+    return { status: "unreadable", ...base, reason: `the instrument exited ${run.code} with no --json report` + (firstError(run.stderr) ? ` (${firstError(run.stderr)})` : "") };
+  }
+  let json: any;
+  try {
+    json = JSON.parse(run.fd3);
+  } catch (e) {
+    return { status: "unreadable", ...base, reason: `the instrument's --json report does not parse: ${(e as Error).message}` };
+  }
+  if (!json || !Array.isArray(json.calls)) return { status: "unreadable", ...base, reason: "the instrument's --json report has no calls list" };
+
+  const totals: RefusalTotals = { edits: json.calls.length, sessions: new Set(json.calls.map((c: any) => c.session)).size,
+    applied: 0, refused: 0, refusedByCheckAlone: 0, deniedOtherwise: 0, erroredOtherwise: 0, noResult: 0, timedOut: 0, cancelled: 0, unrecognised: 0 };
+  const unknownOutcomes = new Set<string>();
+  for (const c of json.calls) {
+    const k = OUTCOME[c.outcome];
+    if (k) (totals[k] as number)++;
+    else unknownOutcomes.add(String(c.outcome));
+  }
+  // An outcome the instrument names that this reader does not know would vanish from every total.
+  if (unknownOutcomes.size) return { status: "unreadable", ...base, reason: `the instrument reported outcomes this reader does not know: ${[...unknownOutcomes].join(", ")}` };
+
+  const refusedCalls = json.calls.filter((c: any) => c.outcome === "refused" || c.outcome === "refused by the check");
+  const unrecCalls = json.calls.filter((c: any) => c.outcome === "unrecognised");
+  const wanted = [...refusedCalls, ...unrecCalls].map((c: any) => ({ transcript: c.transcript, id: c.id }));
+  let reasons: Record<string, { reason: string | null }> = {};
+  let reasonErrors: Record<string, string> = {};
+  if (wanted.length) {
+    const d = await spawnNode([DRIVER, script, JSON.stringify({ pkgDir: json.package ?? pkgDir, since: json.since ?? win.since, until: json.until ?? win.until, wanted })], false, 120_000);
+    let r: any = null;
+    try { r = JSON.parse(d.stdout); } catch { /* below */ }
+    if (r && r.ok) {
+      reasons = r.reasons;
+      reasonErrors = r.errors;
+    } else {
+      const why = r?.reason ?? `the reason re-read exited ${d.code} with no answer${firstError(d.stderr) ? ` (${firstError(d.stderr)})` : ""}`;
+      for (const w of wanted) reasonErrors[w.id] = why;
+    }
+  }
+  const edit = (c: any): RefusalEdit => ({ key: c.id, at: c.at, session: c.session, tool: c.tool, file: c.file, outcome: c.outcome });
+  const refusals: Refusal[] = refusedCalls.map((c: any) => ({
+    key: c.id,
+    at: c.at,
+    session: c.session,
+    tool: c.tool,
+    file: c.file,
+    checkout: c.checkout,
+    checkoutDir: c.checkoutDir,
+    version: c.version ?? null,
+    transcript: c.transcript,
+    refusedBy: c.outcome === "refused" ? "graph rule" : "project's own check",
+    checkToo: c.outcome === "refused" ? c.checkToo === true : true,
+    design: c.design ?? null,
+    violations: Array.isArray(c.violations) ? c.violations : [],
+    pairs: Array.isArray(c.pairs) ? c.pairs : [],
+    reason: reasons[c.id]?.reason ?? null,
+    ...(reasons[c.id]?.reason ? {} : { reasonError: reasonErrors[c.id] ?? "the instrument gave no reason for this call" }),
+    call: null,
+  }));
+  const notices = noticesFrom(report);
+  const fallback: Record<string, number> = {};
+  for (const c of json.calls) for (const k of c.notices ?? []) fallback[k] = (fallback[k] ?? 0) + 1;
+  const trial = report.split("\n").find((l) => /^\s*TRIAL READING:/.test(l));
+  return {
+    status: "measured",
+    ...base,
+    transcripts: { read: json.transcripts ?? 0, unreadable: json.unreadable ?? 0, badLines: json.badLines ?? 0 },
+    totals,
+    notices: notices ?? fallback,
+    refusals,
+    timeouts: json.calls.filter((c: any) => c.outcome === "timed out" || c.outcome === "cancelled").map(edit),
+    unrecognised: unrecCalls.map((c: any) => ({ ...edit(c), reason: reasons[c.id]?.reason ?? null })),
+    exposure: json.exposure ?? null,
+    defaultBranch: json.defaultBranch ?? null,
+    byDesign: Array.isArray(json.byDesign) ? json.byDesign : [],
+    trialReading: trial ? trial.trim() : null,
+    report,
+    cache: { at: ranAt, ageMs: 0, refreshing: false, ttlMs: CACHE_TTL_MS },
+    calls: { file: "", exists: false, status: "none", lines: 0, unreadableLines: 0, readAt: ranAt },
+  };
+}
+
+// ── cache ──────────────────────────────────────────────────────────────────────────────────
+// Keyed on everything the answer depends on except the transcripts themselves (which only grow):
+// the package, the window, the instrument's bytes, and the transcripts folder. Answers older than
+// CACHE_TTL_MS are measured again; until the new run finishes, the old answer is served with its age.
+
+interface Entry { value: RefusalsResponse; at: number; started: string }
+const cache = new Map<string, Entry>();
+const inflight = new Map<string, { started: string; job: Promise<Entry> }>();
+
+export function clearRefusalsCache() { cache.clear(); }
+
+export interface ReadOptions extends RunOptions {
+  since?: string | null;
+  until?: string | null;
+  path?: string | null;
+  package?: string | null;
+  registry?: { locked?: string; user?: string };
+  /** Wait for a run to finish rather than answer "measuring" (the tests; the route never waits). */
+  wait?: boolean;
+  /** Start a new run even when the cached answer is fresh (served until it finishes). */
+  refresh?: boolean;
+  now?: () => number;
+  /** Read calls from this folder (the tests). */
+  callsDir?: string;
+}
+
+function withCalls(r: RefusalsResponse, opts: ReadOptions): RefusalsResponse {
+  if (r.status !== "measured") return r;
+  const read = readCalls({ dir: opts.callsDir });
+  const { calls: _c, byKey, ...meta } = read;
+  return { ...r, calls: meta, refusals: r.refusals.map((x) => ({ ...x, call: byKey[x.key] ?? null })) };
+}
+
+function withCache(e: Entry, now: number, refreshing: boolean): RefusalsResponse {
+  const v = e.value;
+  if (v.status !== "measured" && v.status !== "not-measured" && v.status !== "unreadable") return v;
+  return { ...v, cache: { at: new Date(e.at).toISOString(), ageMs: now - e.at, refreshing, ttlMs: CACHE_TTL_MS } } as RefusalsResponse;
+}
+
+export async function readRefusals(project: string, opts: ReadOptions = {}): Promise<{ response: RefusalsResponse; notFound?: boolean }> {
+  const now = opts.now ?? Date.now;
+  const win = windowOf(opts.since, opts.until, new Date(now()));
+  const pick = packageOf(project, opts);
+  if ("response" in pick) return pick;
+  const script = opts.script ?? REFUSALS_SCRIPT;
+  const id = scriptIdentity(script);
+  const key = JSON.stringify([pick.dir, win.since, win.until, "error" in id ? id.error : id.sha256, opts.transcripts ?? null]);
+  const start = () => {
+    let f = inflight.get(key);
+    if (!f) {
+      const started = new Date(now()).toISOString();
+      const job = runInstrument(project, pick.dir, win, opts).then((value) => {
+        const e = { value, at: now(), started };
+        cache.set(key, e);
+        return e;
+      }).finally(() => inflight.delete(key));
+      f = { started, job };
+      inflight.set(key, f);
+    }
+    return f;
+  };
+  const hit = cache.get(key);
+  const stale = !hit || now() - hit.at > CACHE_TTL_MS || opts.refresh;
+  if (hit && !stale) return { response: withCalls(withCache(hit, now(), inflight.has(key)), opts) };
+  const f = start();
+  if (opts.wait) {
+    const e = await f.job;
+    return { response: withCalls(withCache(e, now(), false), opts) };
+  }
+  if (hit) return { response: withCalls(withCache(hit, now(), true), opts) };
+  return { response: { status: "measuring", project, package: pick.dir, window: win, startedAt: f.started } };
+}
