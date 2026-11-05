@@ -25,9 +25,11 @@ app.route("/api/home", (await import("./routes/home")).default);
 app.route("/api", (await import("./routes/work")).workRoutes()); // Work screen (#85)
 app.route("/api", (await import("./routes/work-actions")).workActionRoutes()); // Work screen actions: New issue, Merge (#85)
 app.route("/api/changes", (await import("./routes/changes")).default);
+app.route("/api/notes", (await import("./routes/notes")).notesRoutes()); // Notes screen (#89)
 app.route("/api", api);
 app.route("/api/replay", (await import("./routes/replay")).default);
 app.route("/api/agents-screen", (await import("./routes/agents-screen")).default);
+app.route("/api", (await import("./routes/refusals")).refusalRoutes()); // refusals and your calls on them (#86)
 
 // Agent host (#75): the only code that runs agents.
 const agents = (await import("./routes/agents")).createAgentHost(broadcast);

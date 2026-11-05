@@ -33,6 +33,24 @@ const ALLOWED: { file: string; call: string; count: number; why: string }[] = [
     count: 1,
     why: "creates the scratch dir under the OS temp folder that the structure guard runs in; no store or project file is written",
   },
+  {
+    file: "refusals.ts",
+    call: "mkdirSync(TMP_ROOT, { recursive: true })",
+    count: 1,
+    why: "the same scratch dir (TMP_ROOT, from structure.ts): TMPDIR for structure-refusals.js, whose default-branch section makes and removes a temporary git archive there",
+  },
+  {
+    file: "refusals.ts",
+    call: 'mkdtempSync(join(TMP_ROOT, "refusals-run-"))',
+    count: 1,
+    why: "a TMPDIR of its own for each structure-refusals.js run, inside TMP_ROOT, so what a run leaves can be removed whole",
+  },
+  {
+    file: "refusals.ts",
+    call: "rmSync(dir, { recursive: true, force: true })",
+    count: 1,
+    why: "removes that run's own TMPDIR when the run ends, including a git archive left by a run stopped at the time limit; never anything outside TMP_ROOT",
+  },
 ];
 
 /**

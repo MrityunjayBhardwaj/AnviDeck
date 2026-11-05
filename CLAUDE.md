@@ -20,7 +20,7 @@ AnviDeck started as an observability dashboard that only read the framework's fi
 - Agent actions: start an agent (#75), in its own worktree and branch for an issue (#78, on main: `POST /api/agents/from-issue`); stop and resume it; answer its permission requests (#77); send it messages and diff comments (#79).
 - Merge a PR, only when you press **Merge**, and only the head you reviewed (#85).
 - Edit a file from the Code screen, only one no running agent is touching (#88).
-- Its own records, in AnviDeck's own folder in the store: the action log (#76), your calls on blocked edits (#86), the agent registry (#75).
+- Its own records, in AnviDeck's own folder in the store: the action log (#76), your calls on blocked edits (#86: recorded from the Agents screen's refusal card into `calls.jsonl`; Design and History will show them), the agent registry (#75).
 
 **Changed only by agents, not by AnviDeck directly:** catalogues (`.anvi/`), memory and Ground Truth docs. A change to them (Re-check a batch, Promote) starts an agent with that task (#89); the agent makes the change, as in a terminal session.
 
@@ -40,7 +40,7 @@ AnviDeck started as an observability dashboard that only read the framework's fi
 
 Builds and runs (`bun run dev`; port 4000 unless `PORT` is set). Tests: `bun test`. Types: `bunx tsc --noEmit -p .`.
 
-Sidebar views today (`ui/app.ts`): **Home** (`CommandCenter.ts`: one queue of PRs and agents, a one-line status, the project list; each row's action is a link), **Live Sessions**, **Agents** (`AgentsScreen.ts`, #82: a tab per agent AnviDeck started and a 2×2 grid, each with its permission requests, message box, Stop/Resume, tool calls with the anvi hooks that ran, refusal cards; the project's terminal sessions after them, view only; the older replay view at `#agents?view=replay`), **Map** (projects, design blocks, files and imports from anvi's structure guard, with agents replayed on them), **Changes** (`ChangesScreen.ts`, #84: one PR's files, layers, boundaries and diff with the anvi context its agent's session received per file, line comments to its running AnviDeck agent, evidence, a guided tour in commit order), **Live Trace**, **Brain**, **System Lens**, **Cross-Project**, **Routing**. Reached from links: **Project** (catalogues, memory, grounding; with the timeline strip, also on Home) and **GitHub Trace**.
+Sidebar views today (`ui/app.ts`): **Home** (`CommandCenter.ts`: one queue of PRs and agents, a one-line status, the project list; each row's action is a link), **Live Sessions**, **Agents** (`AgentsScreen.ts`, #82: a tab per agent AnviDeck started and a 2×2 grid, each with its permission requests, message box, Stop/Resume, tool calls with the anvi hooks that ran, refusal cards; the project's terminal sessions after them, view only; the older replay view at `#agents?view=replay`), **Map** (projects, design blocks, files and imports from anvi's structure guard, with agents replayed on them), **Changes** (`ChangesScreen.ts`, #84: one PR's files, layers, boundaries and diff with the anvi context its agent's session received per file, line comments to its running AnviDeck agent, evidence, a guided tour in commit order), **Notes** (`NotesScreen.ts`, #89: catalogues by kind with search, which catalogue each activity is routed to, currency from anvi's own `currency-report.js --json` with the snapshot series and Re-check a batch, Ground Truth docs measured by anvi's `gt-citation-check.js`, project memory with Promote; Re-check and Promote show the agent's prompt, then start it through `POST /api/agents`), **Live Trace**, **Brain**, **System Lens**, **Cross-Project**, **Routing**. Reached from links: **Project** (catalogues, memory, grounding; with the timeline strip, also on Home) and **GitHub Trace**.
 
 What the workspace adds is in `BUILD.md` under "The workspace". Six of today's views (Live Sessions, Live Trace, Brain, System Lens, Cross-Project, Routing) are to be retired once Notes, History and Agents carry what's useful from them (#92).
 
@@ -87,12 +87,14 @@ Home is now `HomeScreen.ts` (#81), in place of the `CommandCenter.ts` named abov
 | Hook and routing activity | `/tmp/anvi-hook-*.log`, `/tmp/anvi-route-*.log` | `server/watchers/hook-logger.ts` → WebSocket `/ws` |
 | Framework history | `~/.claude` git repo | `server/readers/git-history.ts` |
 | Design structure | anvi's structure guard (`~/.claude/anvi/scripts/structure-guard.js`) and its registries | `server/readers/structure.ts`, `server/readers/structure-lock.ts` |
-| Notes currency | `~/.anvideck/projects/anvi/instances` (`ANVIDECK_HEALTH_DIR`) | `server/readers/home.ts` |
+| Refusals by the design guard | anvi's `~/.claude/anvi/scripts/structure-refusals.js` | `server/readers/refusals.ts` |
+| Your calls on blocked edits | `calls.jsonl` in AnviDeck's own folder (written by `server/calls.ts`, #86) | `server/readers/calls.ts` |
+| Notes currency | `~/.anvideck/projects/anvi/instances` (`ANVIDECK_HEALTH_DIR`); live, anvi's `currency-report.js --json` and `gt-citation-check.js --json`, run read-only | `server/readers/home.ts`, `server/readers/notes.ts` |
 | GitHub | `gh` (PR state, your open PRs, issues and PRs for GitHub Trace) | `server/readers/home.ts`, `server/readers/replay.ts`, `server/routes/api.ts` |
 
 ### Constraints
 
-- Zero config: point it at `~/.claude/` and `~/.anvideck/` and it works. Overrides are environment variables (`PORT`, `HOST`, `ANVIDECK_HEALTH_DIR`, `ANVIDECK_STRUCTURE_TMP`, `ANVIDECK_STRUCTURE_GUARD`, `ANVIDECK_WORK_TMP`).
+- Zero config: point it at `~/.claude/` and `~/.anvideck/` and it works. Overrides are environment variables (`PORT`, `HOST`, `ANVIDECK_HEALTH_DIR`, `ANVIDECK_STRUCTURE_TMP`, `ANVIDECK_STRUCTURE_GUARD`, `ANVIDECK_WORK_TMP`, `ANVIDECK_CURRENCY_REPORT`, `ANVIDECK_GT_CHECK`, `ANVIDECK_HOOK_LOG_DIR`).
 - This machine only, by default (#66).
 - No cloud service of AnviDeck's own and no telemetry. Network use is GitHub through `gh`, and, once #75 lands, the agents' own Claude Code sessions on the user's login.
 - Fast startup: lazy file reads, immediate UI render.
