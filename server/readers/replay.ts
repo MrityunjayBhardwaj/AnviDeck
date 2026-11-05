@@ -15,6 +15,7 @@ import type {
   ReplayStep,
   SourceStatus,
   StepSource,
+  StepWords,
 } from "../../shared/replay-types";
 
 /**
@@ -33,6 +34,9 @@ import type {
  *                    `attachment.{hookName, hookEvent, toolUseID, content[]}`;
  *                    a large one is a `<persisted-output>` preview naming the
  *                    full file `<sid>/tool-results/hook-…-additionalContext.txt`
+ *      words       = `type:"text"` and `type:"thinking"` content items of the same turn
+ *                    (one `message.id` written as one record per item; lines 7392-7394
+ *                    hold thinking without text, thinking with text, then the call) (#48)
  *      PR links    = `type:"pr-link"` records `{prNumber, prRepository, timestamp}`
  *      untimed     = last-prompt, mode, permission-mode, atis-latch,
  *                    file-history-snapshot, api-request-blob, ai-title, … (no `timestamp`)
@@ -453,6 +457,74 @@ interface RawStep extends Omit<ReplayStep, "seq"> {
 
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 
+/** Longest piece of the agent's words carried per block; longer ones are cut and say so. */
+export const WORDS_MAX = 6000;
+/** How far back a turn's records are looked for (records of one turn sit next to each other). */
+const WORDS_LOOKBACK = 60;
+
+/**
+ * The agent's own words for the tool call at `recs[i].message.content[blockIdx]` (#48).
+ *
+ * Claude Code writes one assistant turn (one `message.id`) as several records, one per
+ * content block, e.g. thinking at line 7393 and the tool call at 7394 in the stave control
+ * transcript. The words for a call are the text and non-empty thinking blocks of the same
+ * turn that come after the turn's previous tool call (calls made back to back share the
+ * words before the first of them), plus the call's own `input.description`. A record with
+ * no `message.id` falls back to itself and the record just before it. Records that are not
+ * the assistant's (attachments, progress) are stepped over; a user record or another turn
+ * ends the search. Thinking recorded without its text is counted in `hidden`, not shown.
+ */
+export function wordsForToolUse(recs: any[], i: number, blockIdx: number): { words: StepWords[]; hidden: number } {
+  const rec = recs[i];
+  const msgId = typeof rec?.message?.id === "string" ? rec.message.id : null;
+  // The turn's blocks in order, each with its line, up to and including this call.
+  const blocks: { c: any; line: number }[] = [];
+  const own = Array.isArray(rec?.message?.content) ? rec.message.content.slice(0, blockIdx + 1) : [];
+  const before: { c: any; line: number }[][] = [];
+  if (msgId) {
+    for (let j = i - 1; j >= 0 && j >= i - WORDS_LOOKBACK; j--) {
+      const r = recs[j];
+      if (!r) continue;
+      if (r.type === "user") break;
+      if (r.type !== "assistant") continue;
+      if (r.message?.id !== msgId) break;
+      if (Array.isArray(r.message.content)) before.push(r.message.content.map((c: any) => ({ c, line: j + 1 })));
+    }
+  } else {
+    const r = recs[i - 1];
+    if (r?.type === "assistant" && !r.message?.id && Array.isArray(r.message?.content))
+      before.push(r.message.content.map((c: any) => ({ c, line: i })));
+  }
+  for (const b of before.reverse()) blocks.push(...b);
+  for (const c of own) blocks.push({ c, line: i + 1 });
+
+  let p = blocks.length - 1; // this call
+  while (p > 0 && blocks[p - 1].c?.type === "tool_use") p--; // calls made back to back
+  const words: StepWords[] = [];
+  let hidden = 0;
+  const piece = (kind: StepWords["kind"], text: string, line: number): StepWords => {
+    const w: StepWords = { source: "transcript", kind, text: text.length > WORDS_MAX ? text.slice(0, WORDS_MAX) : text, line };
+    if (text.length > WORDS_MAX) {
+      w.truncated = true;
+      w.length = text.length;
+    }
+    return w;
+  };
+  for (let q = p - 1; q >= 0; q--) {
+    const { c, line } = blocks[q];
+    if (c?.type === "tool_use") break;
+    if (c?.type === "text" && typeof c.text === "string" && c.text.trim()) words.unshift(piece("text", c.text.trim(), line));
+    else if (c?.type === "thinking") {
+      if (typeof c.thinking === "string" && c.thinking.trim()) words.unshift(piece("thinking", c.thinking.trim(), line));
+      else hidden++;
+    } else if (c?.type === "redacted_thinking") hidden++;
+  }
+  const call = blocks[blocks.length - 1]?.c;
+  const desc = call?.input?.description;
+  if (typeof desc === "string" && desc.trim()) words.push(piece("description", desc.trim(), i + 1));
+  return { words, hidden };
+}
+
 export async function readReplay(sessionId: string, opts: ReplayOptions = {}): Promise<ReplayResponse> {
   const t0 = performance.now();
   const timings: Record<string, number> = {};
@@ -601,7 +673,8 @@ export async function readReplay(sessionId: string, opts: ReplayOptions = {}): P
         }
 
         if (r.type === "assistant" && Array.isArray(r.message?.content)) {
-          for (const c of r.message.content) {
+          for (let bi = 0; bi < r.message.content.length; bi++) {
+            const c = r.message.content[bi];
             if (c?.type !== "tool_use") continue;
             const input = c.input ?? {};
             const filePath =
@@ -628,6 +701,9 @@ export async function readReplay(sessionId: string, opts: ReplayOptions = {}): P
               if (why) step.mayEditFiles = { source: "guessed", reason: why, scope: shellWriteScope(command) };
               for (const d of cdTargets(command)) repoHints.add(d);
             }
+            const said = wordsForToolUse(recs, i, bi);
+            step.words = said.words;
+            if (said.hidden) step.wordsHidden = said.hidden;
             raw.push(step);
           }
         } else if (r.attachment?.type === "hook_additional_context") {

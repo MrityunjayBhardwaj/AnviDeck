@@ -438,3 +438,129 @@ export function blockFlow(touches: StepTouch[], at: number, blockOf: (mod: strin
 export function stepTime(s: ReplayStep | undefined): string | null {
   return s ? s.placedAt ?? s.ts : null;
 }
+
+// ── Session picker (#49) ──────────────────────────────────────────────────
+
+/** How many sessions the picker lists at once; the rest are reached by typing. */
+export const SESSION_LIST_MAX = 40;
+
+export interface SessionPick<T> {
+  /** The sessions to list, newest last activity first, at most `limit` (plus the selected one). */
+  shown: T[];
+  /** How many sessions match the query (all of them when the query is empty). */
+  matched: number;
+  total: number;
+}
+
+/**
+ * The sessions the picker lists. Newest last activity first. A query keeps the
+ * sessions whose id, first or last time (UTC, as the reader gives it) contains
+ * it, or that started in a worktree when it is "worktree"; case is ignored.
+ * The selected session is always listed, so the picker never shows a blank.
+ */
+export function pickSessions<T extends { sessionId: string; firstTs: string | null; lastTs: string | null; worktree?: unknown }>(
+  all: T[],
+  query: string,
+  selected: string | null,
+  limit = SESSION_LIST_MAX
+): SessionPick<T> {
+  const list = [...all].sort((a, b) => (b.lastTs ?? "").localeCompare(a.lastTs ?? ""));
+  const q = query.trim().toLowerCase();
+  const hit = (x: T) =>
+    !q ||
+    x.sessionId.toLowerCase().includes(q) ||
+    (x.firstTs ?? "").toLowerCase().includes(q) ||
+    (x.lastTs ?? "").toLowerCase().includes(q) ||
+    (q === "worktree" && !!x.worktree);
+  const matching = list.filter(hit);
+  const shown = matching.slice(0, limit);
+  if (selected && !shown.some((x) => x.sessionId === selected)) {
+    const found = list.find((x) => x.sessionId === selected);
+    if (found) shown.unshift(found);
+  }
+  return { shown, matched: matching.length, total: list.length };
+}
+
+// ── Agents on a project with no design (#49) ──────────────────────────────
+
+/**
+ * A path from a replay → the path inside the project, for a project with no
+ * design (its map has folders, not modules). Absolute paths are cut at the
+ * project's own directory or at one of its worktrees (`<project>/.claude/worktrees/<name>/`
+ * or a sibling `<project>-wt-<name>/`); a relative path (a commit's) is already
+ * inside the repository. Returns null for a path outside the project.
+ */
+export function pathInProject(p: string, projectPath: string): string | null {
+  const norm = p.replace(/\\/g, "/");
+  if (!norm.startsWith("/")) return norm.replace(/^\.\//, "") || null;
+  const root = projectPath.replace(/\/+$/, "");
+  if (norm.startsWith(root + "/")) {
+    const rest = norm.slice(root.length + 1);
+    const wt = /^\.claude\/worktrees\/[^/]+\/(.+)$/.exec(rest);
+    return wt ? wt[1] : rest;
+  }
+  const name = root.split("/").pop()!;
+  const parent = root.slice(0, root.length - name.length);
+  if (norm.startsWith(parent + name + "-wt-")) {
+    const rest = norm.slice(parent.length + name.length + 4);
+    const i = rest.indexOf("/");
+    return i > 0 ? rest.slice(i + 1) : null;
+  }
+  return null;
+}
+
+/** The folder block of a no-design map that holds a path inside the project, or null. */
+export function folderOf(rel: string, blockIds: Set<string>): string | null {
+  const parts = rel.split("/");
+  if (parts.length === 1) return blockIds.has("(top level)") ? "(top level)" : null;
+  return blockIds.has(parts[0]) ? parts[0] : null;
+}
+
+/**
+ * For each step on a project with no design: the files it touched, as paths
+ * inside the project, and how we know. The same rules as stepTouches, with the
+ * project's folders in place of the guard's modules: a tool call's file, a
+ * commit's files, and for a shell write the changed files the command names.
+ */
+export function folderTouches(r: ReplayResponse, nd: StructureNoDesign, blockIds: Set<string>): StepTouch[] {
+  const inProject = (p: string) => {
+    const rel = pathInProject(p, nd.path);
+    return rel && folderOf(rel, blockIds) ? rel : null;
+  };
+  // The files a shell command can be said to name: every changed file and every file a tool
+  // call named in this replay (a no-design answer has folder counts, not a file list).
+  const known = [...new Set([...(r.changes?.files ?? []).map((f) => f.path), ...r.steps.map((s) => s.filePath).filter((p): p is string => !!p)])];
+  const changeByRel = new Map<string, ChangedFile>();
+  for (const f of r.changes?.files ?? []) {
+    const rel = inProject(f.path);
+    if (rel) changeByRel.set(rel, f);
+  }
+  const candidates = [...new Set(known.map(inProject).filter((x): x is string => !!x))].map((x) => ({ path: x, rel: x }));
+  const commitBySha = new Map(r.commits.map((c) => [c.sha, c]));
+  return r.steps.map((s) => {
+    const t: StepTouch = { seq: s.seq, modules: [], how: null, shellWrite: false, designRules: null, notesGap: null, offMap: [] };
+    if (s.filePath) {
+      const rel = inProject(s.filePath);
+      if (rel) {
+        t.modules = [rel];
+        t.how = "tool";
+      } else t.offMap = [s.filePath];
+    } else if (s.kind === "commit" && s.sha) {
+      const c = commitBySha.get(s.sha) ?? r.commits.find((x) => x.sha.startsWith(s.sha!));
+      if (c) {
+        t.modules = [...new Set(c.files.map((f) => inProject(f.path)).filter((x): x is string => !!x))].sort();
+        t.how = t.modules.length ? "commit" : null;
+      }
+    } else if (s.command) {
+      t.shellWrite = s.mayEditFiles?.scope === "project";
+      if (t.shellWrite) {
+        t.modules = modulesNamedInCommand(s.command, candidates);
+        t.how = t.modules.length ? "shell-guess" : null;
+        // No design: no rule checks these files, at edit or at merge.
+        t.designRules = "none: this project has no design";
+        t.notesGap = t.modules.map((x) => changeByRel.get(x)).find((c) => c?.viaShell && c.notesGap)?.notesGap ?? null;
+      }
+    }
+    return t;
+  });
+}

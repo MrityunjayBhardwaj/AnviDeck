@@ -17,6 +17,8 @@ structure.get("/:project", async (c) => {
     ref: c.req.query("ref") ?? null,
     package: c.req.query("package") ?? null,
     path: c.req.query("path") ?? null,
+    // The page withdrew the request (moved to another project): the run stops if nobody else waits (#49).
+    signal: c.req.raw.signal,
   });
   // 200 for every answer the reader could give, including "not measured" and "nothing blocked":
   // the status field says which. 404 only for a project nobody knows.

@@ -19,7 +19,7 @@ import type {
   StructureProjectResponse,
   EdgeClass,
 } from "../../shared/structure-types";
-import type { ReplayResponse, ReplaySessionsResponse, ReplayStep } from "../../shared/replay-types";
+import type { ReplayResponse, ReplaySessionsResponse, ReplayStep, StepWords } from "../../shared/replay-types";
 import {
   CELL_H,
   CELL_W,
@@ -27,6 +27,10 @@ import {
   blockEdges,
   blockFlow,
   blockRules,
+  folderOf,
+  folderTouches,
+  pickSessions,
+  SESSION_LIST_MAX,
   fileImports,
   layoutFolders,
   layoutMeasured,
@@ -64,6 +68,9 @@ interface MapState {
   layout: MapLayout | null;
   sessions: ReplaySessionsResponse | null;
   sessionsFor: string | null;
+  sessionsError: string | null;
+  /** What the session finder holds: the picker lists matching sessions (#49). */
+  sessionQuery: string;
   replay: ReplayResponse | null;
   replayKey: string | null;
   replayLoading: boolean;
@@ -96,6 +103,8 @@ const S: MapState = {
   layout: null,
   sessions: null,
   sessionsFor: null,
+  sessionsError: null,
+  sessionQuery: "",
   replay: null,
   replayKey: null,
   replayLoading: false,
@@ -107,8 +116,19 @@ const S: MapState = {
 };
 
 let root: HTMLElement | null = null;
+
+// The Map's additions since its first version (#48, #49) are styled in its own file, added once.
+if (typeof document !== "undefined" && !document.querySelector('link[data-for="map-view"]')) {
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = "/styles/map.css";
+  link.dataset.for = "map-view";
+  document.head.append(link);
+}
 let hashListening = false;
 let structToken = 0;
+/** The guard request in flight: withdrawn when another project or commit is asked for (#49). */
+let structAbort: AbortController | null = null;
 let replayToken = 0;
 
 // ── helpers ──────────────────────────────────────────────────────────────
@@ -125,8 +145,8 @@ const baseName = (p: string) => {
   const b = p.split("/").pop() ?? p;
   return b.length > 18 ? b.slice(0, 17) + "…" : b;
 };
-async function getJSON<T>(url: string): Promise<T> {
-  const r = await fetch(url);
+async function getJSON<T>(url: string, signal?: AbortSignal): Promise<T> {
+  const r = await fetch(url, { signal });
   const body = await r.json().catch(() => null);
   if (!r.ok && !(body && typeof body === "object" && "status" in body)) throw new Error(`${r.status} ${r.statusText}`);
   return body as T;
@@ -211,11 +231,16 @@ async function loadLive() {
   draw();
 }
 
-/** One guard run at a time: a newer request makes an older answer stale, and it is dropped. */
+/**
+ * One guard run at a time from this page. A newer request withdraws the older one: its
+ * fetch is aborted, and the server stops that guard run when nobody else waits for it (#49).
+ */
 async function loadStructure() {
   const key = `${S.project}@${S.ref ?? ""}`;
   if (S.structKey === key && (S.struct || S.structLoading)) return;
   const token = ++structToken;
+  structAbort?.abort();
+  const ctl = (structAbort = new AbortController());
   S.structKey = key;
   S.struct = null;
   S.layout = null;
@@ -225,7 +250,7 @@ async function loadStructure() {
   draw();
   try {
     const q = S.ref ? `?ref=${encodeURIComponent(S.ref)}` : "";
-    const r = await getJSON<StructureProjectResponse>(`/api/structure/${encodeURIComponent(S.project)}${q}`);
+    const r = await getJSON<StructureProjectResponse>(`/api/structure/${encodeURIComponent(S.project)}${q}`, ctl.signal);
     if (token !== structToken) return;
     S.struct = r;
     S.layout = r.status === "measured" ? layoutMeasured(r) : r.status === "no-design" ? layoutFolders(r) : null;
@@ -240,13 +265,15 @@ async function loadStructure() {
 
 async function loadSessions() {
   if (S.sessionsFor === S.project) return;
-  S.sessionsFor = S.project;
+  const project = S.project;
+  S.sessionsFor = project;
   S.sessions = null;
+  S.sessionsError = null;
   try {
-    const r = await getJSON<ReplaySessionsResponse>(`/api/replay/sessions?project=${encodeURIComponent(S.project)}`);
-    if (S.sessionsFor === S.project) S.sessions = r;
-  } catch {
-    S.sessions = null;
+    const r = await getJSON<ReplaySessionsResponse>(`/api/replay/sessions?project=${encodeURIComponent(project)}`);
+    if (S.sessionsFor === project) S.sessions = r;
+  } catch (e) {
+    if (S.sessionsFor === project) S.sessionsError = (e as Error).message;
   }
   drawTimebar();
 }
@@ -281,7 +308,18 @@ async function loadReplay() {
 
 function recomputeTouches() {
   const m = measured();
-  S.touches = m && S.replay ? stepTouches(S.replay, m) : [];
+  const nd = S.struct?.status === "no-design" ? S.struct : null;
+  S.touches =
+    m && S.replay
+      ? stepTouches(S.replay, m)
+      : nd && S.replay && S.layout
+        ? folderTouches(S.replay, nd, new Set(S.layout.byId.keys()))
+        : [];
+}
+
+/** The block a touched path sits in: a module's design component, or (no design) its top-level folder. */
+function blockOfPath(L: MapLayout, p: string): string | null {
+  return L.cellByPath.get(p)?.block ?? (measured() ? null : folderOf(p, new Set(L.byId.keys())));
 }
 
 // ── step helpers ─────────────────────────────────────────────────────────
@@ -524,7 +562,7 @@ function dynProjectSVG(L: MapLayout, counts: DynCounts): string {
   if (S.replay && S.touches.length && (S.toggles.agents || S.toggles.flow)) {
     const at = curIndex();
     if (S.toggles.flow) {
-      const flow = blockFlow(S.touches, at, (mod) => L.cellByPath.get(mod)?.block ?? null);
+      const flow = blockFlow(S.touches, at, (mod) => blockOfPath(L, mod));
       const seen = new Map<string, number>();
       const pts = flow.map((b) => {
         const B = L.byId.get(b)!;
@@ -542,6 +580,41 @@ function dynProjectSVG(L: MapLayout, counts: DynCounts): string {
       const shellCells = new Set<string>();
       for (const t of S.touches) if (t.seq <= at && t.shellWrite) for (const mod of t.modules) shellCells.add(mod);
       const { last, trail } = agentAt(S.touches, at);
+      if (!measured()) {
+        // No design (#49): no file cells, so the agent stands on the folder that holds each file.
+        const folders: string[] = [];
+        for (const mod of trail) {
+          const b = folderOf(mod, new Set(L.byId.keys()));
+          if (b && folders[folders.length - 1] !== b) folders.push(b);
+        }
+        for (const id of new Set(folders)) {
+          const B = L.byId.get(id)!;
+          const files = trail.filter((m) => folderOf(m, new Set([id])) === id);
+          const shell = files.some((f) => shellCells.has(f));
+          s += `<rect x="${B.x - 2}" y="${B.y - 2}" width="${B.w + 4}" height="${B.h + 4}" rx="10" class="map-trail${shell ? " shell" : ""}"><title>${esc(
+            `${id}: ${plural(files.length, "file")} the agent touched up to this step: ${files.join(", ")}${shell ? " · some through the shell" : ""}`
+          )}</title></rect>`;
+        }
+        const ctr = (id: string) => {
+          const B = L.byId.get(id)!;
+          return { x: B.x + B.w / 2, y: B.y + B.h / 2 };
+        };
+        for (let i = 1; i < folders.length; i++) {
+          const a = ctr(folders[i - 1]);
+          const b = ctr(folders[i]);
+          s += `<path d="${curve(a.x, a.y, b.x, b.y, 30)}" class="map-trailline"/>`;
+        }
+        const lastB = last ? folderOf(last, new Set(L.byId.keys())) : null;
+        if (last && lastB) {
+          const p = ctr(lastB);
+          const cur = S.touches[at];
+          const st = curStep();
+          const verb = cur && cur.modules.length ? (cur.shellWrite ? "Shell edit" : cur.how === "commit" ? "Commit" : st?.tool ?? "Touch") : "Last touched";
+          const tag = `${verb} ${last}`;
+          s += `<g class="map-avatar" transform="translate(${p.x.toFixed(1)} ${p.y.toFixed(1)}) scale(${Math.min(inv, 4).toFixed(4)})"><circle r="12" class="map-av"/><text y="4" text-anchor="middle" class="map-avl">A</text><g transform="translate(16 -10)"><rect width="${Math.max(110, tag.length * 6.6 + 16)}" height="20" rx="6" class="map-avtag"/><text x="8" y="14" class="map-avtext">${esc(tag)}</text></g></g>`;
+        }
+        return s;
+      }
       for (const mod of trail) {
         const c = L.cellByPath.get(mod);
         if (!c) continue;
@@ -891,9 +964,34 @@ function panelChat(): string {
     <div class="dim">${esc(sourceLabel(s))}</div>
     ${what}
     ${shellBadge(t)}
-    <div class="map-unavail">The agent's own words at this step: <b>not available</b>. The replay carries tool calls, notes and commits, not the agent's messages.</div>
+    ${wordsHTML(s)}
     <div class="dim">AnviDeck only reads: there is no message box.</div>
   </div>`;
+}
+
+const WORDS_LABEL: Record<StepWords["kind"], string> = {
+  text: "It wrote",
+  thinking: "Its thinking, as the transcript keeps it",
+  description: "Its description of this call",
+};
+
+/** The agent's own words for a tool step, each with its transcript line (#48). */
+function wordsHTML(s: ReplayStep): string {
+  if (s.kind !== "tool")
+    return `<div class="map-unavail">The agent's own words: this step is ${esc(s.kind === "injection" ? "a note from anvi" : s.kind === "commit" ? "a commit" : s.kind === "pr" ? "a PR link" : s.kind)}, not a call the agent made, so there are none to show.</div>`;
+  if (!s.words)
+    return `<div class="map-unavail">The agent's own words: <b>not read</b>. This replay did not carry them.</div>`;
+  const hidden = s.wordsHidden ? `<div class="dim">${plural(s.wordsHidden, "thinking block")} in this turn ${s.wordsHidden === 1 ? "is" : "are"} recorded without ${s.wordsHidden === 1 ? "its" : "their"} text.</div>` : "";
+  if (!s.words.length)
+    return `<div class="map-words"><div class="map-steph">The agent's own words</div><div class="map-unavail">The transcript records none next to this call (line ${s.line ?? "?"}).</div>${hidden}</div>`;
+  return `<div class="map-words"><div class="map-steph">The agent's own words</div>${s.words
+    .map(
+      (w) =>
+        `<div class="map-word ${w.kind}"><div class="dim">${esc(WORDS_LABEL[w.kind])} · from the transcript, line ${w.line}</div><pre class="map-pre prose">${esc(w.text)}${
+          w.truncated ? `\n… (cut at ${w.text.length} of ${w.length} characters)` : ""
+        }</pre></div>`
+    )
+    .join("")}${hidden}</div>`;
 }
 
 function changeTime(f: ReplayResponse["changes"]["files"][number]): string | null {
@@ -1012,16 +1110,19 @@ function drawTimebar() {
   if (!root) return;
   const el = root.querySelector<HTMLElement>(".map-timebar")!;
   const sel = el.querySelector<HTMLSelectElement>(".map-sess")!;
-  const list = [...(S.sessions?.sessions ?? [])].sort((a, b) => (b.lastTs ?? "").localeCompare(a.lastTs ?? ""));
-  const shown = list.slice(0, 40);
-  if (S.session && !shown.some((x) => x.sessionId === S.session)) {
-    const found = list.find((x) => x.sessionId === S.session);
-    if (found) shown.unshift(found);
-  }
-  const key = `${S.project}|${shown.map((x) => x.sessionId).join(",")}|${S.session}`;
+  const pick = pickSessions(S.sessions?.sessions ?? [], S.sessionQuery, S.session);
+  const { shown } = pick;
+  const head = !S.sessions
+    ? S.sessionsError
+      ? `Sessions could not be read (${S.sessionsError})`
+      : "Reading sessions…"
+    : S.sessionQuery.trim()
+      ? `${pick.matched} of ${pick.total} sessions match "${S.sessionQuery.trim()}"${pick.matched > SESSION_LIST_MAX ? `, the newest ${SESSION_LIST_MAX} listed` : ""}`
+      : `Replay an agent session (${pick.total} in ${S.project}${pick.total > SESSION_LIST_MAX ? `, the newest ${SESSION_LIST_MAX} listed: type to find the rest` : ""})`;
+  const key = `${S.project}|${head}|${shown.map((x) => x.sessionId).join(",")}|${S.session}`;
   if (sel.dataset.key !== key) {
     sel.innerHTML =
-      `<option value="">${S.sessions ? `Replay an agent session (${list.length} in ${esc(S.project)})` : "Reading sessions…"}</option>` +
+      `<option value="">${esc(head)}</option>` +
       (S.session && !shown.some((x) => x.sessionId === S.session) ? `<option value="${esc(S.session)}">${esc(S.session.slice(0, 8))}</option>` : "") +
       shown
         .map(
@@ -1076,7 +1177,7 @@ function drawTimebar() {
   const shellN = S.touches.filter((t) => t.shellWrite).length;
   const note = el.querySelector<HTMLElement>(".map-tnote")!;
   note.innerHTML = S.replay
-    ? `${plural(n, "step")} · <span class="s-warn">✎ ${plural(shellN, "shell edit")}</span> (checked at merge, not at edit) · ◆ commits and PRs · times in UTC`
+    ? `${plural(n, "step")} · <span class="s-warn">✎ ${plural(shellN, "shell edit")}</span>${measured() ? " (checked at merge, not at edit)" : S.struct?.status === "no-design" ? " (no design: no rule checks them)" : ""} · ◆ commits and PRs · times in UTC`
     : "";
 }
 
@@ -1129,6 +1230,9 @@ function setProject(name: string) {
     S.replay = null;
     S.replayKey = null;
     S.touches = [];
+    S.sessionQuery = "";
+    const find = root?.querySelector<HTMLInputElement>(".map-sfind");
+    if (find) find.value = "";
   }
   S.zoom = "blocks";
   S.camFor = null;
@@ -1297,6 +1401,10 @@ function wire(view: HTMLElement) {
     if (sid) loadReplay();
     draw();
   });
+  tb.querySelector<HTMLInputElement>(".map-sfind")!.addEventListener("input", (e) => {
+    S.sessionQuery = (e.target as HTMLInputElement).value;
+    drawTimebar();
+  });
   tb.querySelector(".map-load")!.addEventListener("click", () => {
     const f = tb.querySelector<HTMLInputElement>(".map-from")!.value.trim();
     const t = tb.querySelector<HTMLInputElement>(".map-to")!.value.trim();
@@ -1341,7 +1449,7 @@ export function MapView(_nav: Nav): HTMLElement {
         <button type="button" data-zoom="far">All projects</button><button type="button" data-zoom="blocks">Blocks</button><button type="button" data-zoom="files">Files</button>
       </div>
       <div class="map-seg map-toggles" role="group" aria-label="Show">
-        <button type="button" data-t="guard">Guardrails</button><button type="button" data-t="agents">Agents</button><button type="button" data-t="flow">Flow</button><button type="button" data-t="imports">Every import</button>
+        <button type="button" data-t="guard">Guardrails</button><button type="button" data-t="agents">Agents</button><button type="button" data-t="flow" title="The order the replayed agent entered blocks. Not the project's own flow: no reader supplies one.">Flow</button><button type="button" data-t="imports">Every import</button>
       </div>
       <select class="map-project map-btn" aria-label="Project"></select>
       <label class="map-reflabel">commit <input class="map-ref mono" type="text" placeholder="origin/main" size="12" aria-label="Commit or branch to measure"></label>
@@ -1367,7 +1475,7 @@ export function MapView(_nav: Nav): HTMLElement {
           <span><i class="k-brk"></i>allowed rule break (the baseline holds it)</span>
           <span><i class="k-new"></i>new rule break (the guard refuses it)</span>
           <span><i class="k-decl"></i>declared pair, no import uses it</span>
-          <span><i class="k-flow"></i>flow: the order the agent entered blocks</span>
+          <span><i class="k-flow"></i>flow: the order the replayed agent entered blocks (the agent's path, not the project's own flow)</span>
           <span><i class="k-shell"></i>file edited through the shell</span>
           <span>solid border = design component (guardrail) · dashed = folder only, nothing blocked</span>
           <span class="map-rt"></span>
@@ -1376,6 +1484,7 @@ export function MapView(_nav: Nav): HTMLElement {
       <aside class="map-panel" aria-label="Agent replay"></aside>
     </div>
     <div class="map-timebar">
+      <input class="map-sfind mono" type="search" placeholder="find a session: id or date" size="20" aria-label="Find a session by id or date (UTC)">
       <select class="map-sess map-btn" aria-label="Agent session to replay"></select>
       <input class="map-from mono" type="text" placeholder="from (UTC)" size="22" aria-label="Window start, ISO time">
       <input class="map-to mono" type="text" placeholder="to (UTC)" size="22" aria-label="Window end, ISO time">
