@@ -47,7 +47,7 @@ export interface ScreenDef {
 export const SCREENS: readonly ScreenDef[] = [
   { id: "home", label: "Home", group: "rail", rail: "home", blurb: "What needs you, soonest first, and the agents running now." },
   { id: "map", label: "Map", group: "rail", rail: "map", blurb: "Projects, design blocks, files and imports, with agents replayed on them." },
-  { id: "agents", label: "Agents", group: "rail", rail: "agents", blurb: "A project's sessions replayed: what each did, what it changed, which notes it used." },
+  { id: "agents", label: "Agents", group: "rail", rail: "agents", blurb: "A tab per agent and a 2×2 grid: its plan, its tool calls with the anvi hooks that ran, refusals, and a message box. Terminal sessions view only." },
   {
     id: "changes",
     label: "Changes",

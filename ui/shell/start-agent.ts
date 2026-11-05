@@ -92,6 +92,7 @@ export function createStartAgent(deps: StartAgentDeps): { open: (project: string
       const board = r.board.state === "moved" ? `board: moved to In Progress on ${r.board.board}` : `board: ${r.board.state}${r.board.reason ? ` (${r.board.reason})` : ""}`;
       out.replaceChildren(
         el("div", { class: "sh-sa-ok" }, "Started agent ", el("b", { id: "sa-agent" }, r.agent.id), ` (${r.agent.status}). `,
+          el("a", { href: `#agents?agent=${encodeURIComponent(r.agent.id)}`, id: "sa-open" }, "Open it on Agents"), " · ",
           el("a", { href: `/agent-host#${r.agent.id}`, id: "sa-watch" }, "Watch it on the agent host page")),
         ...planLines(r),
         ...links,
