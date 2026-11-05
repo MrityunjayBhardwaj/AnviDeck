@@ -20,7 +20,7 @@ AnviDeck started as an observability dashboard that only read the framework's fi
 - Agent actions: start an agent (#75), in its own worktree and branch for an issue (#78, on main: `POST /api/agents/from-issue`); stop and resume it; answer its permission requests (#77); send it messages and diff comments (#79).
 - Merge a PR, only when you press **Merge**, and only the head you reviewed (#85).
 - Edit a file from the Code screen, only one no running agent is touching (#88).
-- Its own records, in AnviDeck's own folder in the store: the action log (#76), your calls on blocked edits (#86: recorded from the Agents screen's refusal card and Design's trial record into `calls.jsonl`; Design shows them (#87), History will), the agent registry (#75).
+- Its own records, in AnviDeck's own folder in the store: the action log (#76), your calls on blocked edits (#86: recorded from the Agents screen's refusal card, Design's trial record and History into `calls.jsonl`; Design (#87) and History's timeline (#90) show them), the agent registry (#75).
 
 **Changed only by agents, not by AnviDeck directly:** catalogues (`.anvi/`), memory and Ground Truth docs. A change to them (Re-check a batch, Promote) starts an agent with that task (#89); the agent makes the change, as in a terminal session.
 
@@ -30,7 +30,7 @@ AnviDeck started as an observability dashboard that only read the framework's fi
 |---|---|
 | This machine only: listens on `127.0.0.1` unless `HOST` is set; refuses a request whose Host is not a loopback name or whose Origin is another page (`server/access.ts`, `tests/access.test.ts`) | On `main` (#66) |
 | Every write endpoint requires the same origin **and** a per-server token placed in the page; anything else is refused (`server/guard.ts`, installed on the whole app before any route; pages write through `ui/write.ts`; `tests/write-guard.test.ts`) | On `main` (#76) |
-| Every action (what, target, result, time) is appended to the action log (`actions.jsonl` in the agent registry folder; `GET /api/actions`) and shown in History | Logged on `main` (#76); History planned (#90) |
+| Every action (what, target, result, time) is appended to the action log (`actions.jsonl` in the agent registry folder; `GET /api/actions`) and shown in History | Logged on `main` (#76); shown in History, the lines that name a project (#90) |
 | Agents run on the installed Claude Code and its claude.ai login, never an API key: API-key and provider variables are removed from each agent's environment, and an agent whose init message reports an `apiKeySource` other than `none` is stopped at once | Planned (#75) |
 | Your normal permission rules apply, as in the terminal; only calls they don't cover come to AnviDeck, on Home, the agent's card on Agents and its row of `/agent-host`, with Allow / Deny (`POST /api/agents/:id/permissions/:requestId`, `shared/permission-requests.ts`, `tests/permission-requests.test.ts`). A request nobody answers keeps waiting, and a timeout never allows it; if the agent stops it is withdrawn | On `main` (#77) |
 | Agents never merge; Merge is a button only you press | Partly. An agent started from an issue is told so in its prompt (#78, on main). Merge on Work squash-merges only the head and into the base the page showed, else 409 (#85). **Not enforced against agents:** any process on this machine, an agent's shell included, can fetch a page, read its write token and call `POST /api/prs/:n/merge`; it rests on agents not trying and on your permission rules for their commands (#147, open) |

@@ -22,6 +22,7 @@ import { WorkScreen } from "./components/WorkScreen";
 import { ChangesScreen } from "./components/ChangesScreen";
 import { NotesScreen } from "./components/NotesScreen";
 import { DesignScreen } from "./components/DesignScreen";
+import { HistoryScreen } from "./components/HistoryScreen";
 import { createStartAgent } from "./shell/start-agent";
 import { parseRoute, screen, type Route, type ScreenId } from "./shell/routes";
 import type { AgentsRead, StripAgent } from "./shell/activity";
@@ -243,6 +244,8 @@ function renderMain() {
     mainEl.appendChild(NotesScreen(currentProjectName, route.params));
   } else if (id === "design") {
     mainEl.appendChild(DesignScreen(currentProjectName, route.params));
+  } else if (id === "history") {
+    mainEl.appendChild(HistoryScreen(currentProjectName, route.params));
   } else if (id === "changes") {
     mainEl.appendChild(ChangesScreen(route.params.get("project") ?? currentProjectName, route.params.get("pr")));
   } else if (id === "routing") {

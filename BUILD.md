@@ -93,7 +93,7 @@ Agents AnviDeck starts write two PR-body sections with a fixed shape: **Evidence
 |---|---|
 | Listens on `127.0.0.1` unless `HOST` is set; refuses a request whose Host is not a loopback name or whose Origin is another page (`server/access.ts`, tested in `tests/access.test.ts`) | **Exists** (#66) |
 | Every write endpoint requires the same origin and a per-server token placed in the page | Planned (#76) |
-| Every action (what, target, result, time) appended to an action log in AnviDeck's own store folder and shown in History | Planned (#76, #90) |
+| Every action (what, target, result, time) appended to an action log in AnviDeck's own store folder and shown in History | Logged (#76); History shows the lines that name a project (#90) |
 | Readers can't act: a test fails if a reader imports the agent host or writes a file | Planned (#76) |
 | Agents on the Claude Code login only (see Agent host) | Planned (#75) |
 | Your permission rules apply as in the terminal; only uncovered calls reach AnviDeck; no timeout allows a call | **Exists** (#77) |
@@ -131,7 +131,7 @@ Agents AnviDeck starts write two PR-body sections with a fixed shape: **Evidence
 | Notes currency | `~/.anvideck/projects/anvi/instances`; anvi's `currency-report.js --json` and `gt-citation-check.js --json` (Notes, #89) |
 | GitHub | `gh`: PR state, your open PRs, issues and PRs |
 
-AnviDeck's own store folder holds the agent registry, the action log and your calls on blocked edits (#75, #76, #86; calls are recorded from the Agents screen's refusal card and Design's trial record, and Design shows them; History will). The Work screen reads the board via `gh project` (#85).
+AnviDeck's own store folder holds the agent registry, the action log and your calls on blocked edits (#75, #76, #86; calls are recorded from the Agents screen's refusal card, Design's trial record and History, and Design and History show them). The Work screen reads the board via `gh project` (#85).
 
 ---
 

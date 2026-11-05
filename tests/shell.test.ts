@@ -77,9 +77,9 @@ describe("routes", () => {
 
   test("screens not built yet name the issue that builds them", () => {
     const builds = Object.fromEntries(SCREENS.filter((s) => s.buildsIn).map((s) => [s.id, s.buildsIn]));
-    expect(builds).toEqual({ code: 88, history: 90, flows: 91 });
+    expect(builds).toEqual({ code: 88, flows: 91 });
     // Screens that exist today are not placeholders.
-    for (const id of ["home", "map", "agents", "changes", "notes", "work", ...OLDER_VIEWS] as ScreenId[]) expect(screen(id).buildsIn).toBeUndefined();
+    for (const id of ["home", "map", "agents", "changes", "notes", "work", "design", "history", ...OLDER_VIEWS] as ScreenId[]) expect(screen(id).buildsIn).toBeUndefined();
   });
 
   test("today's views all stay reachable until #92", () => {

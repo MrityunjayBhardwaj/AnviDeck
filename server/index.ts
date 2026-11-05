@@ -27,6 +27,7 @@ app.route("/api", (await import("./routes/work-actions")).workActionRoutes()); /
 app.route("/api/changes", (await import("./routes/changes")).default);
 app.route("/api/notes", (await import("./routes/notes")).notesRoutes()); // Notes screen (#89)
 app.route("/api/design", (await import("./routes/design")).designRoutes()); // Design screen (#87)
+app.route("/api/history", (await import("./routes/history")).historyRoutes()); // History screen (#90)
 app.route("/api", api);
 app.route("/api/replay", (await import("./routes/replay")).default);
 app.route("/api/agents-screen", (await import("./routes/agents-screen")).default);

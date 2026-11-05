@@ -93,7 +93,6 @@ export const SCREENS: readonly ScreenDef[] = [
     label: "History",
     group: "project",
     rail: "project",
-    buildsIn: 90,
     blurb:
       "One timeline of agent turns, edits, refusals, rulings, commits and catalogue changes, each naming its source; compare two points; replay a session.",
   },
