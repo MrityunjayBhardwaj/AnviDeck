@@ -19,7 +19,7 @@ AnviDeck started as an observability dashboard that only read the framework's fi
 **What AnviDeck will write once the workspace lands** (none of this is on `main` yet):
 - Agent actions: start an agent (#75), in its own worktree and branch for an issue (#78, on main: `POST /api/agents/from-issue`); stop and resume it; answer its permission requests (#77); send it messages and diff comments (#79).
 - Merge a PR, only when you press **Merge**, and only the head you reviewed (#85).
-- Edit a file from the Code screen, only one no running agent is touching (#88; `server/code-edit.ts`, in its PR).
+- Edit a file from the Code screen, only one no running agent is touching, and never a catalogue, a Ground Truth doc or Claude Code's configuration (#88; `server/code-edit.ts`, in its PR).
 - Its own records, in AnviDeck's own folder in the store: the action log (#76), your calls on blocked edits (#86: recorded from the Agents screen's refusal card into `calls.jsonl`; Design and History will show them), the agent registry (#75).
 
 **Changed only by agents, not by AnviDeck directly:** catalogues (`.anvi/`), memory and Ground Truth docs. A change to them (Re-check a batch, Promote) starts an agent with that task (#89); the agent makes the change, as in a terminal session.
@@ -33,7 +33,7 @@ AnviDeck started as an observability dashboard that only read the framework's fi
 | Every action (what, target, result, time) is appended to the action log (`actions.jsonl` in the agent registry folder; `GET /api/actions`) and shown in History | Logged on `main` (#76); History planned (#90) |
 | Agents run on the installed Claude Code and its claude.ai login, never an API key: API-key and provider variables are removed from each agent's environment, and an agent whose init message reports an `apiKeySource` other than `none` is stopped at once | Planned (#75) |
 | Your normal permission rules apply, as in the terminal; only calls they don't cover come to AnviDeck, on Home, the agent's card on Agents and its row of `/agent-host`, with Allow / Deny (`POST /api/agents/:id/permissions/:requestId`, `shared/permission-requests.ts`, `tests/permission-requests.test.ts`). A request nobody answers keeps waiting, and a timeout never allows it; if the agent stops it is withdrawn | On `main` (#77) |
-| Agents never merge; Merge is a button only you press | Partly. An agent started from an issue is told so in its prompt (#78, on main). Merge on Work squash-merges only the head and into the base the page showed, else 409 (#85). **Not enforced against agents:** any process on this machine, an agent's shell included, can fetch a page, read its write token and call `POST /api/prs/:n/merge`; it rests on agents not trying and on your permission rules for their commands (#147, open) |
+| Agents never merge; Merge is a button only you press | Partly. An agent started from an issue is told so in its prompt (#78, on main). Merge on Work squash-merges only the head and into the base the page showed, else 409 (#85). **Not enforced against agents:** any process on this machine, an agent's shell included, can fetch a page, read its write token and call `POST /api/prs/:n/merge`, or Code's `POST /api/code/:project/edit` (#88, in its PR); it rests on agents not trying and on your permission rules for their commands (#147, open) |
 | Deleting the old views needs the owner's go on the PR | Planned (#92) |
 
 ### Current state (`main` at `dd71c3e`, 2026-11-05)

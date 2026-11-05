@@ -19,6 +19,7 @@ import { agentFacts, agentsRead, editsIn, touching, type AgentFact } from "../se
 import { codeRoutes } from "../server/routes/code";
 import { installGuard, TOKEN_HEADER } from "../server/guard";
 import { ActionLog, type ActionRecord } from "../server/action-log";
+import { editBody, savedAs } from "../ui/components/code-model";
 
 const dirs: string[] = [];
 const scratch = (p = "code-edit-") => {
@@ -340,5 +341,104 @@ describe("the touching rule on paths", () => {
     writeFileSync(join(base, "repo-2", "f.ts"), "x");
     expect(touching(join(base, "repo-2", "f.ts"), [fact({ cwd: join(base, "repo") })], () => null)).toEqual([]);
     expect(touching(join(base, "repo-2", "f.ts"), [fact({ cwd: join(base, "repo-2") })], () => null).map((t) => t.why)).toEqual(["works in this folder"]);
+  });
+});
+
+const NO_HOST = () => ({ registry: { dir: "/reg" }, list: () => [], transcript: () => ({ lines: [], unreadable: 0 }) });
+/** The code routes behind the whole guard, as server/index.ts mounts them, with token "t". */
+function guarded(top: string) {
+  const log = new ActionLog(scratch("code-log-"));
+  const a = new Hono();
+  installGuard(a, { bind: "127.0.0.1", token: "t", log });
+  a.route("/api/code", codeRoutes({ host: NO_HOST, edit: { top: () => ({ top }), sessions: NO_SESSIONS } }));
+  const post = (path: string, payload: string) =>
+    a.request(`http://localhost:4476${path}`, {
+      method: "POST",
+      // content-length as a browser sends it: logWrites decides from it whether to read the body.
+      headers: { host: "localhost:4476", origin: "http://localhost:4476", [TOKEN_HEADER]: "t", "content-type": "application/json", "content-length": String(Buffer.byteLength(payload)) },
+      body: payload,
+    });
+  const lines = (): ActionRecord[] => readFileSync(log.file, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  return { post, lines };
+}
+
+describe("Code never writes catalogues, Ground Truth docs or Claude Code's configuration", () => {
+  const KEPT = [
+    ".anvi/hetvabhasa.md",
+    "artifacts/.anvi/vyapti.md",
+    "pkg/.anvi/krama.md",
+    "ref/GROUND_TRUTH_X.md",
+    "artifacts/ref/GROUND_TRUTH_Y.md",
+    ".claude/settings.local.json",
+    "pkg/.claude/commands/x.md",
+    ".mcp.json",
+  ];
+  const ESCALATE = '{"permissions":{"allow":["Bash(*)"]}}\n';
+  /** A repository holding each kept file with the text "keep". */
+  function keptRepo(): string {
+    const top = repo();
+    for (const p of KEPT) {
+      mkdirSync(join(top, p, ".."), { recursive: true });
+      writeFileSync(join(top, p), "keep\n");
+    }
+    return top;
+  }
+
+  test("each is refused (400) and left as it was, in any letter case; a look-alike is still editable", () => {
+    const top = keptRepo();
+    for (const p of [...KEPT, ".Claude/settings.local.json", ".ANVI/hetvabhasa.md"]) {
+      const e = refused(() => applyEdit("p", { path: p, baseHash: sha("keep\n"), content: ESCALATE }, deps(top)));
+      expect(`${p}: ${e.status}`).toBe(`${p}: 400`);
+      expect(e.message).toMatch(/changed only by agents|never writes there/);
+    }
+    for (const p of KEPT) expect(readFileSync(join(top, p), "utf8")).toBe("keep\n");
+    // The working copy is not offered for editing either.
+    expect(refused(() => readWorking("p", ".anvi/hetvabhasa.md", deps(top))).status).toBe(400);
+    mkdirSync(join(top, "src", "refs"), { recursive: true });
+    writeFileSync(join(top, "src", "refs", "anvi.ts"), "keep\n");
+    writeFileSync(join(top, "src", "ref"), "keep\n");
+    expect(applyEdit("p", body("src/refs/anvi.ts", top, "x\n"), deps(top)).after).toBe(sha("x\n"));
+    expect(applyEdit("p", body("src/ref", top, "x\n"), deps(top)).after).toBe(sha("x\n"));
+  });
+
+  test("through POST /api/code/:project/edit with a valid token: 400, file unchanged, logged as failed with the path", async () => {
+    const top = keptRepo();
+    const s = guarded(top);
+    const r = await s.post("/api/code/p/edit", JSON.stringify({ path: ".claude/settings.local.json", baseHash: sha("keep\n"), content: ESCALATE }));
+    expect(r.status).toBe(400);
+    expect(readFileSync(join(top, ".claude", "settings.local.json"), "utf8")).toBe("keep\n");
+    expect(s.lines()[0]).toEqual(expect.objectContaining({ status: 400, result: "failed", detail: expect.objectContaining({ path: ".claude/settings.local.json" }) }));
+  });
+});
+
+describe("the action log names the file an edit wrote, whatever the body's size", () => {
+  test("a 70 000-character edit whose body is not previewed: path, abs and sha256 before and after are logged", async () => {
+    const top = repo();
+    writeFileSync(join(top, "src", "big.ts"), "// big\n");
+    const s = guarded(top);
+    const content = "x".repeat(70_000);
+    // Eight keys before path, too: the preview, when it is read, keeps only the first eight.
+    const payload = JSON.stringify({ k1: 1, k2: 2, k3: 3, k4: 4, k5: 5, k6: 6, k7: 7, k8: 8, path: "src/big.ts", baseHash: sha("// big\n"), content });
+    const r = await s.post("/api/code/proj/edit", payload);
+    expect(r.status).toBe(200);
+    const [line] = s.lines();
+    expect(line.body).toBe(`not read (${Buffer.byteLength(payload)} bytes)`);
+    expect(line.detail).toEqual({ path: "src/big.ts", abs: join(top, "src", "big.ts"), before: sha("// big\n"), after: sha(content), bytes: 70_000 });
+  });
+});
+
+describe("a second Save is over the file the first one wrote", () => {
+  test("savedAs carries the new sha256, so the next Save is written; the first-opened hash is refused", () => {
+    const top = repo();
+    const opened = readWorking("p", "src/a.ts", deps(top));
+    const r1 = applyEdit("p", editBody(opened, "export const a = 2;\n"), deps(top));
+    const after1 = savedAs(opened, "export const a = 2;\n", r1);
+    expect(after1.hash).toBe(sha("export const a = 2;\n"));
+    expect(after1.text).toBe("export const a = 2;\n");
+    // What the screen did before: the second Save sent the first-opened hash, refused as a change on disk.
+    expect(refused(() => applyEdit("p", editBody(opened, "export const a = 3;\n"), deps(top))).status).toBe(409);
+    const r2 = applyEdit("p", editBody(after1, "export const a = 3;\n"), deps(top));
+    expect(r2.before).toBe(after1.hash);
+    expect(readFileSync(join(top, "src", "a.ts"), "utf8")).toBe("export const a = 3;\n");
   });
 });

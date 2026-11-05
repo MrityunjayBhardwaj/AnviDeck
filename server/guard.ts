@@ -108,6 +108,20 @@ export function previewBody(text: string): Record<string, unknown> | string | un
   return out;
 }
 
+/** The context key a route sets to name what it acted on; logWrites records it as `detail`. */
+export const AUDIT_KEY = "anvideckAudit";
+
+/** Only short strings and numbers are kept, so a route cannot put file contents in the log. */
+function auditOf(v: unknown): Record<string, string | number> | undefined {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+  const out: Record<string, string | number> = {};
+  for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
+    if (typeof x === "number") out[k] = x;
+    else if (typeof x === "string") out[k] = x.length > 4096 ? `${x.slice(0, 4096)}… (${x.length} chars)` : x;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 /** "/api/agents/a-1/stop" → area "agents", target "a-1". */
 function areaAndTarget(path: string): { area: string; target?: string } {
   const parts = path.replace(/^\/api\/?/, "").split("/").filter(Boolean);
@@ -146,6 +160,7 @@ export function logWrites(log: ActionLog, now: () => Date = () => new Date()): M
     } catch {
       /* a body that is not JSON keeps no reason */
     }
+    const detail = auditOf((c.get as (k: string) => unknown)(AUDIT_KEY));
     log.append({
       at: now().toISOString(),
       method: c.req.method,
@@ -157,6 +172,7 @@ export function logWrites(log: ActionLog, now: () => Date = () => new Date()): M
       result: status === 403 ? "refused" : status < 400 ? "accepted" : "failed",
       reason,
       body,
+      ...(detail ? { detail } : {}),
     });
   };
 }

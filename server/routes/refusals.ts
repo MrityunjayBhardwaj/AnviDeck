@@ -11,9 +11,10 @@ import type { RefusalsResponse } from "../../shared/refusal-types";
  * and unrecognised calls, filtered here from the cached run. The answer says what it was filtered
  * by, and that its totals are still the whole package's.
  */
-export function onlyFile(r: RefusalsResponse, file: string | null): RefusalsResponse & { filter?: { file: string; refusals: number; ofRefusals: number; totalsAre: string } } {
+export function onlyFile(r: RefusalsResponse, file: string | null): RefusalsResponse & { filter?: { file: string; refusals: number | null; ofRefusals: number | null; totalsAre: string } } {
   if (!file) return r;
-  if (r.status !== "measured") return { ...r, filter: { file, refusals: 0, ofRefusals: 0, totalsAre: "not measured: nothing to filter" } };
+  // No answer yet (measuring, not measured, unreadable, no design): the counts are not known, never 0.
+  if (r.status !== "measured") return { ...r, filter: { file, refusals: null, ofRefusals: null, totalsAre: `not known: the answer is "${r.status}", so nothing was filtered` } };
   const refusals = r.refusals.filter((x) => x.file === file);
   return {
     ...r,

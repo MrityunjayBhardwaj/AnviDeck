@@ -117,6 +117,24 @@ describe("markers are joined from the sources' own answers", () => {
       expect(countsLine(m, src, tree(structure(edges), files), null)[0]).not.toMatch(/^0 /);
     }
     expect(refusalsSource(null, "500").state).toBe("unreadable");
+    // The reason already names what it is about: said once, not "refused edits: refused edits: …".
+    const measuring = refusalsSource(answers[1], null);
+    const line = countsLine(marks(tree(structure(edges), files), measuring), measuring, tree(structure(edges), files), null)[0];
+    expect(line).toStartWith("refused edits: anvi's structure-refusals.js");
+    expect(line).not.toContain("refused edits: refused edits");
+  });
+
+  test("catalogues only partly read: the citations are 'at least', and what could not be read is said", () => {
+    const t = tree(structure(edges), files, { traps: { status: "partial", dir: "/p/.anvi", errors: ["hetvabhasa.md: EACCES"], cites: 0, placed: [], elsewhere: 0, ambiguousCites: 0, ambiguous: [] } });
+    const src = refusalsSource(null, null);
+    const line = countsLine(marks(t, src), src, t, null)[3];
+    expect(line).toStartWith("at least 0 known-trap citations");
+    expect(line).toContain("hetvabhasa.md: EACCES");
+    expect(line).toContain("could not be read");
+    // A whole read says neither.
+    const ok = countsLine(marks(tree(structure(edges), files), src), src, tree(structure(edges), files), null)[3];
+    expect(ok).toStartWith("0 known-trap citations");
+    expect(ok).not.toContain("could not be read");
   });
 
   test("no design: no ◆ count, said as nothing judged", () => {
@@ -260,6 +278,21 @@ describe("GET /api/refusals for one file, and over all time (#193)", () => {
     expect(f.refusals.map((x) => x.key)).toEqual(["k1"]);
     expect(f.filter).toEqual(expect.objectContaining({ file: "src/a.ts", refusals: 1, ofRefusals: 2 }));
     expect(onlyFile(r, null)).toBe(r);
+  });
+
+  test("?file= on an answer not measured yet gives no counts (null), never 0, and says why", () => {
+    const answers: RefusalsResponse[] = [
+      { status: "measuring", project: "p", package: "/r", window: { since: "", until: null, chosenBy: "" }, startedAt: "2026-11-05T12:00:00Z" },
+      { status: "unreadable", project: "p", reason: "boom" },
+      { status: "not-measured", project: "p", reason: "no edit" },
+    ];
+    for (const a of answers) {
+      const f = onlyFile(a, "src/a.ts") as RefusalsResponse & { filter: { refusals: number | null; ofRefusals: number | null; totalsAre: string } };
+      expect(f.filter.refusals).toBeNull();
+      expect(f.filter.ofRefusals).toBeNull();
+      expect(f.status).toBe(a.status);
+      expect(f.filter.totalsAre).toContain(a.status);
+    }
   });
 
   test("?since=all is every refusal the transcripts hold, and says so", () => {

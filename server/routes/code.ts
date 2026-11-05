@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { sameOriginWrites } from "../guard";
+import { AUDIT_KEY, sameOriginWrites } from "../guard";
 import { projectTop, readCodeFile, readCodeTree } from "../readers/code";
 import { agentFacts, agentsRead, type HostLike } from "../code-touch";
 import { applyEdit, CodeEditError, readWorking, type EditDeps } from "../code-edit";
@@ -67,7 +67,15 @@ export function codeRoutes(deps: { host: () => HostLike | null; hostOff?: () => 
       throw new CodeEditError(400, "body must be JSON");
     }
     if (!body || typeof body !== "object" || Array.isArray(body)) throw new CodeEditError(400, "body must be a JSON object");
-    return c.json(applyEdit(c.req.param("project") ?? "", body as Record<string, unknown>, editDeps()), 200);
+    const b = body as Record<string, unknown>;
+    // The action log's own record of the file, whatever the body's size (the body preview is
+    // not read past 64 KiB and keeps only the first keys): the path asked for, and once written
+    // where it was written and the sha256 before and after.
+    const set = c.set as (k: string, v: unknown) => void;
+    set(AUDIT_KEY, { path: String(b.path), ...(typeof b.baseHash === "string" ? { baseHash: b.baseHash } : {}) });
+    const r = applyEdit(c.req.param("project") ?? "", b, editDeps());
+    set(AUDIT_KEY, { path: r.path, abs: r.abs, before: r.before, after: r.after, bytes: r.bytes });
+    return c.json(r, 200);
   });
 
   return r;

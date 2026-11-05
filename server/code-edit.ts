@@ -7,7 +7,8 @@
  *
  *   - the path is inside the project's own main checkout: repository-relative, no "..", no
  *     component that is a symlink, nothing under .git, an existing regular file, and not inside
- *     another checkout nested in the folder (an agent's worktree);
+ *     another checkout nested in the folder (an agent's worktree); never a catalogue (.anvi), a
+ *     Ground Truth doc (ref/) or Claude Code's configuration (.claude/, .mcp.json): keptFromCode;
  *   - no running AnviDeck agent is touching it (server/code-touch.ts: it works in the folder that
  *     holds the file, or it edited the same file in any checkout, or its edits are not known),
  *     and no live terminal Claude Code session works in the folder that holds it; when the agent
@@ -64,6 +65,22 @@ function topOf(project: string, deps: EditDeps): string {
 }
 
 /**
+ * Why Code never writes this repository-relative path, or null. Catalogues and Ground Truth docs
+ * are changed only by agents (CLAUDE.md), never by AnviDeck directly; Claude Code's own settings,
+ * hooks, commands and MCP servers decide what every agent may do, so a write there would change
+ * the rules agents run under. Compared in lower case: macOS opens `.Claude` as `.claude`.
+ */
+export function keptFromCode(rel: string): string | null {
+  const parts = rel.toLowerCase().split("/");
+  if (parts.includes(".anvi")) return "is a catalogue (.anvi): catalogues are changed only by agents, never by Code";
+  if (parts[0] === "ref" || (parts[0] === "artifacts" && parts[1] === "ref"))
+    return "is in the Ground Truth folder (ref/): Ground Truth docs are changed only by agents, never by Code";
+  if (parts.includes(".claude")) return "is Claude Code's own configuration (.claude/: settings, hooks, commands, worktrees): Code never writes there";
+  if (parts[parts.length - 1] === ".mcp.json") return "is Claude Code's MCP server list (.mcp.json): Code never writes there";
+  return null;
+}
+
+/**
  * The absolute path of a repository-relative path inside `top`, or a refusal. Every component
  * from the top down is checked with lstat, so a symlinked folder cannot lead the write elsewhere.
  */
@@ -72,6 +89,8 @@ export function resolveTarget(top: string, relPath: unknown): string {
   if (!rel) throw new CodeEditError(400, "path must be a repository-relative file path (no leading /, no .., no empty part)");
   const parts = rel.split("/");
   if (parts.some((p) => p.toLowerCase() === ".git")) throw new CodeEditError(400, `${rel} is under .git: Code never writes there`);
+  const kept = keptFromCode(rel);
+  if (kept) throw new CodeEditError(400, `${rel} ${kept}`);
   let p = top;
   for (let i = 0; i < parts.length; i++) {
     p = join(p, parts[i]);

@@ -17,7 +17,9 @@ import {
   countsLine,
   defaultFile,
   edgeVerdict,
+  editBody,
   editState,
+  savedAs,
   gutterOf,
   layerColors,
   lineMarks,
@@ -301,7 +303,12 @@ export function CodeScreen(project: string | null, params: URLSearchParams): HTM
     if (!working || working.state === "loading") return (box.append(el("span", { class: "sh-dim" }, "Reading the working copy…")), box);
     if (working.state === "error") return (box.append(el("div", { class: "cd-bad" }, `Read-only: ${working.error}`), el("div", { class: "sh-dim" }, tree!.editRule)), box);
     const w = working.value;
-    box.append(el("div", { class: "sh-dim" }, `Working copy ${w.abs} · ${w.bytes} bytes · sha256 ${w.hash.slice(0, 12)} · read ${local(w.readAt)}. This is the file on disk, not the commit shown with Blame.`));
+    // The file as the page last knew it: the one opened, then each one a Save wrote.
+    let base: WorkingFile = w;
+    const info = el("div", { class: "sh-dim", id: "cd-wc" });
+    const paintInfo = () => (info.textContent = `Working copy ${base.abs} · ${base.bytes} bytes · sha256 ${base.hash.slice(0, 12)} · ${base === w ? "read" : "written"} ${local(base.readAt)}. This is the file on disk, not the commit shown with Blame.`);
+    paintInfo();
+    box.append(info);
     if (!w.editable) {
       box.append(el("div", { class: "cd-bad", id: "cd-readonly" }, `Read-only: ${w.reason}`), ...w.touching.map((t: Touching) => el("div", { class: "cd-mono" }, `${t.why}: ${t.detail}`)), el("div", { class: "sh-dim" }, `Rule: ${w.rule}`));
       box.append(el("pre", { class: "cd-reason" }, w.text));
@@ -312,7 +319,7 @@ export function CodeScreen(project: string | null, params: URLSearchParams): HTM
     const save = el("button", { class: "sh-btn", type: "button", id: "cd-save" }, "Save");
     const out = el("div", { class: "cd-out", id: "cd-out" });
     const what = el("span", { class: "sh-dim" });
-    const paintWhat = () => (what.textContent = ta.value === w.text ? "no change yet" : `Save writes this text (${new TextEncoder().encode(ta.value).length} bytes) over the file whose sha256 is ${w.hash.slice(0, 12)}; it is refused if the file changed since, or an agent starts working on it.`);
+    const paintWhat = () => (what.textContent = ta.value === base.text ? "no change yet" : `Save writes this text (${new TextEncoder().encode(ta.value).length} bytes) over the file whose sha256 is ${base.hash.slice(0, 12)}; it is refused if the file changed since, or an agent starts working on it.`);
     ta.oninput = paintWhat;
     paintWhat();
     save.onclick = async () => {
@@ -320,10 +327,13 @@ export function CodeScreen(project: string | null, params: URLSearchParams): HTM
       out.className = "cd-out";
       out.textContent = "writing…";
       try {
-        const r = await write<EditResult>("POST", `/api/code/${enc(p)}/edit`, { path: w.path, baseHash: w.hash, content: ta.value });
+        const content = ta.value;
+        const r = await write<EditResult>("POST", `/api/code/${enc(p)}/edit`, editBody(base, content));
         out.textContent = `Written ${local(r.writtenAt)}: ${r.abs}, sha256 ${r.before.slice(0, 12)} → ${r.after.slice(0, 12)}, ${r.bytes} bytes. The action log has it (GET /api/actions).`;
         out.classList.add("cd-ok");
-        working = { state: "ok", value: { ...w, text: ta.value, hash: r.after, bytes: r.bytes } };
+        base = savedAs(base, content, r);
+        working = { state: "ok", value: base };
+        paintInfo();
         paintWhat();
       } catch (e) {
         out.classList.add("cd-bad");

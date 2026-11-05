@@ -10,7 +10,7 @@
  *   ▲ known trap       — a catalogue entry that cites `<file>:<line>`.
  * A source that could not be read says so; it never shows as no markers.
  */
-import type { CodeTreeOk, TrapCite, AgentEdit, WorkingFile } from "../../shared/code-types";
+import type { CodeTreeOk, TrapCite, AgentEdit, EditResult, WorkingFile } from "../../shared/code-types";
 import type { Refusal, RefusalsResponse } from "../../shared/refusal-types";
 import type { StructureEdge, StructureMeasured } from "../../shared/structure-types";
 
@@ -265,6 +265,19 @@ export function edgeVerdict(e: StructureEdge): { text: string; tone: "warn" | "b
 
 // ── editing ─────────────────────────────────────────────────────────────────────────────
 
+/** The body of a Save: over the file as the page last knew it (its path and sha256). */
+export function editBody(base: WorkingFile, content: string): { path: string; baseHash: string; content: string } {
+  return { path: base.path, baseHash: base.hash, content };
+}
+
+/**
+ * The working copy after a Save the server accepted: the text written and the sha256 the server
+ * says is now on disk. The next Save is over this, not over the file first opened.
+ */
+export function savedAs(base: WorkingFile, content: string, r: EditResult): WorkingFile {
+  return { ...base, text: content, hash: r.after, bytes: r.bytes, readAt: r.writtenAt };
+}
+
 /** The head's state words. */
 export function editState(enabled: boolean, w: { state: "loading" } | { state: "error"; error: string } | { state: "ok"; value: WorkingFile } | null): string {
   if (!enabled) return "read-only while agents work";
@@ -278,15 +291,19 @@ export function editState(enabled: boolean, w: { state: "loading" } | { state: "
 
 /** The counts line under the legend, each figure with where it came from. Never a 0 for a source that gave no answer. */
 export function countsLine(m: Marks, refusals: Source<Refusal[]>, tree: CodeTreeOk, window: string | null): string[] {
-  const n = (v: number | null, what: string, files: number | null, src: string, why: string) =>
-    v === null ? `${what}: ${why}` : `${v} ${what} on ${files} file${files === 1 ? "" : "s"} (${src})`;
+  // A reason that already names what it is about (refusalsSource's texts do) is not prefixed again.
+  const n = (v: number | null, what: string, files: number | null, src: string, why: string, atLeast = false) =>
+    v === null ? (why.startsWith(what) ? why : `${what}: ${why}`) : `${atLeast ? "at least " : ""}${v} ${what} on ${files} file${files === 1 ? "" : "s"} (${src})`;
   const sha = tree.commit.sha.slice(0, 7);
+  // Some catalogues read and some not: the count is of those read, and the failure is said with it.
+  const trapsPartial = tree.traps.status === "partial";
+  const trapsMissed = trapsPartial ? `; some catalogues could not be read, so these are only the ones that could: ${tree.traps.errors.join("; ") || "no reason given"}` : "";
   return [
     n(m.counts.refusals, "refused edits", m.counts.refusedFiles, `GET /api/refusals, ${window ?? "window not known"}${m.refusedElsewhere.length ? `; ${m.refusedElsewhere.length} on files not at ${sha}` : ""}`, refusals.state === "ok" ? "" : refusals.text),
     n(m.counts.breaking, "imports that break the design", m.counts.breakingFiles, `the design reader at ${tree.commit.ref} ${sha}`, tree.structure.status === "no-design" ? "no design is registered, so nothing is judged" : `not measured (${"reason" in tree.structure ? tree.structure.reason : tree.structure.status})`),
     m.counts.touchedFiles === null
       ? `files AnviDeck agents edited: not known (${tree.agents.reason ?? "the agent host could not be asked"})`
       : `${m.counts.touchedFiles} file${m.counts.touchedFiles === 1 ? "" : "s"} AnviDeck agents edited (${tree.agents.total} agents in ${tree.agents.registry ?? "the registry"}, ${tree.agents.running} running${tree.agents.status === "partial" ? `; some transcripts could not be read: ${tree.agents.reason}` : ""})`,
-    n(m.counts.trapCites, "known-trap citations", m.counts.trapFiles, `file:line in ${tree.traps.dir ?? "no catalogue folder"}; ${tree.traps.cites} citations read: ${tree.traps.placed.length} placed here, ${tree.traps.elsewhere} name files outside this package or not at ${sha}, ${tree.traps.ambiguousCites} name a file that several files could be`, `catalogues could not be read: ${tree.traps.errors.join("; ")}`),
+    n(m.counts.trapCites, "known-trap citations", m.counts.trapFiles, `file:line in ${tree.traps.dir ?? "no catalogue folder"}; ${tree.traps.cites} citations read: ${tree.traps.placed.length} placed here, ${tree.traps.elsewhere} name files outside this package or not at ${sha}, ${tree.traps.ambiguousCites} name a file that several files could be${trapsMissed}`, `catalogues could not be read: ${tree.traps.errors.join("; ")}`, trapsPartial),
   ];
 }

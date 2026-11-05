@@ -24,7 +24,8 @@ export const EDIT_RULE =
   "Code writes a file only when no running AnviDeck agent works in the folder that holds it, or has edited the same file " +
   "in any checkout of this repository, and only when the file is still the one you opened (same sha256). " +
   "No live terminal Claude Code session may work in the folder that holds it either (what a terminal session edits " +
-  "outside its own folder is not known). Only inside the project's own folder: no path outside it, no symlink, nothing under .git.";
+  "outside its own folder is not known). Only inside the project's own folder: no path outside it, no symlink, nothing under .git. " +
+  "Never a catalogue (.anvi), a Ground Truth doc (ref/) or Claude Code's configuration (.claude/, .mcp.json): agents change those.";
 
 /** Files larger than this are not shown (said, never cut). */
 export const MAX_FILE_BYTES = 1024 * 1024;
