@@ -75,8 +75,39 @@ export interface ReplayStep {
   mayEditFiles?: { source: "guessed"; reason: string; scope: "project" | "scratch" | "link" };
   /** Injections attached to this tool call (by toolUseID). */
   noteIds?: number[];
+  /**
+   * For kind "tool": the agent's own words next to this call, as the transcript
+   * records them (#48). Present on every tool step read from a transcript; an
+   * empty list means the transcript holds none for this call, not "could not read".
+   */
+  words?: StepWords[];
+  /**
+   * Thinking blocks of the same turn, after its previous call (or batch of calls made
+   * back to back) and before this one, recorded without their text (only a
+   * signature). Counted so an empty `words` is not read as "it said nothing".
+   */
+  wordsHidden?: number;
   /** Extra detail for hook-meter / hook-log steps. */
   detail?: Record<string, unknown>;
+}
+
+/**
+ * One piece of the agent's own words for a tool call (#48), always read from
+ * the transcript. Taken from the same assistant turn (records sharing
+ * `message.id`), between the previous tool call of that turn and this one.
+ *   text         a text block: what it wrote to the user
+ *   thinking     a thinking block whose text the transcript keeps
+ *   description  the tool call's own `input.description` (what it said the command does)
+ */
+export interface StepWords {
+  source: "transcript";
+  kind: "text" | "thinking" | "description";
+  text: string;
+  /** 1-based transcript line of the record that holds it. */
+  line: number;
+  /** The text was cut to WORDS_MAX characters; `length` is the full length. */
+  truncated?: boolean;
+  length?: number;
 }
 
 /** One file that changed, and how we know. */

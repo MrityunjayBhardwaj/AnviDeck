@@ -1,0 +1,7 @@
+/* Map additions (#48, #49). The Map's first version is styled in deck.css. */
+.map-words { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--border); padding-top: 7px; }
+.map-word .map-pre { max-height: 220px; }
+.map-word.thinking .map-pre { border-left: 2px solid var(--border-active); }
+.map-word.description .map-pre { font-style: italic; }
+.map-sfind { width: 190px; background: var(--bg-0); color: var(--text-0); border: 1px solid var(--border); border-radius: 6px; padding: 4px 7px; font-size: 12px; }
+.map-sess { max-width: 420px; }

@@ -244,19 +244,47 @@ interface DriverInput {
  * hundred MB on stave), so requests for several refs must queue rather than all start (#23).
  */
 export const GUARD_CONCURRENCY = Number(process.env.ANVIDECK_GUARD_CONCURRENCY ?? 2);
-const guardRuns = { active: 0, peak: 0, queued: 0, waiters: [] as (() => void)[] };
-/** Observed concurrency of guard runs since start (or the last reset): for tests and the PR's proof. */
-export function guardRunStats() { return { active: guardRuns.active, peak: guardRuns.peak, queued: guardRuns.queued, limit: GUARD_CONCURRENCY }; }
-export function resetGuardRunStats() { guardRuns.peak = guardRuns.active; guardRuns.queued = 0; }
+const guardRuns = { active: 0, peak: 0, queued: 0, started: 0, withdrawn: 0, waiters: [] as (() => void)[] };
+/** Observed guard runs since start (or the last reset): for tests and the PR's proof. */
+export function guardRunStats() {
+  return { active: guardRuns.active, peak: guardRuns.peak, queued: guardRuns.queued, started: guardRuns.started, withdrawn: guardRuns.withdrawn, limit: GUARD_CONCURRENCY };
+}
+export function resetGuardRunStats() { guardRuns.peak = guardRuns.active; guardRuns.queued = 0; guardRuns.started = 0; guardRuns.withdrawn = 0; }
 
-async function withGuardSlot<T>(fn: () => Promise<T>): Promise<{ value: T; queuedMs: number }> {
+/** The reason a run nobody waits for any more ends with. Never cached (it has no measuredAt). */
+export const WITHDRAWN_REASON = "the guard run was stopped: every request for it was withdrawn before it finished";
+
+async function withGuardSlot<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<{ value: T; queuedMs: number } | { withdrawn: true; queuedMs: number }> {
   const q0 = Date.now();
   if (guardRuns.active >= GUARD_CONCURRENCY) {
     guardRuns.queued++;
-    await new Promise<void>((r) => guardRuns.waiters.push(r));
+    // A run withdrawn while it waits gives its place up and never starts.
+    const gotSlot = await new Promise<boolean>((r) => {
+      const wake = () => {
+        signal?.removeEventListener("abort", leave);
+        r(true);
+      };
+      const leave = () => {
+        const i = guardRuns.waiters.indexOf(wake);
+        if (i >= 0) guardRuns.waiters.splice(i, 1);
+        r(false);
+      };
+      guardRuns.waiters.push(wake);
+      signal?.addEventListener("abort", leave, { once: true });
+    });
+    if (!gotSlot) {
+      guardRuns.withdrawn++;
+      return { withdrawn: true, queuedMs: Date.now() - q0 };
+    }
+  }
+  if (signal?.aborted) {
+    guardRuns.withdrawn++;
+    guardRuns.waiters.shift()?.();
+    return { withdrawn: true, queuedMs: Date.now() - q0 };
   }
   const queuedMs = Date.now() - q0;
   guardRuns.active++;
+  guardRuns.started++;
   guardRuns.peak = Math.max(guardRuns.peak, guardRuns.active);
   try {
     return { value: await fn(), queuedMs };
@@ -267,12 +295,13 @@ async function withGuardSlot<T>(fn: () => Promise<T>): Promise<{ value: T; queue
 }
 
 /** Run the guard's functions under node (as the merge hook runs the guard: structure-merge-hook.js guardAt). */
-async function runDriver(input: DriverInput, guardPath: string): Promise<{ json: any; ms: number; stderr: string; queuedMs: number }> {
-  const { value, queuedMs } = await withGuardSlot(() => spawnDriver(input, guardPath));
-  return { ...value, queuedMs };
+async function runDriver(input: DriverInput, guardPath: string, signal?: AbortSignal): Promise<{ json: any; ms: number; stderr: string; queuedMs: number }> {
+  const got = await withGuardSlot(() => spawnDriver(input, guardPath, signal), signal);
+  if ("withdrawn" in got) return { json: { status: "not-measured", reason: WITHDRAWN_REASON }, ms: 0, stderr: "", queuedMs: got.queuedMs };
+  return { ...got.value, queuedMs: got.queuedMs };
 }
 
-function spawnDriver(input: DriverInput, guardPath: string): Promise<{ json: any; ms: number; stderr: string }> {
+function spawnDriver(input: DriverInput, guardPath: string, signal?: AbortSignal): Promise<{ json: any; ms: number; stderr: string }> {
   mkdirSync(TMP_ROOT, { recursive: true });
   const t0 = Date.now();
   return new Promise((resolve) => {
@@ -284,18 +313,29 @@ function spawnDriver(input: DriverInput, guardPath: string): Promise<{ json: any
     child.stdout.on("data", (d) => (stdout += d));
     child.stderr.on("data", (d) => (stderr += d));
     const timer = setTimeout(() => child.kill("SIGTERM"), GUARD_TIMEOUT_MS);
+    // Nobody waits for this run any more: stop the guard's node process (#49).
+    let withdrawn = false;
+    const stop = () => {
+      withdrawn = true;
+      guardRuns.withdrawn++;
+      child.kill("SIGTERM");
+    };
+    signal?.addEventListener("abort", stop, { once: true });
     child.on("error", (e) => {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", stop);
       resolve({ json: { status: "not-measured", reason: `could not start node to run the guard: ${e.message}` }, ms: Date.now() - t0, stderr });
     });
-    child.on("close", (code, signal) => {
+    child.on("close", (code, sig) => {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", stop);
       let json: any = null;
-      try { json = JSON.parse(stdout); } catch { /* below */ }
+      if (withdrawn) json = { status: "not-measured", reason: WITHDRAWN_REASON };
+      else try { json = JSON.parse(stdout); } catch { /* below */ }
       if (!json)
         json = {
           status: "not-measured",
-          reason: `the guard run exited ${signal ? `on ${signal}` : code} with no verdict` +
+          reason: `the guard run exited ${sig ? `on ${sig}` : code} with no verdict` +
             (stderr.trim() ? ` (${stderr.trim().split("\n").find((l) => /Error/.test(l)) ?? stderr.trim().split("\n")[0]})` : ""),
         };
       resolve({ json, ms: Date.now() - t0, stderr });
@@ -309,7 +349,12 @@ function spawnDriver(input: DriverInput, guardPath: string): Promise<{ json: any
 // answer; re-locking a new baseline must miss the cache, not hit it.
 
 const cache = new Map<string, StructureProjectResponse>();
-const inflight = new Map<string, Promise<StructureProjectResponse>>();
+/**
+ * Runs in flight, by cache key. Requests for the same key share one run; each one that
+ * passes a signal and withdraws lowers `waiting`, and the run is stopped when none is left
+ * (a page that moved to another project or commit, #49). A request with no signal never withdraws.
+ */
+const inflight = new Map<string, { job: Promise<StructureProjectResponse>; waiting: number; ctl: AbortController }>();
 const CACHE_MAX = 64;
 
 function remember(key: string, value: StructureProjectResponse) {
@@ -332,6 +377,8 @@ export interface MeasureOptions {
   path?: string | null;
   /** Registry files to read instead of the lock and the user's — for the tests. */
   registry?: { locked?: string; user?: string };
+  /** The request was withdrawn (the page moved on). The run stops if no other request waits for it. */
+  signal?: AbortSignal;
 }
 
 export async function readStructure(projectName: string, opts: MeasureOptions = {}): Promise<StructureProjectResponse> {
@@ -401,12 +448,40 @@ export async function readStructure(projectName: string, opts: MeasureOptions = 
   const hit = cache.get(key);
   // The verdict depends only on the key; who asked, and through which registry entry, is this request's.
   if (hit) return withTiming({ ...hit, project: projectName, package: entry } as StructureProjectResponse, "hit", Date.now() - t0, refAsked);
-  let job = inflight.get(key);
-  if (!job) {
-    job = measure(projectName, entry, sha, chosen, src, guardPath, refAsked).finally(() => inflight.delete(key));
-    inflight.set(key, job);
+  if (opts.signal?.aborted)
+    return { status: "not-measured", project: projectName, package: entry, refAsked, source: src, reason: "the request was withdrawn before the guard ran" };
+  let run = inflight.get(key);
+  if (!run) {
+    const ctl = new AbortController();
+    const job = measure(projectName, entry, sha, chosen, src, guardPath, refAsked, ctl.signal).finally(() => {
+      if (inflight.get(key)?.job === job) inflight.delete(key);
+    });
+    run = { job, waiting: 0, ctl };
+    inflight.set(key, run);
   }
-  const fresh = await job;
+  const shared = run;
+  shared.waiting++;
+  let left = false;
+  const leave = () => {
+    if (left) return;
+    left = true;
+    if (--shared.waiting === 0) {
+      shared.ctl.abort();
+      // A request that arrives after this must start a fresh run, not join a stopping one.
+      if (inflight.get(key) === shared) inflight.delete(key);
+    }
+  };
+  opts.signal?.addEventListener("abort", leave, { once: true });
+  let fresh: StructureProjectResponse;
+  try {
+    fresh = await shared.job;
+  } finally {
+    opts.signal?.removeEventListener("abort", leave);
+    if (!left) {
+      left = true;
+      shared.waiting--;
+    }
+  }
   // A run that crashed or timed out is not cached: the next request tries again.
   if (fresh.status === "measured" || (fresh.status === "not-measured" && fresh.measuredAt)) remember(key, fresh);
   return withTiming(fresh, "miss", Date.now() - t0, refAsked);
@@ -427,11 +502,13 @@ async function measure(
   src: GuardSource,
   guardPath: string,
   refAsked: string | null,
+  signal?: AbortSignal,
 ): Promise<StructureProjectResponse> {
   // The guard is handed the resolved commit, so what it measures is exactly what the cache key names.
   const { json, ms, queuedMs } = await runDriver(
     { dir: entry.dir, design: entry.design, baseline: entry.baseline, designId: entry.designId, extractor: entry.extractor, ref: sha },
     guardPath,
+    signal,
   );
   // The guard's reason starts with how IT chose the ref — "--ref", since it was handed the hash
   // (structure-guard.js checkoutAtRef: `chosen.why + borrowed…`). That is this reader's plumbing;
