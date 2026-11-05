@@ -126,10 +126,12 @@ Agents AnviDeck starts write two PR-body sections with a fixed shape: **Evidence
 | Hook and routing activity | `/tmp/anvi-hook-*.log`, `/tmp/anvi-route-*.log` (written by `catalogue-context-injector.js` and `anvi-route-logger.js`) |
 | Framework history | the `~/.claude` git repo |
 | Design structure | anvi's structure guard `~/.claude/anvi/scripts/structure-guard.js` and its registries |
+| Refusals by the design guard | anvi's `~/.claude/anvi/scripts/structure-refusals.js`, run on the project's registered package (`server/readers/refusals.ts`, `GET /api/refusals`) |
+| Your calls on blocked edits | `calls.jsonl` in AnviDeck's own store folder, beside `actions.jsonl` (`server/readers/calls.ts`, `GET /api/calls`; written by `POST /api/refusals/:key/call`, #86) |
 | Notes currency | `~/.anvideck/projects/anvi/instances` |
 | GitHub | `gh`: PR state, your open PRs, issues and PRs |
 
-Planned additions: the agent registry, action log and your calls on blocked edits, in AnviDeck's own store folder (#75, #76, #86). The Work screen reads the board via `gh project` (#85).
+AnviDeck's own store folder holds the agent registry, the action log and your calls on blocked edits (#75, #76, #86; calls are recorded from the Agents screen's refusal card, and Design and History will show them). The Work screen reads the board via `gh project` (#85).
 
 ---
 
