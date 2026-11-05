@@ -1,0 +1,57 @@
+/* Home (#81): ui/components/HomeScreen.ts. Loaded by that module; every class starts with hm-. */
+.hm { display: flex; flex-direction: column; gap: 14px; padding: 18px 24px 28px; max-width: 1100px; font-family: var(--font-ui, var(--font-mono)); }
+.hm-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.hm-h1 { font-size: 20px; margin: 0; color: var(--text-0); }
+.hm-sub { color: var(--text-1); }
+.hm-h2 { font-size: 14px; margin: 0; }
+
+.hm-queue { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-1); overflow: hidden; }
+.hm-q { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px 14px; border-top: 1px solid var(--border); }
+.hm-q:first-child { border-top: 0; }
+.hm-q:hover { background: var(--bg-2); }
+.hm-q .hm-answer { grid-column: 2 / 4; }
+.hm-q .hm-answer:empty { display: none; }
+.hm-t { font-size: 14px; font-weight: 600; color: var(--text-0); }
+.hm-why { color: var(--text-1); margin-top: 2px; }
+.hm-sub2 { font-size: 12px; }
+.hm-sub2.err, .hm-src.err { color: var(--red); }
+.hm-src { color: var(--text-2); font-size: 11.5px; margin-top: 2px; }
+.hm-right { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.hm-when { font-size: 12px; color: var(--text-1); }
+.hm-unread .hm-t { color: var(--text-1); font-weight: normal; }
+.hm-note { display: flex; align-items: center; gap: 10px; padding: 12px 14px; color: var(--text-1); }
+.hm-more { background: none; border: 0; border-top: 1px solid var(--border); color: var(--accent); padding: 8px 14px; text-align: left; cursor: pointer; font: inherit; }
+
+.hm-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+.hm-dot.hollow { border: 1px solid var(--text-2); background: transparent; box-sizing: border-box; }
+
+.hm-btn { background: var(--bg-3); color: var(--text-0); border: 1px solid var(--border-active); border-radius: 6px; padding: 4px 12px; font: inherit; cursor: pointer; text-decoration: none; }
+.hm-btn.primary { background: var(--accent-dim); border-color: var(--accent); }
+.hm-btn.sm { padding: 2px 8px; font-size: 12px; }
+.hm-chip { background: rgba(250, 204, 21, .15); color: var(--yellow); border-radius: 10px; padding: 1px 8px; font-size: 12px; }
+
+details.hm-health > summary { list-style: none; cursor: pointer; }
+details.hm-health > summary::-webkit-details-marker { display: none; }
+.hm-status { display: flex; align-items: center; gap: 10px; border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; background: var(--bg-1); }
+details.hm-health[open] .hm-status { border-radius: 10px 10px 0 0; }
+.hm-tail { color: var(--text-1); }
+.hm-more-l { margin-left: auto; color: var(--text-2); }
+.hm-health-body { border: 1px solid var(--border); border-top: 0; border-radius: 0 0 10px 10px; padding: 4px 14px 10px; background: var(--bg-1); }
+.hm-met { display: grid; grid-template-columns: 10px 190px 120px minmax(0, 1fr); gap: 10px; align-items: baseline; padding: 8px 0; border-top: 1px solid var(--border); }
+.hm-met:first-child { border-top: 0; }
+.hm-v { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--text-0); }
+.hm-of { color: var(--text-2); font-weight: 400; }
+.hm-mnote { color: var(--text-1); }
+.hm-mnote .hm-src { display: block; }
+.hm-link { color: var(--text-0); }
+
+.hm-agents { background: var(--bg-1); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; }
+.hm-agents-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; }
+.hm-all { color: var(--text-1); text-decoration: none; }
+.hm-arow { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 8px 0; border-top: 1px solid var(--border); }
+.hm-agents-head + .hm-arow { border-top: 0; }
+.hm-foot { font-size: 11.5px; color: var(--text-2); }
+.hm-older { padding: 8px 14px; border-top: 1px solid var(--border); color: var(--text-1); }
+.hm-older summary { cursor: pointer; }
+.hm-older ul { margin: 6px 0; padding-left: 20px; }
+.hm-older a { color: var(--text-0); }

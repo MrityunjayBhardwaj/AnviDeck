@@ -1,5 +1,5 @@
 import { api } from "./api";
-import { CommandCenter } from "./components/CommandCenter";
+import { HomeScreen, refreshHomeAgents } from "./components/HomeScreen";
 import { ProjectView } from "./components/ProjectView";
 import { Timeline, type TimelineState } from "./components/Timeline";
 import { DiffViewer } from "./components/DiffViewer";
@@ -59,6 +59,8 @@ export interface Nav {
 // State
 let route: Route = parseRoute(location.hash);
 let projects: ProjectSummary[] = [];
+/** When /api/projects was read: the date beside Home's "notes backed by source" (#81). */
+let projectsReadAt: string | null = null;
 /** The project switcher's pick: kept across reloads, overridden by a project named in the URL. */
 const PROJECT_KEY = "anvideck.project";
 let currentProjectName: string | null = localStorage.getItem(PROJECT_KEY);
@@ -181,7 +183,7 @@ function setProject(name: string) {
   // Screens that show one project follow the switcher.
   const s = route.screen;
   if (s === "project" || s === "brain" || s === "github-trace" || s === "agents") go(screenHash(s, name));
-  else if (screen(s).group === "project" || s === "older") renderMain();
+  else if (screen(s).group === "project" || s === "older" || s === "home") renderMain();
 }
 
 function renderMain() {
@@ -203,7 +205,8 @@ function renderMain() {
   if (def.buildsIn) {
     mainEl.appendChild(placeholder(id, currentProjectName));
   } else if (id === "home") {
-    mainEl.appendChild(CommandCenter(projects, nav, home, count));
+    const project = projects.find((p) => p.name === currentProjectName) ?? null;
+    mainEl.appendChild(HomeScreen({ home, count, failed: count.state === "failed", host: hostAgents, project, projectsReadAt }));
   } else if (id === "older") {
     mainEl.appendChild(olderViews(currentProjectName));
   } else if (id === "project") {
@@ -376,6 +379,7 @@ function upsertAgent(a: StripAgent) {
   if (i === -1) hostAgents.agents.unshift(a);
   else hostAgents.agents[i] = a;
   setPermissionAgents(hostAgents);
+  refreshHomeAgents(hostAgents);
   recountAsks();
   if (!prev || prev.status !== a.status) {
     const kind = a.status === "failed" ? "bad" : a.pendingPermissions.length ? "warn" : a.status === "done" ? "ok" : "info";
@@ -446,6 +450,7 @@ function recountAsks() {
 async function loadAgents() {
   hostAgents = await api.agentsRead();
   setPermissionAgents(hostAgents);
+  refreshHomeAgents(hostAgents);
   recountAsks();
   renderStrip();
 }
@@ -499,6 +504,7 @@ async function init() {
       ),
     ]);
     projects = projectsData;
+    projectsReadAt = new Date().toISOString();
     timelinePoints = timeline.points;
     timelineError = timeline.error;
     if (!currentProjectName || !projects.some((p) => p.name === currentProjectName)) currentProjectName = sortedProjects()[0]?.name ?? null;

@@ -68,6 +68,11 @@ export interface HomeMetric {
   /** One sentence of context. */
   note: string;
   source: string;
+  /**
+   * What date the figure is of (#81): for structure, the date of the newest commit measured;
+   * for notes, the snapshot's date. null when nothing was measured; absent for live figures.
+   */
+  asOf?: string | null;
 }
 
 export interface HomeAgent {

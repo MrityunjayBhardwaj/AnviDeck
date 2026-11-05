@@ -579,11 +579,13 @@ export async function readHome(budgetMs = HOME_BUDGET_MS): Promise<HomeResponse>
   const structureReading = structured === STILL_READING;
   const { list, results } = structureReading ? { list: null, results: [] } : structured;
   let newBreaks = 0, allowed = 0, measured = 0;
+  let measuredOf: string | null = null;
   const notMeasured: string[] = [];
   const measuredLines: string[] = [];
   for (const r of results) {
     if (r.status === "measured") {
       measured++;
+      if (r.measuredAt.date && (!measuredOf || Date.parse(r.measuredAt.date) > Date.parse(measuredOf))) measuredOf = r.measuredAt.date;
       const nNew = r.counts.divergence.new + r.counts.cycle.new;
       newBreaks += nNew;
       allowed += r.counts.divergence.grandfathered + r.counts.cycle.grandfathered;
@@ -640,6 +642,7 @@ export async function readHome(budgetMs = HOME_BUDGET_MS): Promise<HomeResponse>
     value: structureSource.status === "ok" || structureSource.status === "partial" ? String(newBreaks) : structureReading ? "still measuring" : "not measured",
     note: structureSource.status === "none" ? "No project has a design, so nothing is checked." : "Imports added since the baseline that the design does not allow.",
     source: structureSource.detail ? `${structureSource.label}: ${structureSource.detail}` : structureSource.label,
+    asOf: measuredOf,
   });
   metrics.push({
     id: "allowed-breaks",
@@ -647,7 +650,8 @@ export async function readHome(budgetMs = HOME_BUDGET_MS): Promise<HomeResponse>
     state: measured ? "ok" : "unknown",
     value: measured ? String(allowed) : structureReading ? "still measuring" : "not measured",
     note: "Known imports the design does not allow yet, kept in the baseline until fixed.",
-    source: structureSource.label,
+    source: structureSource.detail ? `${structureSource.label}: ${structureSource.detail}` : structureSource.label,
+    asOf: measuredOf,
   });
   const n = notes.value;
   const stale = n ? n.red + n.yellow : 0;
@@ -660,6 +664,7 @@ export async function readHome(budgetMs = HOME_BUDGET_MS): Promise<HomeResponse>
       ? `Snapshot of ${n.date} (UTC), ${Math.round((now - Date.parse(n.date)) / 86400000)} days old: ${n.yellow.toLocaleString("en-US")} point at code that changed since checked, ${n.red} at files that are gone. ${n.projects} projects${n.unmeasured.length ? `; not measured: ${n.unmeasured.join(", ")}` : ""}.`
       : notes.source.detail ?? "",
     source: notes.source.label,
+    asOf: n ? n.date : null,
   });
   const sourceList = { sessions: sessionsSource, prs: prsSource, structure: structureSource, notes: notes.source };
   const unreadable = Object.entries(sourceList).filter(([, s]) => s.status === "could-not-read" || s.status === "partial" || s.status === "not-measured" || s.status === "reading");

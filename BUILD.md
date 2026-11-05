@@ -173,7 +173,7 @@ ui/
   app.ts                  shell (#80): rail, URL hash per screen, selective re-render, Nav, timeline strip, WebSocket
   shell/                  routes (every screen and its hash), frame (top bar, rail, placeholders, strip), ⌘K palette
   api.ts, home-count.ts   API client; Home badge count
-  components/             CommandCenter (Home), ProjectView, CatalogueTree, Timeline, DiffViewer,
+  components/             HomeScreen (+ home-model), CommandCenter (old Home), ProjectView, CatalogueTree, Timeline, DiffViewer,
                           LiveSessions, AgentsView, MapView (+ map-model), CognitiveTrace,
                           ContextBudget, BrainView, SystemLens, CrossProject, RoutingView, GitHubTrace
   styles/deck.css
@@ -186,7 +186,7 @@ ref/                      ANVI_THESIS.md, DATA_EXAMPLES.md
 
 | View | Shows | Fate |
 |---|---|---|
-| Home (`CommandCenter.ts`) | one queue of PRs and agents, a one-line status, project list; each row's action is a link | rebuilt as the workspace Home (#81) |
+| Old Home (`CommandCenter.ts`) | one queue of PRs and agents, a one-line status, project list; each row's action is a link | replaced by the workspace Home (`HomeScreen.ts`, #81); the file is left in place, no longer rendered |
 | Project (`ProjectView.ts`, `CatalogueTree.ts`) | catalogues with REF and an "ungrounded only" filter, memory, grounding, read status | not named in #92 |
 | Timeline strip (`Timeline.ts`, `DiffViewer.ts`) | `~/.claude` commits; diff between two | not named in #92 |
 | Live Sessions | active Claude Code sessions | retire (#92) |
