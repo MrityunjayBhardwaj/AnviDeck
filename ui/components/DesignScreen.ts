@@ -371,7 +371,7 @@ export function DesignScreen(projectName: string | null, params: URLSearchParams
     const lines: string[] = [];
     const s = measured();
     if (s) lines.push(`Design and verdicts: anvi's structure guard (${s.source.label}), ${s.package.source} registry, measured at ${measuredPhrase(s)} (${s.refChosenBy}).`);
-    if (st.refusals?.status === "measured") lines.push(`Trial record: ${st.refusals.instrument.path} (sha256 ${st.refusals.instrument.sha256.slice(0, 12)}), run ${st.refusals.instrument.ranAt}; your calls from ${st.refusals.calls.file} (${st.refusals.calls.status} when read at ${st.refusals.calls.readAt}${Object.keys(st.recorded).length ? `; ${Object.keys(st.recorded).length} recorded on this page since` : ""}).`);
+    if (st.refusals?.status === "measured") lines.push(`Trial record: ${st.refusals.instrument.path} (sha256 ${st.refusals.instrument.sha256.slice(0, 12)}), run ${st.refusals.instrument.ranAt}; your calls from ${st.refusals.calls.file} (${st.refusals.calls.status} when read at ${st.refusals.calls.readAt}; ${st.refusals.calls.notListed} of your ${st.refusals.calls.ofProject} calls on ${st.refusals.project} are on edits this answer does not list${Object.keys(st.recorded).length ? `; ${Object.keys(st.recorded).length} recorded on this page since` : ""}).`);
     if (st.cost?.status === "measured") lines.push(`Cost curve: ${st.cost.command}`);
     if (st.hooks) lines.push(`Edit hooks: ${filesPhrase(st.hooks)}, read ${st.hooks.readAt}; ${st.hooks.notRead}.`);
     sources.replaceChildren(...lines.map((l) => el("div", {}, l)));

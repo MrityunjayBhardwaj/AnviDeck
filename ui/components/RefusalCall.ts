@@ -23,7 +23,9 @@ if (!document.querySelector('link[data-for="refusal-call"]')) {
 export interface RefusalCallTarget {
   /** The refusal's key: its tool_use id (shared/refusal-types.ts Refusal.key). */
   key: string;
-  project: string;
+  /** The project the page shows; when the page has none, `cwd` (the agent's folder) and the server finds the project from it (#179). */
+  project?: string;
+  cwd?: string;
   /** What the card shows about the blocked edit; recorded with the call so the record says what it was about. */
   refusal?: { session?: string; tool?: string; file?: string; at?: string };
 }
@@ -89,6 +91,7 @@ export function refusalCall(target: RefusalCallTarget): HTMLElement {
       ...(l.note ? [el("div", "rc-quote", `“${l.note}”`)] : []),
       ...(l.earlier.length ? [el("div", "rc-earlier", `earlier: ${l.earlier.join(" · ")}`)] : []),
       ...(l.damaged ? [el("div", "rc-warn", l.damaged)] : []),
+      ...(l.unverified ? [el("div", "rc-warn", l.unverified)] : []),
     );
   };
   const send = async (call: "right" | "wrong") => {
@@ -96,7 +99,7 @@ export function refusalCall(target: RefusalCallTarget): HTMLElement {
     out.className = "rc-out";
     out.textContent = `recording "${call}"…`;
     try {
-      const body = { project: w.target.project, call, ...(note.value.trim() ? { note: note.value } : {}), ...(w.target.refusal ? { refusal: w.target.refusal } : {}) };
+      const body = { ...(w.target.project ? { project: w.target.project } : { cwd: w.target.cwd }), call, ...(note.value.trim() ? { note: note.value } : {}), ...(w.target.refusal ? { refusal: w.target.refusal } : {}) };
       const r = await write<{ recorded: CallRecord; file: string }>("POST", `/api/refusals/${encodeURIComponent(w.target.key)}/call`, body);
       if (load?.state === "ok") load = { state: "ok", data: withRecorded(load.data, r.recorded) };
       else reloadCalls();

@@ -226,6 +226,7 @@ export async function readTranscriptLanes(sessionsRead: ReplaySessionsResponse, 
   let bad = 0;
   let bytes = 0;
   const skipped: string[] = [];
+  const scanned: { s: (typeof overlapping)[number]; t: ScannedFile["turns"]; e: ScannedFile["edits"] }[] = [];
   // Newest first, so a scan stopped at the byte budget keeps the most recent sessions.
   for (const s of [...overlapping].sort((a, b) => (b.lastTs ?? b.modifiedAt).localeCompare(a.lastTs ?? a.modifiedAt))) {
     if (bytes + s.sizeBytes > maxBytes && bytes > 0) {
@@ -244,8 +245,19 @@ export async function readTranscriptLanes(sessionsRead: ReplaySessionsResponse, 
       continue;
     }
     bad += f.badLines;
-    const t = f.turns.filter((x) => inWindow(x.at, w));
-    const e = f.edits.filter((x) => inWindow(x.at, w));
+    scanned.push({ s, t: f.turns.filter((x) => inWindow(x.at, w)), e: f.edits.filter((x) => inWindow(x.at, w)) });
+  }
+  // A forked or resumed session repeats earlier records under its own session id (#211). Each record
+  // is counted once: an edit by its tool_use id, a turn by its record uuid, kept by the session that
+  // started first (the one the record was made in), and the lanes say how many repeats were dropped.
+  const seenTurns = new Set<string>();
+  const seenEdits = new Set<string>();
+  let turnRepeats = 0;
+  let editRepeats = 0;
+  const started = (x: (typeof scanned)[number]) => x.s.firstTs ?? x.s.modifiedAt;
+  for (const { s, t: allT, e: allE } of scanned.sort((a, b) => started(a).localeCompare(started(b)) || a.s.sessionId.localeCompare(b.s.sessionId))) {
+    const t = allT.filter((x) => (seenTurns.has(x.uuid) ? (turnRepeats++, false) : (seenTurns.add(x.uuid), true)));
+    const e = allE.filter((x) => (seenEdits.has(x.id) ? (editRepeats++, false) : (seenEdits.add(x.id), true)));
     for (const x of t) turns.push({ kind: "turn", at: x.at, id: `${s.sessionId}:${x.uuid}`, session: s.sessionId, prompt: x.prompt, origin: x.origin });
     for (const x of e)
       edits.push({ kind: "edit", at: x.at, id: x.id, session: s.sessionId, tool: x.tool, file: x.file.startsWith(projectPath + "/") ? relative(projectPath, x.file) : x.file });
@@ -262,9 +274,11 @@ export async function readTranscriptLanes(sessionsRead: ReplaySessionsResponse, 
   const st = (n: number): LaneRead["status"] => (partial ? (n || overlapping.length > failed.length ? "partial" : "unreadable") : n ? "ok" : "none");
   const detail = [`${overlapping.length} sessions overlap the window; ${Math.round(bytes / 1e6)} MB scanned. Subagent transcripts are not included.`, ...notes].join(" ");
   sessions.sort((a, b) => a.first.localeCompare(b.first));
+  const repeats = (n: number, what: string) =>
+    `${n} ${what}${n === 1 ? "" : "s"} repeated by a forked or resumed session dropped (counted once, by ${what === "edit" ? "tool_use id" : "record uuid"})`;
   return {
-    turn: lane("turn", `${source}: user prompts that are not tool results, commands or subagent records`, turns, w, cap, st(turns.length), detail),
-    edit: lane("edit", `${source}: Edit, Write, MultiEdit and NotebookEdit calls (the call, whatever its outcome)`, edits, w, cap, st(edits.length), detail),
+    turn: lane("turn", `${source}: user prompts that are not tool results, commands or subagent records; ${repeats(turnRepeats, "turn")}`, turns, w, cap, st(turns.length), detail),
+    edit: lane("edit", `${source}: Edit, Write, MultiEdit and NotebookEdit calls (the call, whatever its outcome); ${repeats(editRepeats, "edit")}`, edits, w, cap, st(edits.length), detail),
     sessions,
   };
 }
@@ -313,7 +327,10 @@ export function readRulingLane(project: string, w: HistoryWindow, cap: number, d
     ...(c.refusal ? { refusal: c.refusal } : {}),
     superseded: latestAt.get(c.key) !== c.at,
   }));
-  const detail = read.exists ? (read.unreadableLines ? `${read.unreadableLines} of ${read.lines} lines are not calls and are not shown` : undefined) : "no call has been recorded yet (the file does not exist)";
+  const unverified = `${read.unverified} of ${read.calls.length} calls on this project were recorded without a measured refusal to check their key against`;
+  const detail = read.exists
+    ? [read.unreadableLines ? `${read.unreadableLines} of ${read.lines} lines are not calls and are not shown.` : "", `${unverified}.`].filter(Boolean).join(" ")
+    : "no call has been recorded yet (the file does not exist)";
   return lane("ruling", source, events, w, cap, read.status === "partial" ? "partial" : undefined, detail);
 }
 

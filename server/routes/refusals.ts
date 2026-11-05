@@ -1,9 +1,11 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { sameOriginWrites } from "../guard";
-import { readRefusals, RefusalsError, type ReadOptions } from "../readers/refusals";
+import { measuredFor, readRefusals, RefusalsError, type ReadOptions } from "../readers/refusals";
 import { readCalls } from "../readers/calls";
 import { CallError, CallStore, callFrom } from "../calls";
+import { checkKey, type ProjectPick } from "../call-project";
+import type { RefusalsMeasured } from "../../shared/refusal-types";
 
 /**
  * Refusals by the design guard and your calls on them (#86), mounted at /api:
@@ -14,11 +16,20 @@ import { CallError, CallStore, callFrom } from "../calls";
  *        ask again. Answers are cached (their age is in `cache`).
  *   GET  /api/calls[?project=<name>][&key=<refusal key>]
  *        your calls, read from calls.jsonl (latest per refusal, earlier ones kept).
- *   POST /api/refusals/:key/call   { project, call: "right" | "wrong", note?, refusal? }
- *        records your call. A write: the guard installed on the whole app admits it only from
+ *   POST /api/refusals/:key/call   { project | cwd, call: "right" | "wrong", note?, refusal? }
+ *        records your call. Without `project`, the agent's folder `cwd` names it (#179). A key a
+ *        measured answer should list and does not is refused (400); with no answer to check it
+ *        against, the call is recorded marked `unverified` (#178). A write: the guard installed on the whole app admits it only from
  *        AnviDeck's own pages with this server's token, and the action log records it either way.
  */
-export function refusalRoutes(deps: { store?: CallStore; read?: Partial<ReadOptions> } = {}): Hono {
+export function refusalRoutes(deps: {
+  store?: CallStore;
+  read?: Partial<ReadOptions>;
+  /** The measured answers held for a project (default: the refusals reader's cache). */
+  measured?: (project: string) => RefusalsMeasured[];
+  /** How an agent's folder maps to its project (default: through its git common dir and the known projects). */
+  projectOf?: (cwd: string) => ProjectPick;
+} = {}): Hono {
   const store = deps.store ?? new CallStore();
   const r = new Hono();
   r.onError((e, c) => {
@@ -52,7 +63,12 @@ export function refusalRoutes(deps: { store?: CallStore; read?: Partial<ReadOpti
       throw new CallError(400, "body must be JSON");
     }
     if (!body || typeof body !== "object" || Array.isArray(body)) throw new CallError(400, "body must be a JSON object");
-    const rec = callFrom(c.req.param("key") ?? "", body as Record<string, unknown>);
+    const rec = callFrom(c.req.param("key") ?? "", body as Record<string, unknown>, undefined, deps.projectOf);
+    // The key must name a refusal the instrument counted (#178): refused when a measured answer that
+    // could have seen it does not list it; recorded but marked unverified when none could.
+    const check = checkKey(rec.key, rec.refusal?.at, (deps.measured ?? measuredFor)(rec.project));
+    if (check.state === "not-listed") throw new CallError(400, `not recorded: ${check.reason}`);
+    if (check.state === "unverified") rec.unverified = check.reason;
     store.append(rec);
     return c.json({ recorded: rec, file: store.file }, 201);
   });

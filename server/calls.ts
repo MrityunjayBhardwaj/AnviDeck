@@ -3,6 +3,7 @@ import { DEFAULT_AGENT_DIR } from "./agents/registry";
 import { CALLS_FILE } from "./readers/calls";
 import { join } from "node:path";
 import type { CallRecord, CallVerdict } from "../shared/refusal-types";
+import { projectOfFolder, type ProjectPick } from "./call-project";
 
 /**
  * Record your call on a blocked edit (#86): one JSON line appended to calls.jsonl in AnviDeck's
@@ -28,10 +29,20 @@ export const MAX_NOTE = 2000;
 const str = (v: unknown, max: number): string | undefined =>
   typeof v === "string" && v !== "" ? v.slice(0, max) : undefined;
 
-/** Check a call's body and build the line it records. Throws CallError(400) with the reason. */
-export function callFrom(key: string, body: Record<string, unknown>, now: () => Date = () => new Date()): CallRecord {
+/**
+ * Check a call's body and build the line it records. Throws CallError(400) with the reason.
+ * `project` is the page's when it names one; else `cwd` (the agent's folder) is mapped to its
+ * project through its git common dir (#179), and the record says how (`projectFrom`).
+ */
+export function callFrom(key: string, body: Record<string, unknown>, now: () => Date = () => new Date(), projectOf: (cwd: string) => ProjectPick = (c) => projectOfFolder(c)): CallRecord {
   if (!KEY_RE.test(key)) throw new CallError(400, `the refusal key ${JSON.stringify(key)} is not one this server records (letters, digits, _ : -)`);
-  const project = body.project;
+  let project = body.project;
+  let projectFrom = "the page";
+  if (project === undefined || project === null) {
+    const cwd = body.cwd;
+    if (typeof cwd !== "string" || !cwd.startsWith("/") || cwd.length > 1000) throw new CallError(400, "project must be a project name, or cwd the agent's folder (an absolute path) to find it from");
+    ({ project, projectFrom } = projectOf(cwd));
+  }
   if (typeof project !== "string" || !PROJECT_RE.test(project)) throw new CallError(400, "project must be a project name");
   const call = body.call;
   if (call !== "right" && call !== "wrong") throw new CallError(400, 'call must be "right" or "wrong"');
@@ -39,7 +50,7 @@ export function callFrom(key: string, body: Record<string, unknown>, now: () => 
   if (note !== undefined && note !== null && typeof note !== "string") throw new CallError(400, "note must be text");
   // A note longer than this is refused, not cut: the record must hold exactly what you wrote.
   if (typeof note === "string" && note.length > MAX_NOTE) throw new CallError(400, `note is ${note.length} characters; at most ${MAX_NOTE}`);
-  const rec: CallRecord = { at: now().toISOString(), key, project, call: call as CallVerdict };
+  const rec: CallRecord = { at: now().toISOString(), key, project, call: call as CallVerdict, projectFrom };
   if (typeof note === "string" && note.trim() !== "") rec.note = note;
   const r = body.refusal;
   if (r && typeof r === "object" && !Array.isArray(r)) {

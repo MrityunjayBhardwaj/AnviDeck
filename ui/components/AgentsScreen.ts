@@ -768,8 +768,9 @@ function refusalCard(r: Refusal, t: ToolCall, cwd: string | undefined): HTMLElem
   card.append(el("div", "aw-note", `${r.designId ? `Judged under design ${r.designId}. ` : ""}The edit did not land; the agent read this refusal.`));
   const whole = el("details", "", el("summary", "aw-note", "The refusal as the agent read it"), el("pre", "", r.text));
   card.append(whole);
-  // Your call on it (#86), keyed by the refused call's tool_use id; the project is the screen's, else the agent's folder name.
-  card.append(refusalCall({ key: t.id, project: S.deps?.project ?? cwd?.split("/").filter(Boolean).pop() ?? "unknown",
+  // Your call on it (#86), keyed by the refused call's tool_use id; the project is the screen's, else
+  // the server finds it from the agent's folder through its git common dir (#179).
+  card.append(refusalCall({ key: t.id, ...(S.deps?.project ? { project: S.deps.project } : { cwd }),
     refusal: { tool: t.name, file: r.file, at: t.at ?? undefined } }));
   return card;
 }

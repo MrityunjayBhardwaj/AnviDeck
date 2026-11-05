@@ -142,8 +142,12 @@ export interface RefusalsMeasured extends Base {
   /** The instrument's whole text report, verbatim. */
   report: string;
   cache: RefusalCache;
-  /** Where your calls were read from, and whether they could be (read at answer time, not cached). */
-  calls: Omit<CallsRead, "calls" | "byKey">;
+  /**
+   * Where your calls were read from, and whether they could be (read at answer time, not cached).
+   * `ofProject`: refusals of this project you made a call on; `notListed`: how many of those this
+   * answer does not list (outside its window, or a key no refusal has), said every time (#178).
+   */
+  calls: Omit<CallsRead, "calls" | "byKey"> & { ofProject: number; notListed: number };
 }
 
 /** The instrument ran and said it could not measure (no edit in the window, no transcripts…). */
@@ -197,6 +201,17 @@ export interface CallRecord {
   note?: string;
   /** What the page showed when you made the call, so the record says what it was about. */
   refusal?: { session?: string; tool?: string; file?: string; at?: string };
+  /**
+   * How `project` was decided (#179): "the page" when the page named it; else from the agent's
+   * folder through its git common dir, or the folder's own name when no known project owns it.
+   */
+  projectFrom?: string;
+  /**
+   * Set when the key could not be checked against a measured answer of anvi's instrument (none
+   * held, or none that could have seen this refusal): why. A key that a measured answer should
+   * list and does not is refused instead (#178).
+   */
+  unverified?: string;
 }
 
 /** The latest call on one refusal, with the earlier ones kept as history (oldest first). */
@@ -216,6 +231,8 @@ export interface CallsRead {
   lines: number;
   /** Lines that were not a call (torn or damaged): counted, never dropped silently. */
   unreadableLines: number;
+  /** Of the calls returned, those marked unverified (their key was not checked against a measured refusal). Said every time, 0 included. */
+  unverified: number;
   /** Every call read, in the order recorded (filtered by ?project / ?key when asked). */
   calls: CallRecord[];
   /** By refusal key. */
