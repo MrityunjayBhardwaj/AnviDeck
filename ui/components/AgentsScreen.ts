@@ -18,6 +18,7 @@
 import { write, WriteError } from "../write";
 import { agentRequests, keepCardsOf } from "./PermissionRequests";
 import { refusalCall } from "./RefusalCall";
+import { elsewhereText, elsewhereUrl } from "../../shared/agent-elsewhere";
 import type { AgentsRead } from "../shell/activity";
 import type { AgentSessionResponse } from "../../shared/agents-screen-types";
 import type { ReplaySessionsResponse } from "../../shared/replay-types";
@@ -66,6 +67,8 @@ interface Overview {
   cap: number;
   running: number;
   registry: string;
+  /** Set when the registry file could not be read: the agents listed are only this server's (#104). */
+  registryUnread?: string;
 }
 
 // ── state kept across renders (the screen is rebuilt on every navigation) ───────────────────
@@ -311,7 +314,9 @@ function hostLine(read: AgentsRead): HTMLElement {
   else if (read.state === "off") line.append(el("span", "aw-err", `Agent host off: ${read.reason}`));
   else if (read.state === "failed") line.append(el("span", "aw-err", `Could not read the agent host: ${read.reason}`));
   else {
-    const running = (read.agents as unknown as HostAgent[]).filter((a) => a.running).length;
+    const hosted = read.agents as unknown as HostAgent[];
+    const running = hosted.filter((a) => a.running).length;
+    const elsewhere = hosted.filter((a) => a.runsElsewhere).length;
     line.append(`Agent host: ${read.agents.length} agent${read.agents.length === 1 ? "" : "s"}, ${running} running`);
     const o = S.overview;
     if (o.state === "ok") {
@@ -319,7 +324,10 @@ function hostLine(read: AgentsRead): HTMLElement {
       line.append(` of at most ${o.data.cap} · login `,
         l.error ? el("span", "aw-err", `could not read (${l.error})`) : el("span", l.ok ? "aw-ok" : "aw-err", `${l.authMethod ?? "?"} · plan ${l.plan ?? "?"}${l.loggedIn ? "" : " · NOT logged in"}`),
         ` · registry ${o.data.registry} (GET /api/agents)`);
+      if (o.data.registryUnread) line.append(" · ", el("span", "aw-err", `${o.data.registryUnread}; only this server's own agents are listed`));
     } else if (o.state === "error") line.append(el("span", "aw-err", ` · login and cap could not be read (${o.error})`));
+    // Another AnviDeck server sharing the registry runs these (#104); they are not in this server's count or cap.
+    if (elsewhere) line.append(` · ${elsewhere} running in another AnviDeck server`);
   }
   return line;
 }
@@ -405,7 +413,18 @@ function controls(a: HostAgent, out: HTMLElement): HTMLElement {
       out.textContent = `${label} refused: ${(e as Error).message}`;
     }
   };
-  if (a.running) {
+  if (a.runsElsewhere) {
+    // Another server runs it (#104): no Stop or Resume here, say where it is instead.
+    const note = el("span", "aw-note", `${elsewhereText(a.runsElsewhere)}; act on it there `);
+    note.dataset.elsewhere = String(a.runsElsewhere.port ?? "");
+    const url = elsewhereUrl(a.runsElsewhere, location, `#agents?agent=${encodeURIComponent(a.id)}`);
+    if (url) {
+      const link = el("a", "", "open");
+      link.setAttribute("href", url);
+      note.append(link);
+    }
+    box.append(note);
+  } else if (a.running) {
     const stop = el("button", "aw-btn sm bad", "Stop");
     stop.dataset.act = "stop";
     stop.onclick = () => void act("Stop", `/api/agents/${encodeURIComponent(a.id)}/stop`);

@@ -24,13 +24,17 @@ export function agentRoutes(host: AgentHost, login: () => Promise<LoginStatus>, 
 
   r.get("/", async (c) => {
     const claude = resolveClaude();
+    const snap = host.snapshot();
     return c.json({
       claude,
       login: await login(),
       cap: host.cap,
       running: host.running,
       registry: host.registry.dir,
-      agents: host.list(),
+      // This server, as its agents name it; an agent with runsElsewhere is another server's (#104).
+      server: { pid: host.owner.pid, port: host.owner.port },
+      ...(snap.unread ? { registryUnread: snap.unread } : {}),
+      agents: snap.agents,
     });
   });
 

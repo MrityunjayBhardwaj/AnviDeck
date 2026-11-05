@@ -66,7 +66,7 @@ The prototype's frame replaces today's sidebar:
 
 - Starts an agent with a folder, a prompt and your normal settings: user, project and local settings load, so anvi's hooks and CLAUDE.md apply.
 - Streams every SDK message to the page over the existing WebSocket and keeps it per agent.
-- Keeps a registry of AnviDeck-started agents on disk (id, session id, folder, issue, status). After a server restart each shows as stopped, with its transcript, and can be resumed.
+- Keeps a registry of AnviDeck-started agents on disk (id, session id, folder, issue, status, and the server that runs it: pid and port). Several servers may share it (#104): each write changes only its own records, under a lock file, and a server lists every agent but acts only on its own; another live server's agent shows where it runs and is refused (409) here. An agent whose server is gone (its pid is not alive, or now belongs to a process that started after that server, #224) shows as stopped, with its transcript, and can be resumed by any server.
 - Stops an agent, and caps how many run at once.
 - Statuses: starting, working, waiting on you, done, failed, stopped. "Could not start" never shows as "done".
 - Feeds each agent through a stream of user messages, so a message or a diff comment (file, line, the line's text) arrives on its next turn, with delivery shown (#79, on main: `POST /api/agents/:id/message`; a stopped agent answers 409 with `resumable`).
@@ -77,10 +77,10 @@ The prototype's frame replaces today's sidebar:
 ### Starting an agent from an issue (#78, on main)
 
 **Start agent** on an issue (⌘K "Start an agent on an issue", and a box on `/agent-host`; Work's Start agent on each Todo issue (#85); Home's button comes with #81): `POST /api/agents/from-issue { project | repo, issue, note? }`, previewed without writing by `GET /api/agents/from-issue/plan` (`server/agents/from-issue.ts`, `worktree.ts`, `issue-prompt.ts`, `board.ts`).
-- Creates the worktree `<main checkout>/.claude/worktrees/issue-<n>` (beside Claude Code's own) on a new branch `feat|fix|chore/<n>-<slug>` (fix for a `bug` label, chore for `chore` or `documentation`, else feat), from the local default branch.
+- Creates the worktree `<main checkout>/.claude/worktrees/issue-<n>` (beside Claude Code's own) on a new branch `feat|fix|chore/<n>-<slug>` (fix for a `bug` label, chore for `chore` or `documentation`, else feat), from the local default branch, or from origin's when the local one is only behind it as last fetched (no fetch is made); the plan, the dialog and the agent's prompt say "N commits behind origin/main as of the last fetch" (#136).
 - Links `.anvi` and `ref` into it, each to where the main checkout's resolves (what anvi's `worktreeLinkGap` says a linked worktree needs). A tracked `ref` stays the branch's own copy. A link the repo does not already ignore is added to its `info/exclude`. Each link is read back, and anvi's own `worktreeLinkGap` is asked what is still missing.
 - Starts the agent with a prompt built from the issue (repo, number, title, body) plus the workflow (issue → branch → fix → test and observe → PR → self-review; agents never merge) and `PR_SECTIONS_INSTRUCTIONS`. An optional note comes last and wins where it differs.
-- Refuses, saying why (409/404 with `refusal`): unknown project or repo, no GitHub origin, no such issue, issue closed, worktree or branch (local or origin's) already exists, or the main checkout is on the base branch with uncommitted changes to tracked files; and, before anything is made, the agent cap. If the agent cannot start, the fresh worktree and branch are removed.
+- Refuses, saying why (409/404 with `refusal`): unknown project or repo, no GitHub origin, no such issue, issue closed, worktree or branch (local or origin's) already exists, or the main checkout is on the base branch with uncommitted changes to tracked files, or the local base branch and origin's have diverged (`diverged`); and, before anything is made, the agent cap. If the agent cannot start, the fresh worktree and branch are removed.
 - Moves the issue to In Progress on the one board linked to the repository (ids derived each time). Says "no board" when none is linked, and does not guess between several.
 
 ### Evidence and self-review (#83, planned)

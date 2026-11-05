@@ -17,6 +17,10 @@ export interface IssuePromptInput {
   branch: string;
   base: string;
   baseSha: string;
+  /** The ref the worktree was made from (`origin/main` when the local main was behind, #136); default `base`. */
+  startFrom?: string;
+  /** How the local base compared with origin's, in one sentence (compareWithOrigin's summary). */
+  upstream?: string;
   worktree: string;
   /** One line per link, as it was made and read back. */
   links: string[];
@@ -30,7 +34,7 @@ export function buildIssuePrompt(p: IssuePromptInput): string {
     `You are working on issue #${p.number} in ${p.repo}: "${p.title}"`,
     p.url,
     "",
-    `Your working folder is ${p.worktree}: a git worktree on the branch ${p.branch}, made from ${p.base} at ${p.baseSha.slice(0, 12)}. Work only in this folder and only on this branch.`,
+    `Your working folder is ${p.worktree}: a git worktree on the branch ${p.branch}, made from ${p.startFrom ?? p.base} at ${p.baseSha.slice(0, 12)}${p.upstream ? ` (${p.upstream})` : ""}. Work only in this folder and only on this branch.`,
     `The project's anvi knowledge is linked into it:`,
     ...p.links.map((l) => `- ${l}`),
     "",
