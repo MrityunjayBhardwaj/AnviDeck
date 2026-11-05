@@ -1,8 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { knownProjects, type KnownProject } from "../agents/from-issue";
-import { githubRepoOf, mainCheckout, type Run, type RunResult } from "../agents/worktree";
-import { linkedBoards } from "../agents/board";
+import { githubRepoOf, knownProjects, mainCheckout, type KnownProject, type Run, type RunResult } from "./repo";
+import { linkedBoards } from "./boards";
 import { parsePrSections } from "../../shared/pr-evidence";
 import type { BoardItem, BoardRead, CiRead, IssuesRead, PrFacts } from "../../shared/work-types";
 

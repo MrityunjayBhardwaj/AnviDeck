@@ -159,7 +159,7 @@ function mergeControl(project: string, pr: PrFacts, out: HTMLElement): HTMLEleme
   const box = el("span", { class: "wk-merge" });
   const blocked = mergeBlocked(pr);
   const head = pr.headRefOid;
-  const btn = el("button", { class: "sh-btn wk-merge-btn", type: "button", "data-head": head, title: blocked ?? `You merge; agents never do. Merges exactly ${head}.` }, mergeLabel(head));
+  const btn = el("button", { class: "sh-btn wk-merge-btn", type: "button", "data-head": head, "data-base": pr.baseRefName, title: blocked ?? `You merge; agents never do. Merges exactly ${head}.` }, mergeLabel(head));
   if (blocked) {
     btn.disabled = true;
     box.append(btn);
@@ -180,11 +180,13 @@ function mergeControl(project: string, pr: PrFacts, out: HTMLElement): HTMLEleme
     cancel.disabled = true;
     out.replaceChildren(el("span", { class: "sh-dim" }, "Asking GitHub to merge…"));
     try {
-      // The head sent is the one this button was built with, read from its data attribute.
-      const a = await write<MergeAnswer>("POST", `/api/prs/${pr.number}/merge`, { project, head: btn.dataset.head });
+      // The head and base sent are the ones this button was built with (and the confirmation
+      // named), read from its data attributes; the server refuses if either changed.
+      const a = await write<MergeAnswer>("POST", `/api/prs/${pr.number}/merge`, { project, head: btn.dataset.head, base: btn.dataset.base });
       const back = a.readBack.state === "read" ? `merge commit ${a.readBack.mergeCommit ? shortSha(a.readBack.mergeCommit) : "?"}` : `read-back: ${a.readBack.reason}`;
+      const odd = a.ghFailed ? ` · gh reported "${a.ghFailed}", but GitHub reads it back as merged` : "";
       box.replaceChildren();
-      out.replaceChildren(el("span", { class: "wk-ok", id: `wk-merged-${pr.number}` }, `Merged #${a.number} at ${shortSha(a.head)} (squash) · ${back}`));
+      out.replaceChildren(el("span", { class: "wk-ok", id: `wk-merged-${pr.number}` }, `Merged #${a.number} at ${shortSha(a.head)} into ${a.base} (squash) · ${back}${odd}`));
     } catch (e) {
       const text = e instanceof WriteError ? refusalText(e.status, e.body) : `Not done: ${(e as Error).message}`;
       out.replaceChildren(el("span", { class: "wk-bad", id: `wk-merge-refused-${pr.number}` }, text));

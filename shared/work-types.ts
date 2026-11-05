@@ -153,7 +153,11 @@ export interface MergeAnswer {
   repo: string;
   number: number;
   head: string;
+  /** The branch it was merged into: the one the page showed. */
+  base: string;
   method: "squash";
+  /** gh reported a failure, yet GitHub read the PR back as merged (a timeout, a dropped connection): gh's words. */
+  ghFailed?: string;
   /** Read back after the merge; "unreadable" never turns the merge into a failure. */
   readBack: { state: "read"; mergeCommit: string | null; mergedAt: string | null } | { state: "unreadable"; reason: string };
 }

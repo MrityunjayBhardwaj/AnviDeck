@@ -1,5 +1,8 @@
 import { existsSync, statSync } from "node:fs";
-import { discoverProjects } from "../readers/projects";
+import { knownProjects, type KnownProject } from "../readers/repo";
+
+// AnviDeck's project list lives with the readers (#85); re-exported for the agent host.
+export { knownProjects, type KnownProject };
 import { HostError, type AgentHost, type AgentView } from "./host";
 import { buildIssuePrompt } from "./issue-prompt";
 import { moveToInProgress, type BoardResult } from "./board";
@@ -41,11 +44,6 @@ import {
  *   cap / no-claude  the agent host could not start one now (checked before anything is made)
  */
 
-export interface KnownProject {
-  name: string;
-  path: string;
-}
-
 export interface FromIssueDeps {
   run?: Run;
   /** The projects AnviDeck knows, as its project list resolves them. */
@@ -85,12 +83,6 @@ export interface Started extends Plan {
 
 const refuse = (status: 400 | 404 | 409 | 502, refusal: string, why: string, detail: Record<string, unknown> = {}) =>
   new HostError(status, why, { refusal, ...detail });
-
-/** AnviDeck's project list (the same discovery GET /api/projects uses): name and resolved path. */
-export function knownProjects(): KnownProject[] {
-  const d = discoverProjects();
-  return d.status === "ok" ? d.projects.filter((p) => p.decoded).map((p) => ({ name: p.name, path: p.decoded! })) : [];
-}
 
 export class FromIssue {
   private readonly run: Run;

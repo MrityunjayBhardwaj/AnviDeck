@@ -1,24 +1,18 @@
-import { Hono } from "hono";
-import type { Context } from "hono";
-import { sameOriginWrites } from "../guard";
-import type { KnownProject } from "../agents/from-issue";
-import type { Run } from "../agents/worktree";
-import { knownProjects, readBoard, readOpenPrs, resolveProject, timedRun, WorkError } from "../work/github";
-import { conflictsOf, WORK_TMP } from "../work/conflicts";
-import { createIssue, mergePr } from "../work/act";
+import { Hono, type ErrorHandler } from "hono";
+import { knownProjects, readBoard, readOpenPrs, resolveProject, timedRun, WorkError } from "../readers/work";
+import { conflictsOf, WORK_TMP } from "../readers/work-conflicts";
+import type { KnownProject, Run } from "../readers/repo";
 import type { BoardResponse, PrsResponse } from "../../shared/work-types";
 
 /**
- * The Work screen (#85), mounted at /api:
+ * The Work screen's reads (#85), mounted at /api. Reads only: the actions (New issue, Merge)
+ * are in work-actions.ts, so this file never imports the write guard or an actor.
  *
  *   GET  /api/work/board?project=   the board by Status column, or the open issues when there is no board
  *   GET  /api/work/prs?project=     open PRs: workflow facts, CI, closing refs, conflicts (git merge-tree)
- *   POST /api/issues                { project, title, body? }  files an issue (gh issue create)
- *   POST /api/prs/:n/merge          { project, head }          merges only that head (squash), or 409
  *
- * The POSTs are writes: the guard installed on the whole app (server/guard.ts) lets them through
- * only with this server's Origin and token, and appends each one, accepted or refused, to the
- * action log. Only AnviDeck's own pages carry the token, and Merge is a button you press there.
+ * GET /api/work/prs writes only in its scratch folder (ANVIDECK_WORK_TMP): see
+ * server/readers/work-conflicts.ts.
  */
 
 export interface WorkDeps {
@@ -28,27 +22,20 @@ export interface WorkDeps {
   now?: () => Date;
 }
 
+/** A WorkError answers its own status and detail; anything else is a 500. */
+export const onWorkError: ErrorHandler = (e, c) => {
+  if (e instanceof WorkError) return c.json({ ...e.detail, error: e.message }, e.status);
+  console.error("[work]", e);
+  return c.json({ error: (e as Error).message }, 500);
+};
+
 export function workRoutes(deps: WorkDeps = {}): Hono {
   // gh and git reads can stall on the network: each command gets at most a minute.
   const run = deps.run ?? timedRun(60_000);
   const projects = deps.projects ?? knownProjects;
   const now = deps.now ?? (() => new Date());
   const r = new Hono();
-
-  r.onError((e, c) => {
-    if (e instanceof WorkError) return c.json({ ...e.detail, error: e.message }, e.status);
-    console.error("[work]", e);
-    return c.json({ error: (e as Error).message }, 500);
-  });
-
-  const body = async (c: Context): Promise<Record<string, unknown>> => {
-    try {
-      const b = await c.req.json();
-      return b && typeof b === "object" && !Array.isArray(b) ? (b as Record<string, unknown>) : {};
-    } catch {
-      throw new WorkError(400, "body must be JSON");
-    }
-  };
+  r.onError(onWorkError);
 
   r.get("/work/board", async (c) => {
     const p = await resolveProject(run, projects, c.req.query("project") ?? "");
@@ -77,20 +64,6 @@ export function workRoutes(deps: WorkDeps = {}): Hono {
       prs: read.prs.map((x) => ({ ...x, conflicts: conflicts.get(x.number) ?? { state: "unchecked", reason: "not checked" } })),
     };
     return c.json(out);
-  });
-
-  r.post("/issues", sameOriginWrites, async (c) => {
-    const b = await body(c);
-    const p = await resolveProject(run, projects, typeof b.project === "string" ? b.project : "");
-    return c.json(await createIssue(run, p.repo, b.title, b.body), 201);
-  });
-
-  r.post("/prs/:n/merge", sameOriginWrites, async (c) => {
-    const n = c.req.param("n");
-    if (!/^\d+$/.test(n)) throw new WorkError(400, "PR number must be a whole number");
-    const b = await body(c);
-    const p = await resolveProject(run, projects, typeof b.project === "string" ? b.project : "");
-    return c.json(await mergePr(run, p.repo, Number(n), typeof b.head === "string" ? b.head : ""));
   });
 
   return r;

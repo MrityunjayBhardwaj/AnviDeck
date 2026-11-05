@@ -225,6 +225,15 @@ describe("merge", () => {
     expect(refusalText(502, { error: "offline" })).toBe("Not done: offline");
   });
 
+  test("a base-moved refusal names both branches; an unknown merge is never 'Not done'", () => {
+    const t = refusalText(409, { error: "x", refusal: "base-moved", shownBase: "feat/723-place", currentBase: "main" });
+    expect(t).toContain("now merges into main, not feat/723-place");
+    expect(t).toContain("nothing merged");
+    const u = refusalText(502, { error: "not known whether PR #7 merged: …", refusal: "merge-unknown" });
+    expect(u.startsWith("Unknown whether it merged")).toBe(true);
+    expect(u).not.toContain("Not done");
+  });
+
   test("#work?pr=N focuses one PR", () => {
     expect(focusedPr(new URLSearchParams("pr=12"))).toBe(12);
     expect(focusedPr(new URLSearchParams("pr=x"))).toBeNull();

@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type { Run } from "../agents/worktree";
+import type { Run } from "./repo";
 import type { PairResult, PrConflicts } from "../../shared/work-types";
 
 /**

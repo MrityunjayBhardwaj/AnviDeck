@@ -6,9 +6,10 @@ import { Hono } from "hono";
 import { installGuard } from "../server/guard";
 import { ActionLog, type ActionRecord } from "../server/action-log";
 import { workRoutes } from "../server/routes/work";
+import { workActionRoutes } from "../server/routes/work-actions";
 import { spawnRun, type Run, type RunResult } from "../server/agents/worktree";
-import { boardItem, partOfRefs, readBoard } from "../server/work/github";
-import { conflictsOf, pairFrom } from "../server/work/conflicts";
+import { boardItem, partOfRefs, readBoard } from "../server/readers/work";
+import { conflictsOf, pairFrom } from "../server/readers/work-conflicts";
 import { createIssue, mergePr } from "../server/work/act";
 import type { BoardResponse, PrsResponse } from "../shared/work-types";
 
@@ -61,7 +62,9 @@ async function server(rules: [string, RunResult | ((args: string[]) => RunResult
   const log = new ActionLog(scratch("work-log-"));
   const app = new Hono();
   installGuard(app, { bind: "127.0.0.1", token: TOKEN, log });
-  app.route("/api", workRoutes({ run, projects: () => [{ name: "widget", path: main }], tmpRoot: scratch("work-tmp-") }));
+  const deps = { run, projects: () => [{ name: "widget", path: main }], tmpRoot: scratch("work-tmp-") };
+  app.route("/api", workRoutes(deps));
+  app.route("/api", workActionRoutes(deps));
   const send = (path: string, body: unknown, headers: Record<string, string> = { origin: `http://${HOSTNAME}`, "x-anvideck-token": TOKEN }) =>
     app.request(`http://${HOSTNAME}${path}`, { method: "POST", headers: { host: HOSTNAME, "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
   const get = (path: string) => app.request(`http://${HOSTNAME}${path}`, { headers: { host: HOSTNAME } });
@@ -75,12 +78,12 @@ async function server(rules: [string, RunResult | ((args: string[]) => RunResult
   return { send, get, lines, f };
 }
 
-const view = (state: string, head: string, isDraft = false) => ok(JSON.stringify({ number: 7, state, isDraft, headRefOid: head }));
+const view = (state: string, head: string, isDraft = false, base = "main") => ok(JSON.stringify({ number: 7, state, isDraft, headRefOid: head, baseRefName: base }));
 
 describe("merge refuses a head that moved", () => {
   test("the page's head is no longer the PR's: 409 with both heads, gh pr merge is never run, the refusal is logged", async () => {
     const s = await server([["gh pr view 7", view("OPEN", MOVED)], ["gh pr merge", ok()]]);
-    const res = await s.send("/api/prs/7/merge", { project: "widget", head: HEAD });
+    const res = await s.send("/api/prs/7/merge", { project: "widget", head: HEAD, base: "main" });
     expect(res.status).toBe(409);
     const j = (await res.json()) as Record<string, unknown>;
     expect(j).toMatchObject({ refusal: "head-moved", reviewedHead: HEAD, currentHead: MOVED });
@@ -88,7 +91,7 @@ describe("merge refuses a head that moved", () => {
     expect(s.f.ran("gh pr merge")).toBe(false);
     const rec = s.lines().at(-1)!;
     expect(rec).toMatchObject({ method: "POST", path: "/api/prs/7/merge", area: "prs", target: "7", status: 409, result: "failed" });
-    expect(rec.body).toMatchObject({ project: "widget", head: HEAD });
+    expect(rec.body).toMatchObject({ project: "widget", head: HEAD, base: "main" });
   });
 
   test("the same head: merged with --squash and --match-head-commit <that head>, in the project's repo", async () => {
@@ -97,7 +100,7 @@ describe("merge refuses a head that moved", () => {
       ["gh pr view 7 --repo acme/widget --json state,mergeCommit", ok(JSON.stringify({ state: "MERGED", mergeCommit: { oid: "abc" }, mergedAt: "2026-11-05T12:00:00Z" }))],
       ["gh pr merge 7", ok()],
     ]);
-    const res = await s.send("/api/prs/7/merge", { project: "widget", head: HEAD });
+    const res = await s.send("/api/prs/7/merge", { project: "widget", head: HEAD, base: "main" });
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ merged: true, repo: "acme/widget", number: 7, head: HEAD, readBack: { state: "read", mergeCommit: "abc" } });
     const merge = s.f.calls.find((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "merge")!;
@@ -107,22 +110,22 @@ describe("merge refuses a head that moved", () => {
 
   test("GitHub refusing a head that moved between the read and the merge is head-moved too", async () => {
     const r = fake([["gh pr view", view("OPEN", HEAD)], ["gh pr merge", fail("GraphQL: Head branch was modified. Review and try the merge again. (mergePullRequest)")]]);
-    const e = await mergePr(r.run, "acme/widget", 7, HEAD).catch((x) => x);
+    const e = await mergePr(r.run, "acme/widget", 7, HEAD, "main").catch((x) => x);
     expect(e.status).toBe(409);
     expect(e.detail.refusal).toBe("head-moved");
   });
 
   test("a merge GitHub did is never reported as failed because the read-back failed", async () => {
-    const r = fake([["gh pr view 7 --repo acme/widget --json number", view("OPEN", HEAD)], ["gh pr merge", ok()], ["state,mergeCommit", fail("timeout")]]);
-    const a = await mergePr(r.run, "acme/widget", 7, HEAD);
+    const r = fake([["gh pr view 7 --repo acme/widget --json number", view("OPEN", HEAD)], ["state,mergeCommit", fail("timeout")], ["gh pr merge", ok()]]);
+    const a = await mergePr(r.run, "acme/widget", 7, HEAD, "main");
     expect(a.merged).toBe(true);
-    expect(a.readBack.state).toBe("unreadable");
+    expect(a.readBack).toEqual({ state: "unreadable", reason: "merged, but the read-back failed: timeout" });
   });
 
   test("no token, or another origin: refused by the guard (403), never reaching gh, and logged as refused", async () => {
     const s = await server([["gh", ok()]]);
-    const noToken = await s.send("/api/prs/7/merge", { project: "widget", head: HEAD }, { origin: `http://${HOSTNAME}` });
-    const otherPage = await s.send("/api/prs/7/merge", { project: "widget", head: HEAD }, { origin: "http://evil.example", "x-anvideck-token": TOKEN });
+    const noToken = await s.send("/api/prs/7/merge", { project: "widget", head: HEAD, base: "main" }, { origin: `http://${HOSTNAME}` });
+    const otherPage = await s.send("/api/prs/7/merge", { project: "widget", head: HEAD, base: "main" }, { origin: "http://evil.example", "x-anvideck-token": TOKEN });
     expect([noToken.status, otherPage.status]).toEqual([403, 403]);
     expect(s.f.calls.filter((c) => c[0] === "gh")).toEqual([]);
     expect(s.lines().map((l) => l.result)).toEqual(["refused", "refused"]);
@@ -130,18 +133,68 @@ describe("merge refuses a head that moved", () => {
 
   test("a short or missing head, a closed PR, a draft: refused with the reason, nothing merged", async () => {
     const r = fake([["gh pr view 8", view("MERGED", HEAD)], ["gh pr view 9", view("OPEN", HEAD, true)], ["gh pr merge", ok()]]);
-    expect((await mergePr(r.run, "acme/widget", 7, "abc1234").catch((x) => x)).status).toBe(400);
-    expect((await mergePr(r.run, "acme/widget", 8, HEAD).catch((x) => x)).detail.refusal).toBe("not-open");
-    expect((await mergePr(r.run, "acme/widget", 9, HEAD).catch((x) => x)).detail.refusal).toBe("draft");
+    expect((await mergePr(r.run, "acme/widget", 7, "abc1234", "main").catch((x) => x)).status).toBe(400);
+    expect((await mergePr(r.run, "acme/widget", 8, HEAD, "main").catch((x) => x)).detail.refusal).toBe("not-open");
+    expect((await mergePr(r.run, "acme/widget", 9, HEAD, "main").catch((x) => x)).detail.refusal).toBe("draft");
     expect(r.ran("gh pr merge")).toBe(false);
   });
 
   test("GitHub unreachable before the merge: 502, nothing merged (not 'no such PR')", async () => {
     const r = fake([["gh pr view", fail("error connecting to api.github.com")]]);
-    const e = await mergePr(r.run, "acme/widget", 7, HEAD).catch((x) => x);
+    const e = await mergePr(r.run, "acme/widget", 7, HEAD, "main").catch((x) => x);
     expect([e.status, e.detail.refusal]).toEqual([502, "github-unread"]);
-    const missing = await mergePr(fake([["gh pr view", fail("GraphQL: Could not resolve to a PullRequest with the number of 7.")]]).run, "acme/widget", 7, HEAD).catch((x) => x);
+    const missing = await mergePr(fake([["gh pr view", fail("GraphQL: Could not resolve to a PullRequest with the number of 7.")]]).run, "acme/widget", 7, HEAD, "main").catch((x) => x);
     expect([missing.status, missing.detail.refusal]).toEqual([404, "no-pr"]);
+  });
+});
+
+describe("merge refuses a PR retargeted since the page showed it", () => {
+  test("the page showed base main, the PR now merges into other-base: 409 base-moved, gh pr merge is never run", async () => {
+    const s = await server([["gh pr view 7", view("OPEN", HEAD, false, "other-base")], ["gh pr merge", ok()]]);
+    const res = await s.send("/api/prs/7/merge", { project: "widget", head: HEAD, base: "main" });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ refusal: "base-moved", shownBase: "main", currentBase: "other-base" });
+    expect(s.f.ran("gh pr merge")).toBe(false);
+    expect(s.lines().at(-1)).toMatchObject({ status: 409, result: "failed", target: "7" });
+  });
+
+  test("no base sent, or one that is not a branch name: 400 before GitHub is asked", async () => {
+    const s = await server([["gh", ok()]]);
+    const none = await s.send("/api/prs/7/merge", { project: "widget", head: HEAD });
+    expect(none.status).toBe(400);
+    const r = fake([["gh", ok()]]);
+    expect((await mergePr(r.run, "acme/widget", 7, HEAD, "has space").catch((x) => x)).status).toBe(400);
+    expect(s.f.calls.filter((c) => c[0] === "gh")).toEqual([]);
+    expect(r.calls).toEqual([]);
+  });
+});
+
+describe("gh pr merge failing is read back before it is called a failure", () => {
+  const merged = ok(JSON.stringify({ state: "MERGED", mergeCommit: { oid: "abc" }, mergedAt: "2026-11-05T12:00:00Z" }));
+  const timedOut = fail("gh pr took longer than 60s and was stopped", 124);
+
+  test("gh timed out but GitHub merged it: 200 merged, with gh's words, and the log says accepted", async () => {
+    const s = await server([["gh pr view 7 --repo acme/widget --json number", view("OPEN", HEAD)], ["state,mergeCommit", merged], ["gh pr merge", timedOut]]);
+    const res = await s.send("/api/prs/7/merge", { project: "widget", head: HEAD, base: "main" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ merged: true, base: "main", ghFailed: "gh pr took longer than 60s and was stopped", readBack: { state: "read", mergeCommit: "abc" } });
+    expect(s.f.ran("state,mergeCommit")).toBe(true);
+    expect(s.lines().at(-1)).toMatchObject({ status: 200, result: "accepted" });
+  });
+
+  test("gh failed and GitHub says it is still open: 502 merge-failed, naming the read-back", async () => {
+    const r = fake([["gh pr view 7 --repo acme/widget --json number", view("OPEN", HEAD)], ["state,mergeCommit", ok(JSON.stringify({ state: "OPEN", mergeCommit: null, mergedAt: null }))], ["gh pr merge", fail("GraphQL: Pull request is not mergeable")]]);
+    const e = await mergePr(r.run, "acme/widget", 7, HEAD, "main").catch((x) => x);
+    expect([e.status, e.detail.refusal, e.detail.state]).toEqual([502, "merge-failed", "OPEN"]);
+    expect(String(e.message)).toContain("read back: it is open");
+  });
+
+  test("gh failed and the read-back failed too: 502 merge-unknown, never 'did not merge'", async () => {
+    const r = fake([["gh pr view 7 --repo acme/widget --json number", view("OPEN", HEAD)], ["state,mergeCommit", fail("error connecting to api.github.com")], ["gh pr merge", timedOut]]);
+    const e = await mergePr(r.run, "acme/widget", 7, HEAD, "main").catch((x) => x);
+    expect([e.status, e.detail.refusal]).toEqual([502, "merge-unknown"]);
+    expect(String(e.message)).toContain("not known whether PR #7 merged");
+    expect(String(e.message)).not.toContain("did not merge");
   });
 });
 

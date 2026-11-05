@@ -278,6 +278,13 @@ export function refusalText(status: number, body: Record<string, unknown>): stri
     const now = typeof body.currentHead === "string" ? shortSha(body.currentHead) : "unknown";
     return `Refused, nothing merged: the PR's head moved since this page showed it (you reviewed ${was}, it is now ${now}). Reload and review the new commits.`;
   }
+  if (body.refusal === "base-moved") {
+    const was = typeof body.shownBase === "string" ? body.shownBase : "?";
+    const now = typeof body.currentBase === "string" ? body.currentBase : "unknown";
+    return `Refused, nothing merged: the PR now merges into ${now}, not ${was} as this page showed it. Reload and check where it goes.`;
+  }
+  // gh failed and GitHub could not be read back: it may have merged. Never "Not done".
+  if (body.refusal === "merge-unknown") return `Unknown whether it merged: ${error}`;
   if (status === 403) return `Refused by the write guard: ${error}`;
   return `Not done: ${error}`;
 }
