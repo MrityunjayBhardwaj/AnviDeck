@@ -11,11 +11,12 @@
  * (refusals-driver.cjs), because the --json report drops them.
  *
  * Read-only: it writes nothing into any project or the store. The instrument's default-branch
- * section makes a temporary `git archive` under TMPDIR, which this reader points at the structure
- * reader's scratch folder (TMP_ROOT), and the instrument removes it itself.
+ * section makes a temporary `git archive` under TMPDIR. Each run gets a folder of its own under the
+ * structure reader's scratch folder (TMP_ROOT) as its TMPDIR, removed when the run ends, so a run
+ * stopped at the time limit (which skips the instrument's own cleanup) leaves nothing behind.
  */
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -29,6 +30,8 @@ import type {
   RefusalsResponse,
   RefusalTotals,
   RefusalWindow,
+  RefusalCallState,
+  CallsRead,
 } from "../../shared/refusal-types";
 
 const HOME = process.env.HOME ?? homedir();
@@ -37,6 +40,8 @@ const DRIVER = join(import.meta.dir, "refusals-driver.cjs");
 /** The instrument reads every transcript on the machine: 3 min 17 s on 4,404 transcripts (2026-11-05). */
 const RUN_TIMEOUT_MS = 10 * 60_000;
 export const CACHE_TTL_MS = 15 * 60_000;
+/** A run that could not be read is tried again after this, not after CACHE_TTL_MS. */
+export const RETRY_MS = 60_000;
 /** The window when none is asked: the last 30 days, from midnight UTC, so the cache key holds all day. */
 export const DEFAULT_DAYS = 30;
 
@@ -105,18 +110,33 @@ export function packageOf(project: string, opts: { path?: string | null; package
 
 interface Spawned { code: number | null; signal: string | null; stdout: string; stderr: string; fd3: string; ms: number; startError?: string }
 
-function spawnNode(args: string[], withFd3: boolean, timeoutMs: number): Promise<Spawned> {
+/** TMPDIR for one run: a folder of its own under TMP_ROOT, removed by done() when the run ends. */
+function scratchTmp(): { dir: string; done: () => void } {
   mkdirSync(TMP_ROOT, { recursive: true });
+  const dir = mkdtempSync(join(TMP_ROOT, "refusals-run-"));
+  return { dir, done: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+function spawnNode(args: string[], withFd3: boolean, timeoutMs: number): Promise<Spawned> {
+  const tmp = scratchTmp();
   const t0 = Date.now();
-  return new Promise((resolve) => {
-    const child = spawn("node", args, {
-      env: { ...process.env, TMPDIR: TMP_ROOT },
-      stdio: withFd3 ? ["ignore", "pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"],
-    });
+  return new Promise<Spawned>((resolve) => {
+    let child: ReturnType<typeof spawn> | undefined;
     let stdout = "", stderr = "", fd3 = "";
-    child.stdout!.on("data", (d) => (stdout += d));
-    child.stderr!.on("data", (d) => (stderr += d));
-    if (withFd3) (child.stdio[3] as NodeJS.ReadableStream).on("data", (d) => (fd3 += d));
+    try {
+      child = spawn("node", args, {
+        env: { ...process.env, TMPDIR: tmp.dir },
+        stdio: withFd3 ? ["ignore", "pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"],
+      });
+      child.stdout!.on("data", (d) => (stdout += d));
+      child.stderr!.on("data", (d) => (stderr += d));
+      if (withFd3) (child.stdio[3] as NodeJS.ReadableStream).on("data", (d) => (fd3 += d));
+    } catch (e) {
+      // Seen under heavy load (2026-11-05): Bun's spawn threw ENOENT setting up the fd 3 pipe. Said, not thrown.
+      child?.kill("SIGKILL");
+      resolve({ code: null, signal: null, stdout, stderr, fd3, ms: Date.now() - t0, startError: (e as Error).message });
+      return;
+    }
     const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs);
     child.on("error", (e) => {
       clearTimeout(timer);
@@ -126,7 +146,7 @@ function spawnNode(args: string[], withFd3: boolean, timeoutMs: number): Promise
       clearTimeout(timer);
       resolve({ code, signal, stdout, stderr, fd3, ms: Date.now() - t0 });
     });
-  });
+  }).finally(tmp.done);
 }
 
 function scriptIdentity(path: string): { sha256: string; mtime: string } | { error: string } {
@@ -153,6 +173,9 @@ export function noticesFrom(report: string): Record<string, number> | null {
   }
   return out;
 }
+
+/** The instrument's stop() reasons about its own arguments (structure-refusals.js main), not about the data. */
+export const ARGUMENT_REFUSED = /^\s*(?:unrecognised argument|--[\w-]+ is required|--[\w-]+ is not a time|--[\w-]+ \S.* needs a package)/;
 
 const OUTCOME: Record<string, keyof RefusalTotals> = {
   applied: "applied",
@@ -190,6 +213,9 @@ export async function runInstrument(project: string, pkgDir: string, win: Refusa
   if (!run.fd3.trim()) {
     // The instrument stops before its report when it cannot measure; it says why on its first line.
     const stop = /structure-refusals: NOT MEASURED — (.*)/.exec(report);
+    if (stop && ARGUMENT_REFUSED.test(stop[1]))
+      // It refused the arguments this reader gave it: the two disagree on how it is called, which is not its verdict on the data.
+      return { status: "unreadable", ...base, reason: `the instrument refused the arguments AnviDeck ran it with (${stop[1].trim()}): AnviDeck and this version of structure-refusals.js disagree on how it is called` };
     if (stop) return { status: "not-measured", ...base, reason: stop[1].trim(), report };
     return { status: "unreadable", ...base, reason: `the instrument exited ${run.code} with no --json report` + (firstError(run.stderr) ? ` (${firstError(run.stderr)})` : "") };
   }
@@ -247,7 +273,7 @@ export async function runInstrument(project: string, pkgDir: string, win: Refusa
     pairs: Array.isArray(c.pairs) ? c.pairs : [],
     reason: reasons[c.id]?.reason ?? null,
     ...(reasons[c.id]?.reason ? {} : { reasonError: reasonErrors[c.id] ?? "the instrument gave no reason for this call" }),
-    call: null,
+    call: { state: "none" },
   }));
   const notices = noticesFrom(report);
   const fallback: Record<string, number> = {};
@@ -276,8 +302,10 @@ export async function runInstrument(project: string, pkgDir: string, win: Refusa
 // Keyed on everything the answer depends on except the transcripts themselves (which only grow):
 // the package, the window, the instrument's bytes, and the transcripts folder. Answers older than
 // CACHE_TTL_MS are measured again; until the new run finishes, the old answer is served with its age.
+// A run that could not be read never replaces an answer that could: the older answer is kept and
+// served with the failure beside it (cache.lastRunFailed). Either is tried again after RETRY_MS.
 
-interface Entry { value: RefusalsResponse; at: number; started: string }
+export interface Entry { value: RefusalsResponse; at: number; started: string; failed?: { at: number; reason: string } }
 const cache = new Map<string, Entry>();
 const inflight = new Map<string, { started: string; job: Promise<Entry> }>();
 
@@ -298,17 +326,43 @@ export interface ReadOptions extends RunOptions {
   callsDir?: string;
 }
 
+/** Your call on one refusal, from what readCalls could read: "none" only when nothing could hide one. */
+export function callStateOf(read: Omit<CallsRead, "calls">, key: string): RefusalCallState {
+  if (read.status === "unreadable") return { state: "unknown", reason: `your calls could not be read (${read.error ?? read.file}), so whether you made one is not known` };
+  const s = read.byKey[key];
+  if (s) return { state: "called", ...s };
+  if (read.status === "partial")
+    return { state: "unknown", reason: `${read.unreadableLines} of ${read.lines} lines of ${read.file} could not be read, and one of them may be a call on this refusal` };
+  return { state: "none" };
+}
+
 function withCalls(r: RefusalsResponse, opts: ReadOptions): RefusalsResponse {
   if (r.status !== "measured") return r;
   const read = readCalls({ dir: opts.callsDir });
-  const { calls: _c, byKey, ...meta } = read;
-  return { ...r, calls: meta, refusals: r.refusals.map((x) => ({ ...x, call: byKey[x.key] ?? null })) };
+  const { calls: _c, byKey: _b, ...meta } = read;
+  return { ...r, calls: meta, refusals: r.refusals.map((x) => ({ ...x, call: callStateOf(read, x.key) })) };
 }
 
 function withCache(e: Entry, now: number, refreshing: boolean): RefusalsResponse {
   const v = e.value;
   if (v.status !== "measured" && v.status !== "not-measured" && v.status !== "unreadable") return v;
-  return { ...v, cache: { at: new Date(e.at).toISOString(), ageMs: now - e.at, refreshing, ttlMs: CACHE_TTL_MS } } as RefusalsResponse;
+  const failed = e.failed ? { lastRunFailed: { at: new Date(e.failed.at).toISOString(), reason: e.failed.reason } } : {};
+  const ttlMs = v.status === "unreadable" ? RETRY_MS : CACHE_TTL_MS;
+  return { ...v, cache: { at: new Date(e.at).toISOString(), ageMs: now - e.at, refreshing, ttlMs, ...failed } } as RefusalsResponse;
+}
+
+/** Whether a cached entry is due to be measured again: a failed run is retried sooner than a good answer expires. */
+export function isStale(e: Entry | undefined, now: number): boolean {
+  if (!e) return true;
+  if (e.value.status === "unreadable") return now - e.at > RETRY_MS;
+  if (e.failed) return now - e.failed.at > RETRY_MS;
+  return now - e.at > CACHE_TTL_MS;
+}
+
+/** The entry a finished run leaves: its answer, unless it could not be read and an older answer could. */
+export function settle(prev: Entry | undefined, value: RefusalsResponse, at: number, started: string): Entry {
+  if (value.status === "unreadable" && prev && prev.value.status !== "unreadable") return { ...prev, failed: { at, reason: value.reason } };
+  return { value, at, started };
 }
 
 export async function readRefusals(project: string, opts: ReadOptions = {}): Promise<{ response: RefusalsResponse; notFound?: boolean }> {
@@ -324,7 +378,7 @@ export async function readRefusals(project: string, opts: ReadOptions = {}): Pro
     if (!f) {
       const started = new Date(now()).toISOString();
       const job = runInstrument(project, pick.dir, win, opts).then((value) => {
-        const e = { value, at: now(), started };
+        const e = settle(cache.get(key), value, now(), started);
         cache.set(key, e);
         return e;
       }).finally(() => inflight.delete(key));
@@ -334,7 +388,7 @@ export async function readRefusals(project: string, opts: ReadOptions = {}): Pro
     return f;
   };
   const hit = cache.get(key);
-  const stale = !hit || now() - hit.at > CACHE_TTL_MS || opts.refresh;
+  const stale = isStale(hit, now()) || opts.refresh;
   if (hit && !stale) return { response: withCalls(withCache(hit, now(), inflight.has(key)), opts) };
   const f = start();
   if (opts.wait) {

@@ -10,8 +10,14 @@ import { refusalRoutes } from "../server/routes/refusals";
 import { CallError, CallStore, callFrom, MAX_NOTE } from "../server/calls";
 import { byKey, readCalls } from "../server/readers/calls";
 import { listStructure } from "../server/readers/structure";
+import { TMP_ROOT } from "../server/readers/structure";
 import {
+  CACHE_TTL_MS,
+  callStateOf,
   clearRefusalsCache,
+  isStale,
+  RETRY_MS,
+  settle,
   defaultSince,
   exitMeaning,
   noticesFrom,
@@ -23,7 +29,7 @@ import {
   windowOf,
 } from "../server/readers/refusals";
 import { callLine, shortDay, withRecorded } from "../ui/components/refusal-call-model";
-import type { CallRecord, CallsRead, RefusalsMeasured, RefusalWindow } from "../shared/refusal-types";
+import type { CallRecord, CallsRead, RefusalsMeasured, RefusalsResponse, RefusalWindow } from "../shared/refusal-types";
 
 const dirs: string[] = [];
 const scratch = (p = "refusals-") => {
@@ -320,6 +326,13 @@ describe("runInstrument when the instrument cannot answer", () => {
     expect(r.status).toBe("unreadable");
     if (r.status === "unreadable") expect(r.reason).toContain("quarantined");
   });
+  test("the instrument refusing the reader's own arguments → unreadable, never its verdict on the data", async () => {
+    for (const why of ["unrecognised argument(s): --json /dev/fd/3", "--since is required", "--since is not a time: x"]) {
+      const r = await runInstrument("p", pkg(), WIN, { script: fake(`console.log('structure-refusals: NOT MEASURED — ${why}'); process.exit(2);`) });
+      expect(`${why}: ${r.status}`).toBe(`${why}: unreadable`);
+      if (r.status === "unreadable") expect(r.reason).toContain(why);
+    }
+  });
   test("the instrument's NOT MEASURED → not-measured with its words", async () => {
     const r = await runInstrument("p", pkg(), WIN, { script: fake("console.log('structure-refusals: NOT MEASURED — no transcripts under /x'); process.exit(2);") });
     expect(r.status).toBe("not-measured");
@@ -398,11 +411,152 @@ describe("cache", () => {
     writeFileSync(script, `require('fs').writeFileSync('/dev/fd/3', JSON.stringify({ calls: [{ id: 'toolu_R', outcome: 'refused', session: 's', at: '2026-10-22T16:16:24Z', tool: 'Edit', file: 'src/a.ts', transcript: '/nonexistent.jsonl' }] })); process.exit(1);`);
     writeFileSync(join(p.top, "calls.jsonl"), JSON.stringify(call("toolu_R", "right", "2026-10-27T10:00:00Z")) + "\n");
     const r = (await readRefusals(p.name, { registry: p.registry, script, wait: true, callsDir: p.top })).response as RefusalsMeasured;
-    expect(r.refusals[0].call?.latest.call).toBe("right");
+    expect(r.refusals[0].call.state).toBe("called");
+    if (r.refusals[0].call.state === "called") expect(r.refusals[0].call.latest.call).toBe("right");
     expect(r.calls.status).toBe("ok");
     // The reason could not be re-read (the transcript is gone): said, not left blank.
     expect(r.refusals[0].reason).toBeNull();
     expect(r.refusals[0].reasonError).toBeTruthy();
+  }, 30_000);
+});
+
+/**
+ * A registered package and one fake instrument whose behaviour is chosen by a mode file beside it
+ * (its bytes, and so the cache key, stay the same), run through readRefusals on a clock the test moves.
+ */
+function fakeRun(mode: "good" | "broken") {
+  clearRefusalsCache();
+  const p = registered();
+  const counter = join(p.top, "runs");
+  const modeFile = join(p.top, "mode");
+  const script = join(p.top, "fake.js");
+  writeFileSync(script, `const fs = require('fs');
+fs.appendFileSync(${JSON.stringify(counter)}, 'x');
+if (fs.readFileSync(${JSON.stringify(modeFile)}, 'utf8') === 'broken') { console.error('TypeError: boom'); process.exit(9); }
+fs.writeFileSync('/dev/fd/3', JSON.stringify({ calls: [{ id: 'a', outcome: 'applied', session: 's' }], transcripts: 1 })); process.exit(3);`);
+  const set = (m: "good" | "broken") => writeFileSync(modeFile, m);
+  set(mode);
+  const clock = { t: Date.parse("2026-11-05T12:00:00Z") };
+  const opts = { registry: p.registry, script, now: () => clock.t, callsDir: p.top };
+  const runs = () => (existsSync(counter) ? readFileSync(counter, "utf8").length : 0);
+  return { p, opts, clock, runs, set, read: (o: object = {}) => readRefusals(p.name, { ...opts, ...o }).then((r) => r.response) };
+}
+
+describe("cache when a run fails", () => {
+  test("a failed refresh never replaces the last good answer: it is served with the failure beside it, and retried soon", async () => {
+    const f = fakeRun("good");
+    expect((await f.read({ wait: true })).status).toBe("measured");
+    f.set("broken");
+    f.clock.t += CACHE_TTL_MS + 1;
+    const kept = (await f.read({ wait: true })) as RefusalsMeasured;
+    expect(f.runs()).toBe(2);
+    expect(kept.status).toBe("measured");
+    expect(kept.totals.edits).toBe(1);
+    expect(kept.cache.lastRunFailed?.reason).toContain("exited 9");
+    // Served from the cache until RETRY_MS after the failure, then tried again.
+    f.clock.t += RETRY_MS - 1;
+    expect(((await f.read()) as RefusalsMeasured).cache.refreshing).toBe(false);
+    expect(f.runs()).toBe(2);
+    f.set("good");
+    f.clock.t += 2;
+    await f.read({ wait: true });
+    expect(f.runs()).toBe(3);
+    const fresh = (await f.read()) as RefusalsMeasured;
+    expect(fresh.cache.lastRunFailed).toBeUndefined();
+    expect(fresh.cache.ageMs).toBe(0);
+  }, 30_000);
+
+  test("an unreadable answer is cached for RETRY_MS, not the full TTL", async () => {
+    const f = fakeRun("broken");
+    const u = await f.read({ wait: true });
+    expect(u.status).toBe("unreadable");
+    if (u.status === "unreadable") expect(u.cache?.ttlMs).toBe(RETRY_MS);
+    f.clock.t += RETRY_MS - 1;
+    expect((await f.read()).status).toBe("unreadable");
+    expect(f.runs()).toBe(1);
+    f.set("good");
+    f.clock.t += 2;
+    expect((await f.read({ wait: true })).status).toBe("measured");
+    expect(f.runs()).toBe(2);
+  }, 30_000);
+
+  test("refresh=1 starts a new run though the answer is fresh, and serves the old one while it runs", async () => {
+    const f = fakeRun("good");
+    await f.read({ wait: true });
+    f.clock.t += 1000;
+    const r = (await f.read({ refresh: true })) as RefusalsMeasured;
+    expect(r.status).toBe("measured");
+    expect(r.cache.refreshing).toBe(true);
+    await f.read({ refresh: true, wait: true });
+    expect(f.runs()).toBe(2);
+  }, 30_000);
+
+  test("isStale and settle: the rule the cache keeps", () => {
+    const good = { value: { status: "measured" } as RefusalsResponse, at: 0, started: "" };
+    const bad = { status: "unreadable", project: "p", reason: "boom" } as RefusalsResponse;
+    expect(settle(good, bad, 5, "s")).toEqual({ ...good, failed: { at: 5, reason: "boom" } });
+    expect(settle(undefined, bad, 5, "s").value).toBe(bad);
+    expect(settle({ value: bad, at: 0, started: "" }, bad, 5, "s")).toEqual({ value: bad, at: 5, started: "s" });
+    expect(isStale(undefined, 0)).toBe(true);
+    expect(isStale({ value: bad, at: 0, started: "" }, RETRY_MS + 1)).toBe(true);
+    expect(isStale({ ...good, failed: { at: CACHE_TTL_MS, reason: "x" } }, CACHE_TTL_MS + RETRY_MS)).toBe(false);
+  });
+});
+
+describe("runInstrument's own temporary folder and the reason re-read", () => {
+  test("a run stopped at the time limit leaves no temporary folder behind", async () => {
+    const d = scratch("refusals-timeout-");
+    const told = join(d, "made");
+    const script = join(d, "slow.js");
+    // Like checkoutAtRef: make a folder under TMPDIR, then be killed before removing it.
+    writeFileSync(script, `const fs = require('fs'), os = require('os'), path = require('path');
+const t = fs.mkdtempSync(path.join(os.tmpdir(), 'structure-guard-ref-'));
+fs.writeFileSync(path.join(t, 'archive'), 'x');
+fs.writeFileSync(${JSON.stringify(told)}, t);
+setTimeout(() => {}, 60000);`);
+    const r = await runInstrument("p", scratch("refusals-pkg-"), WIN, { script, timeoutMs: 1500 });
+    expect(r.status).toBe("unreadable");
+    if (r.status === "unreadable") expect(r.reason).toContain("time limit");
+    const made = readFileSync(told, "utf8");
+    expect(made.startsWith(TMP_ROOT)).toBe(true);
+    expect(existsSync(made)).toBe(false);
+  }, 30_000);
+
+  test("when the reason re-read fails, each refusal says why, never blank", async () => {
+    // The fake writes to fd 3 at load, so the driver's require() of it throws: the driver answers ok:false.
+    const d = scratch("refusals-driver-");
+    const script = join(d, "fake.js");
+    writeFileSync(script, `require('fs').writeFileSync('/dev/fd/3', JSON.stringify({ calls: [{ id: 'toolu_R', outcome: 'refused', session: 's', at: '2026-10-22T16:16:24Z', tool: 'Edit', file: 'src/a.ts', transcript: '/nonexistent.jsonl' }] })); process.exit(1);`);
+    const r = (await runInstrument("p", scratch("refusals-pkg-"), WIN, { script })) as RefusalsMeasured;
+    expect(r.status).toBe("measured");
+    expect(r.refusals[0].reason).toBeNull();
+    expect(r.refusals[0].reasonError).toContain("cannot load");
+  }, 30_000);
+});
+
+describe("your call on each refusal", () => {
+  const read = (calls: CallRecord[], extra: Partial<CallsRead> = {}): CallsRead => ({ file: "/x/calls.jsonl", exists: true, status: "ok", lines: calls.length, unreadableLines: 0, calls, byKey: byKey(calls), readAt: "", ...extra });
+  test("'no call' and 'could not look' are different values", () => {
+    expect(callStateOf(read([]), "k")).toEqual({ state: "none" });
+    expect(callStateOf(read([], { exists: false, status: "none" }), "k")).toEqual({ state: "none" });
+    const u = callStateOf(read([], { status: "unreadable", error: "/x/calls.jsonl: EISDIR" }), "k");
+    expect(u.state).toBe("unknown");
+    if (u.state === "unknown") expect(u.reason).toContain("EISDIR");
+    // A damaged line could have been this call.
+    expect(callStateOf(read([call("j", "right", "2026-10-27T09:00:00Z")], { status: "partial", lines: 2, unreadableLines: 1 }), "k").state).toBe("unknown");
+    const c = callStateOf(read([call("k", "right", "2026-10-27T09:00:00Z")]), "k");
+    expect(c.state === "called" && c.latest.call).toBe("right");
+  });
+
+  test("through the reader: calls.jsonl that cannot be read makes every refusal's call unknown, not none", async () => {
+    clearRefusalsCache();
+    const p = registered();
+    const script = join(p.top, "fake.js");
+    writeFileSync(script, `require('fs').writeFileSync('/dev/fd/3', JSON.stringify({ calls: [{ id: 'toolu_R', outcome: 'refused', session: 's', at: '2026-10-22T16:16:24Z', tool: 'Edit', file: 'src/a.ts', transcript: '/nonexistent.jsonl' }] })); process.exit(1);`);
+    mkdirSync(join(p.top, "calls.jsonl"));
+    const r = (await readRefusals(p.name, { registry: p.registry, script, wait: true, callsDir: p.top })).response as RefusalsMeasured;
+    expect(r.calls.status).toBe("unreadable");
+    expect(r.refusals.map((x) => x.call.state)).toEqual(["unknown"]);
   }, 30_000);
 });
 

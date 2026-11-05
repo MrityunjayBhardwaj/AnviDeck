@@ -42,9 +42,18 @@ export interface Refusal {
   /** The guard's words, verbatim, as the agent read them. Null when they could not be re-read (see reasonError). */
   reason: string | null;
   reasonError?: string;
-  /** Your call on it (latest, with earlier ones), or null when none is recorded. Unknown when calls.status is unreadable. */
-  call: CallState | null;
+  /**
+   * Your call on it. "none" only when calls.jsonl was read whole (or does not exist yet) and holds
+   * no call for this key; "unknown" when it could not be read, or a damaged line could have been
+   * this call, so "could not look" never reads as "no call".
+   */
+  call: RefusalCallState;
 }
+
+export type RefusalCallState =
+  | { state: "none" }
+  | { state: "unknown"; reason: string }
+  | ({ state: "called" } & CallState);
 
 /** An edit that landed with no judgement, or was denied in a shape the instrument does not know. */
 export interface RefusalEdit {
@@ -94,6 +103,11 @@ export interface RefusalCache {
   refreshing: boolean;
   /** Answers older than this are measured again on the next request. */
   ttlMs: number;
+  /**
+   * The last run after this answer failed (it could not be read), so this older answer is still
+   * served; it is tried again after RETRY_MS. Absent when the latest run is the answer served.
+   */
+  lastRunFailed?: { at: string; reason: string };
 }
 
 export interface RefusalWindow {
