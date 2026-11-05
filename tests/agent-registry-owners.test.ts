@@ -1,12 +1,12 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Options, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { AgentHost, HostError, type QueryFn } from "../server/agents/host";
-import { AgentRegistry, type AgentOwner, type AgentRecord } from "../server/agents/registry";
+import { AgentRegistry, ownerProcessAlive, RegistryLockedError, type AgentOwner, type AgentRecord } from "../server/agents/registry";
 import { loginOnlyEnv, type ClaudeBinary } from "../server/agents/login";
-import { agentRoutes } from "../server/routes/agents";
+import { agentRoutes, createAgentHost } from "../server/routes/agents";
 
 /**
  * #104: several AnviDeck servers share one agent registry. Each agent names the server that
@@ -221,5 +221,216 @@ describe("the registry's lock", () => {
     expect(() => r.upsert(rec("three"))).toThrow("locked by AnviDeck process 1");
     expect(Date.now() - t0).toBeGreaterThanOrEqual(2900);
     expect(onDisk(dir).map((a) => a.id)).toEqual(["one", "two"]);
+  });
+});
+
+describe("the registry's lock, under contention (review of #226)", () => {
+  test("a lock file that exists but is empty (a writer between create and write) is waited for, never taken over", () => {
+    const dir = scratch();
+    const r = new AgentRegistry(dir, { lockWaitMs: 300 });
+    const now = new Date().toISOString();
+    const rec = (id: string): AgentRecord => ({ id, cwd: "/x", prompt: "p", status: "done", createdAt: now, updatedAt: now, runs: 1, messageCount: 0 });
+    r.upsert(rec("one"));
+    const lock = join(dir, "agents.json.lock");
+    writeFileSync(lock, "");
+    expect(() => r.upsert(rec("two"))).toThrow(RegistryLockedError);
+    expect(existsSync(lock)).toBe(true);
+    expect(onDisk(dir).map((a) => a.id)).toEqual(["one"]);
+    // Once it is older than any real write could take, it is a crashed writer's: taken over.
+    const old = new Date(Date.now() - 11_000);
+    utimesSync(lock, old, old);
+    r.upsert(rec("two"));
+    expect(onDisk(dir).map((a) => a.id)).toEqual(["one", "two"]);
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  test("ten processes writing 150 records each at once keep every record", async () => {
+    const dir = scratch();
+    const reg = join(import.meta.dir, "..", "server", "agents", "registry.ts");
+    const script = `
+      const { AgentRegistry } = await import(${JSON.stringify(reg)});
+      const r = new AgentRegistry(process.argv[2]);
+      const now = new Date().toISOString();
+      for (let i = 0; i < 150; i++) r.upsert({ id: process.argv[3] + "_" + i, cwd: "/x", prompt: "p", status: "done", createdAt: now, updatedAt: now, runs: 1, messageCount: 0 });
+    `;
+    const child = join(scratch("agent-owners-child-"), "child.ts");
+    writeFileSync(child, script);
+    const procs = Array.from({ length: 10 }, (_, i) => Bun.spawn(["bun", child, dir, `w${i}`], { stdout: "pipe", stderr: "pipe" }));
+    const codes = await Promise.all(procs.map((p) => p.exited));
+    const errs = await Promise.all(procs.map((p) => new Response(p.stderr).text()));
+    expect(errs.join("")).toBe("");
+    expect(codes).toEqual(Array(10).fill(0));
+    expect(new Set(onDisk(dir).map((a) => a.id)).size).toBe(1500);
+    expect(readdirSync(dir).filter((f) => f.includes(".lock"))).toEqual([]);
+  }, 60_000);
+});
+
+describe("a finished agent whose process is still exiting (review of #226)", () => {
+  /** Says done, then takes until `release()` to exit, as Claude Code does after its result. */
+  function slowExit() {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const query: QueryFn = () =>
+      (async function* () {
+        yield init("sess-slow");
+        yield result;
+        await gate;
+      })();
+    return { query, release };
+  }
+
+  test("another server cannot resume it until the process has exited", async () => {
+    const dir = scratch();
+    const slow = slowExit();
+    const A = server(dir, 4135, slow.query);
+    const B = server(dir, 4136, quickJob);
+    const a = A.host.start({ cwd: scratch(), prompt: "job" });
+    await until(() => A.host.get(a.id).status === "done");
+    expect(A.host.get(a.id).running).toBe(true);
+    expect(B.host.get(a.id).runsElsewhere).toEqual({ pid: 94135, port: 4135 });
+    let err: unknown;
+    try {
+      B.host.resume(a.id, "go on");
+    } catch (e) {
+      err = e;
+    }
+    expect((err as HostError).status).toBe(409);
+    expect((err as HostError).message).toContain("another AnviDeck server (port 4135");
+    slow.release();
+    await until(() => !A.host.get(a.id).running);
+    expect(onDisk(dir).find((r) => r.id === a.id)!.processAlive).toBeUndefined();
+    expect(B.host.get(a.id).runsElsewhere).toBeUndefined();
+    B.host.resume(a.id, "go on");
+    await until(() => B.host.get(a.id).status === "done");
+    expect(onDisk(dir).find((r) => r.id === a.id)!.owner!.port).toBe(4136);
+  });
+
+  test("a late write from the old owner never puts back its stale record over another server's claim", async () => {
+    const dir = scratch();
+    const slow = slowExit();
+    const A = server(dir, 4135, slow.query);
+    const a = A.host.start({ cwd: scratch(), prompt: "job" });
+    await until(() => A.host.get(a.id).status === "done");
+    // Another server claims it meanwhile (one that predates the exiting check, or a claim that raced it).
+    const claimer: AgentOwner = { pid: 94137, port: 4137, instance: "srv-4137-claim", startedAt: new Date().toISOString() };
+    alive.add(claimer.instance);
+    new AgentRegistry(dir).update((agents) => ({
+      agents: agents.map((r) => (r.id === a.id ? { ...r, owner: claimer, status: "working" as const, processAlive: true } : r)),
+      out: undefined,
+    }));
+    slow.release();
+    await until(() => A.host.get(a.id).runsElsewhere !== undefined);
+    await tick(30);
+    const rec = onDisk(dir).find((r) => r.id === a.id)!;
+    expect(rec.owner!.port).toBe(4137);
+    expect(rec.status).toBe("working");
+    expect(A.host.get(a.id).runsElsewhere).toEqual({ pid: 94137, port: 4137 });
+    alive.delete(claimer.instance);
+  });
+});
+
+describe("an owner whose pid now belongs to another process (#224)", () => {
+  test("a pid alive but started after the owner recorded itself is not that owner", async () => {
+    const child = Bun.spawn(["sleep", "30"]);
+    try {
+      await tick(50);
+      const hourAgo = new Date(Date.now() - 3_600_000).toISOString();
+      const inAMinute = new Date(Date.now() + 60_000).toISOString();
+      expect(ownerProcessAlive({ pid: child.pid, startedAt: hourAgo })).toBe(false);
+      expect(ownerProcessAlive({ pid: child.pid, startedAt: inAMinute })).toBe(true);
+      // ps could not say: the pid alone decides, as before.
+      expect(ownerProcessAlive({ pid: child.pid, startedAt: hourAgo }, () => undefined)).toBe(true);
+      // A dead pid is never alive, whatever the times say.
+      expect(ownerProcessAlive({ pid: 4194311, startedAt: inAMinute })).toBe(false);
+    } finally {
+      child.kill();
+    }
+  });
+
+  test("its agent is listed as stopped and can be resumed, with the default liveness check", async () => {
+    const child = Bun.spawn(["sleep", "30"]);
+    try {
+      const dir = scratch();
+      const now = new Date().toISOString();
+      const deadOwner: AgentOwner = { pid: child.pid, port: 4199, instance: "gone-server", startedAt: new Date(Date.now() - 3_600_000).toISOString() };
+      writeFileSync(
+        join(dir, "agents.json"),
+        JSON.stringify({ version: 1, agents: [{ id: "reused1", owner: deadOwner, sessionId: "S9", cwd: scratch(), prompt: "p", status: "working", createdAt: now, updatedAt: now, runs: 1, messageCount: 0 }] }),
+      );
+      // No ownerAlive given: the host's own check (pid + start time) decides.
+      const host = new AgentHost({ registry: new AgentRegistry(dir), query: quickJob, resolveClaude: () => CLAUDE, env: () => loginOnlyEnv({ PATH: "/usr/bin" }) });
+      const seen = host.get("reused1");
+      expect(seen.runsElsewhere).toBeUndefined();
+      expect(seen.status).toBe("stopped");
+      expect(seen.reason).toContain("port 4199");
+      host.resume("reused1", "go on");
+      await until(() => host.get("reused1").status === "done");
+    } finally {
+      child.kill();
+    }
+  });
+});
+
+describe("a registry lock held at start-up or at a status write (review of #226)", () => {
+  test("the host stays on, never calls the file unreadable, and sweeps once the lock is free", async () => {
+    const dir = scratch();
+    const now = new Date().toISOString();
+    const gone: AgentOwner = { pid: 94190, port: 4190, instance: "gone-at-start", startedAt: now };
+    writeFileSync(join(dir, "agents.json"), JSON.stringify({ version: 1, agents: [{ id: "g1", owner: gone, cwd: "/x", prompt: "p", status: "working", createdAt: now, updatedAt: now, runs: 1, messageCount: 0 }] }));
+    const lock = join(dir, "agents.json.lock");
+    writeFileSync(lock, `1 ${Date.now()} other`); // pid 1 is always alive: a live holder
+    const made = createAgentHost(
+      () => {},
+      () =>
+        new AgentHost({
+          registry: new AgentRegistry(dir),
+          query: quickJob,
+          resolveClaude: () => CLAUDE,
+          env: () => loginOnlyEnv({ PATH: "/usr/bin" }),
+          owner: { pid: 94191, port: 4191, instance: "starter" },
+          ownerAlive: (o) => o.instance === "starter",
+          retryMs: 50,
+        }),
+    );
+    expect(made.host).not.toBeNull();
+    const res = await made.api.request("/");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { agents: { id: string; status: string }[] };
+    // Not yet written, but already shown as stopped.
+    expect(body.agents.find((a) => a.id === "g1")!.status).toBe("stopped");
+    expect(onDisk(dir)[0]!.status).toBe("working");
+    rmSync(lock);
+    await until(() => onDisk(dir)[0]!.status === "stopped", 3000);
+  });
+
+  test("a status write that finds the lock held is written once it is free, never dropped", async () => {
+    const dir = scratch();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const query: QueryFn = () =>
+      (async function* () {
+        yield init("sess-held");
+        await gate;
+        yield result;
+      })();
+    const host = new AgentHost({
+      registry: new AgentRegistry(dir),
+      query,
+      resolveClaude: () => CLAUDE,
+      env: () => loginOnlyEnv({ PATH: "/usr/bin" }),
+      owner: { pid: 94192, port: 4192, instance: "w" },
+      ownerAlive: (o) => o.instance === "w",
+      retryMs: 50,
+    });
+    const a = host.start({ cwd: scratch(), prompt: "p" });
+    await until(() => onDisk(dir).find((r) => r.id === a.id)?.status === "working");
+    const lock = join(dir, "agents.json.lock");
+    writeFileSync(lock, `1 ${Date.now()} other`);
+    release();
+    await until(() => host.get(a.id).status === "done" && !host.get(a.id).running, 5000);
+    expect(onDisk(dir).find((r) => r.id === a.id)!.status).toBe("working");
+    rmSync(lock);
+    await until(() => onDisk(dir).find((r) => r.id === a.id)?.status === "done", 3000);
+    expect(onDisk(dir).find((r) => r.id === a.id)!.processAlive).toBeUndefined();
   });
 });

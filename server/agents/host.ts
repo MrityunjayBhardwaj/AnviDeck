@@ -7,7 +7,7 @@ import type {
   SDKMessage,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import { AgentRegistry, LIVE_STATUSES, pidAlive, type AgentOwner, type AgentRecord, type AgentStatus, type TranscriptLine } from "./registry";
+import { AgentRegistry, LIVE_STATUSES, ownerProcessAlive, RegistryLockedError, type AgentOwner, type AgentRecord, type AgentStatus, type TranscriptLine } from "./registry";
 import { explainStartFailure, loginOnlyEnv, resolveClaude, type AgentEnv, type ClaudeBinary } from "./login";
 import { messagesIn, parseMessageRequest, renderForAgent, type SentMessage } from "../../shared/agent-messages";
 import { parsePermissionAnswer, type PendingPermission } from "../../shared/permission-requests";
@@ -169,9 +169,19 @@ export interface HostDeps {
   owner?: Partial<AgentOwner>;
   /** Is the server that owns an agent still alive? Default: see AgentHost.ownerAliveDefault. */
   ownerAlive?: (o: AgentOwner) => boolean;
+  /** How soon a write that found the registry locked is retried (tests shorten it). */
+  retryMs?: number;
 }
 
 export const DEFAULT_CAP = 3;
+
+/**
+ * How long a status write waits for another server's registry lock. The wait blocks the event
+ * loop, so it is short; a write that misses it is retried (see persist), never dropped.
+ */
+export const PERSIST_WAIT_MS = 500;
+/** How soon a missed write, or a start-up sweep that found the registry locked, is tried again. */
+export const RETRY_MS = 2000;
 
 export function capFromEnv(v: string | undefined = process.env.ANVIDECK_AGENT_CAP): number {
   const n = Number.parseInt(v ?? "", 10);
@@ -196,6 +206,12 @@ export class AgentHost {
   private readonly agents = new Map<string, AgentRecord>();
   private readonly live = new Map<string, Live>();
   private readonly seq = new Map<string, number>();
+  /** Records whose last write found the registry locked: written again on the next retry. */
+  private readonly unsaved = new Set<string>();
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The start-up sweep found the registry locked and is still to be done. */
+  private sweepPending = false;
+  private readonly retryMs: number;
 
   constructor(deps: HostDeps & { query: QueryFn }) {
     this.registry = deps.registry ?? new AgentRegistry();
@@ -213,23 +229,60 @@ export class AgentHost {
       ...deps.owner,
     };
     this.ownerAlive = deps.ownerAlive ?? ((o) => this.ownerAliveDefault(o));
-    this.sweep();
+    this.retryMs = deps.retryMs ?? RETRY_MS;
+    try {
+      this.sweep();
+    } catch (e) {
+      // A lock another server holds a while is not a damaged file: the host stays on and sweeps
+      // later. Agents of gone servers read as stopped meanwhile (see view). Anything else throws.
+      if (!(e instanceof RegistryLockedError)) throw e;
+      console.error(`[agents] start-up sweep postponed: ${e.message}`);
+      this.sweepPending = true;
+      this.scheduleRetry();
+    }
   }
 
   /**
    * Is the server that owns an agent alive? This host is; another host in this same process
-   * is a predecessor (a process runs one host), so it is gone; any other pid is asked of the OS.
+   * is a predecessor (a process runs one host), so it is gone; any other pid is asked of the OS,
+   * with its start time, so a pid the OS has handed to another process does not count (#224).
    */
   private ownerAliveDefault(o: AgentOwner): boolean {
     if (o.instance === this.owner.instance) return true;
     if (o.pid === process.pid) return false;
-    return pidAlive(o.pid);
+    return ownerProcessAlive(o);
   }
 
-  /** Another server that is still alive runs this agent: this host must not touch it. */
+  /**
+   * Another server that is still alive runs this agent, or its Claude Code process is still
+   * exiting there after a finished turn: this host must not touch it.
+   */
   private elsewhere(a: AgentRecord): { pid: number; port?: number } | undefined {
-    if (!LIVE_STATUSES.has(a.status) || !a.owner || a.owner.instance === this.owner.instance) return undefined;
+    if ((!LIVE_STATUSES.has(a.status) && !a.processAlive) || !a.owner || a.owner.instance === this.owner.instance) return undefined;
     return this.ownerAlive(a.owner) ? { pid: a.owner.pid, port: a.owner.port } : undefined;
+  }
+
+  /** Try the postponed sweep and the missed writes again, after RETRY_MS. */
+  private scheduleRetry(): void {
+    if (this.retryTimer) return;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      if (this.sweepPending) {
+        try {
+          this.sweep();
+          this.sweepPending = false;
+        } catch (e) {
+          if (!(e instanceof RegistryLockedError)) console.error(`[agents] start-up sweep failed: ${(e as Error).message}`);
+          else this.scheduleRetry();
+        }
+      }
+      for (const id of [...this.unsaved]) {
+        const rec = this.agents.get(id);
+        this.unsaved.delete(id);
+        if (rec) this.settle(rec, this.persist(rec));
+      }
+    }, this.retryMs);
+    this.retryTimer.unref?.();
   }
 
   /** Why a live-looking agent whose server is gone is stopped. */
@@ -275,10 +328,14 @@ export class AgentHost {
           out.updatedAt = new Date().toISOString();
           changed = true;
         }
+        if (out.processAlive) {
+          delete out.processAlive;
+          changed = true;
+        }
         return out;
       });
       return { agents: changed ? next : undefined, out: undefined };
-    });
+    }, PERSIST_WAIT_MS);
   }
 
   onEvent(fn: (e: HostEvent) => void): void {
@@ -400,16 +457,22 @@ export class AgentHost {
     this.checkCap();
     const claude = this.requireClaude();
     // Claim it under the lock: if another server resumed it a moment ago, it now runs there.
-    const rec = this.registry.update((agents) => {
-      const i = agents.findIndex((a) => a.id === id);
-      const now = i >= 0 ? agents[i]! : found;
-      this.refuseElsewhere(now, "resume it");
-      const claimed: AgentRecord = { ...now, owner: this.owner, status: "starting", reason: undefined, updatedAt: new Date().toISOString() };
-      const next = [...agents];
-      if (i >= 0) next[i] = claimed;
-      else next.push(claimed);
-      return { agents: next, out: claimed };
-    });
+    let rec: AgentRecord;
+    try {
+      rec = this.registry.update((agents) => {
+        const i = agents.findIndex((a) => a.id === id);
+        const now = i >= 0 ? agents[i]! : found;
+        this.refuseElsewhere(now, "resume it");
+        const claimed: AgentRecord = { ...now, owner: this.owner, status: "starting", reason: undefined, updatedAt: new Date().toISOString() };
+        const next = [...agents];
+        if (i >= 0) next[i] = claimed;
+        else next.push(claimed);
+        return { agents: next, out: claimed };
+      }, PERSIST_WAIT_MS);
+    } catch (e) {
+      if (e instanceof RegistryLockedError) throw new HostError(503, `${e.message}; the agent was not resumed, try again in a moment`);
+      throw e;
+    }
     this.agents.set(id, rec);
     const lines = this.registry.readTranscript(id).lines;
     rec.messageCount = Math.max(rec.messageCount, lines.length ? lines[lines.length - 1].seq : 0);
@@ -538,13 +601,18 @@ export class AgentHost {
     const pendingPermissions = live
       ? [...live.pending.values()].map(({ resolve: _r, ...p }) => p)
       : [];
-    if (!live && LIVE_STATUSES.has(a.status)) {
+    if (!live) {
       const where = this.elsewhere(a);
       if (where) return { ...a, running: false, pendingPermissions, runsElsewhere: where };
-      // Its server is gone since this host started: shown as stopped (the next write records it).
-      return { ...a, status: "stopped", reason: this.goneReason(a), running: false, pendingPermissions };
+      // No process of it runs anywhere that is still alive (a gone server's flag is stale).
+      const { processAlive: _p, ...rest } = a;
+      if (LIVE_STATUSES.has(a.status)) {
+        // Its server is gone since this host started: shown as stopped (the next write records it).
+        return { ...rest, status: "stopped", reason: this.goneReason(a), running: false, pendingPermissions };
+      }
+      return { ...rest, running: false, pendingPermissions };
     }
-    return { ...a, running: live !== undefined, pendingPermissions };
+    return { ...a, running: true, pendingPermissions };
   }
 
   private launch(rec: AgentRecord, prompt: string, claude: ClaudeBinary, resumeId: string | undefined): void {
@@ -564,6 +632,7 @@ export class AgentHost {
     };
     // Registered before any await, so two starts in one tick cannot both pass the cap.
     this.live.set(rec.id, live);
+    rec.processAlive = true;
     rec.runs += 1;
     rec.status = "starting";
     rec.reason = undefined;
@@ -740,6 +809,7 @@ export class AgentHost {
   private finish(rec: AgentRecord, live: Live, error: unknown): void {
     if (this.live.get(rec.id) !== live) return;
     this.live.delete(rec.id);
+    delete rec.processAlive;
     this.withdrawAll(rec.id, live, "agent ended");
     live.input.end();
     const why = live.ending ? live.ending.reason : "the agent's run ended before it read the message";
@@ -785,16 +855,53 @@ export class AgentHost {
 
   private changed(rec: AgentRecord): void {
     rec.updatedAt = new Date().toISOString();
-    this.persist(rec);
+    this.settle(rec, this.persist(rec));
+  }
+
+  /**
+   * After a write: tell the pages. A record another server has claimed since is no longer this
+   * host's (its run here has ended): it is dropped from memory and the pages get the file's version.
+   */
+  private settle(rec: AgentRecord, kept: boolean): void {
+    if (!kept && !this.live.has(rec.id)) {
+      this.agents.delete(rec.id);
+      try {
+        this.emitFn({ type: "agent", data: this.get(rec.id) });
+      } catch {
+        /* the file cannot be read now; the next list says so */
+      }
+      return;
+    }
     this.emitFn({ type: "agent", data: this.view(rec) });
   }
 
-  /** Write this one record over its own entry; every other server's records stay as they are on disk (#104). */
-  private persist(rec: AgentRecord): void {
+  /**
+   * Write this one record over its own entry, only while this host still owns it on disk: a
+   * server that has claimed the agent since (resumed it) keeps its claim, and a late write from
+   * here (a process exiting after its turn) never puts back a stale owner and status (#104).
+   * Every other record stays as it is on disk. False when another server owns it now.
+   * A write that finds the registry locked is retried after RETRY_MS, never dropped.
+   */
+  private persist(rec: AgentRecord): boolean {
     try {
-      this.registry.upsert(rec);
+      const kept = this.registry.update((agents) => {
+        const i = agents.findIndex((a) => a.id === rec.id);
+        const there = i >= 0 ? agents[i] : undefined;
+        if (there?.owner && there.owner.instance !== this.owner.instance) return { out: false };
+        const next = [...agents];
+        if (i >= 0) next[i] = rec;
+        else next.push(rec);
+        return { agents: next, out: true };
+      }, PERSIST_WAIT_MS);
+      this.unsaved.delete(rec.id);
+      return kept;
     } catch (e) {
       console.error(`[agents] could not write the registry: ${(e as Error).message}`);
+      if (e instanceof RegistryLockedError) {
+        this.unsaved.add(rec.id);
+        this.scheduleRetry();
+      }
+      return true;
     }
   }
 
