@@ -379,7 +379,6 @@ function upsertAgent(a: StripAgent) {
   if (i === -1) hostAgents.agents.unshift(a);
   else hostAgents.agents[i] = a;
   setPermissionAgents(hostAgents);
-  refreshHomeAgents(hostAgents);
   recountAsks();
   if (!prev || prev.status !== a.status) {
     const kind = a.status === "failed" ? "bad" : a.pendingPermissions.length ? "warn" : a.status === "done" ? "ok" : "info";
@@ -439,6 +438,7 @@ function hostAsks(): HostAsks | undefined {
 
 /** Re-derive Home's one count after the host's agents changed (a request parked or answered). */
 function recountAsks() {
+  refreshHomeAgents(hostAgents); // Home's agents and answer rows follow the host (#81).
   if (!home) return;
   const next = needsCount(home, false, hostAsks());
   const changed = next.n !== count.n || next.state !== count.state || next.unread !== count.unread;
@@ -461,7 +461,6 @@ function repaintHome() {
 async function loadAgents() {
   hostAgents = await api.agentsRead();
   setPermissionAgents(hostAgents);
-  refreshHomeAgents(hostAgents);
   recountAsks();
   renderStrip();
 }
