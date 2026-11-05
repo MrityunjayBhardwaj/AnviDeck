@@ -20,6 +20,8 @@ export interface CurrencyEntry {
   /** What the verdict is measured from: VALIDATED, FIX-<ref>, TIME@<sha>, none. */
   anchor: string;
   not_checked?: string;
+  /** The report graded this entry with a withheld reference area set aside: the verdict covers part of its evidence. */
+  partial?: boolean;
 }
 
 export interface CurrencyCounts {
@@ -57,6 +59,13 @@ export interface CurrencyAnswer {
   /** The report's freshness line: verified, drifted, never confirmed, not checked (of its primaries). */
   states?: Record<string, number>;
   entries?: CurrencyEntry[];
+  /**
+   * How many verdicts the report graded with a withheld area set aside (its top-level `partial`),
+   * and which reference areas it was refused (`withheld_kinds`). Either non-zero means the counts
+   * are over less than the project holds; the screen says so beside them.
+   */
+  partial?: number;
+  withheldKinds?: string[];
   /** A newer run is going; this answer is the last finished one. */
   measuringAgain?: boolean;
 }
@@ -85,9 +94,15 @@ export interface SnapshotSeries {
 /** How often the catalogue-context injector delivered an entry, from /tmp/anvi-hook-<sid>.log. */
 export interface UsageAnswer {
   project: string;
-  /** Window start (ISO) and length. */
+  /** The window asked for: start (ISO) and length. */
   since: string;
   days: number;
+  /**
+   * Where the logs actually reach back to inside that window: the oldest log line read (or a
+   * log untouched since before the window, which reaches it all), never earlier than `since`.
+   * null when no log line was read at all. /tmp is cleared, so this is often days, not `days`.
+   */
+  coveredFrom: string | null;
   /** ok: logs read; none: no hook logs at all; partial/unreadable: some could not be read. */
   status: "ok" | "none" | "partial" | "unreadable";
   errors: string[];

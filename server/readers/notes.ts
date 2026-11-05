@@ -113,6 +113,7 @@ export function currencyFromRun(base: Pick<CurrencyAnswer, "project" | "path" | 
     gone: typeof e.gone === "string" && e.gone ? e.gone.split(", ") : Array.isArray(e.gone) ? e.gone.map(String) : null,
     anchor: String(e.anchor ?? ""),
     ...(e.not_checked ? { not_checked: String(e.not_checked) } : {}),
+    ...(e.partial === true ? { partial: true } : {}),
   }));
   const counts = { ...ZERO };
   for (const k of Object.keys(ZERO) as (keyof CurrencyCounts)[]) counts[k] = Number(j.counts[k]) || 0;
@@ -120,7 +121,10 @@ export function currencyFromRun(base: Pick<CurrencyAnswer, "project" | "path" | 
   for (const k of ["primaries", "verified", "drifted", "never confirmed", "not checked"]) {
     if (typeof j.states?.[k] === "number") states[k] = j.states[k];
   }
-  return { ...out, state: "ok", examined: j.examined, counts, states, entries };
+  // Kept, not dropped: a run over part of the evidence must not read as a complete one.
+  const partial = Number(j.partial) || 0;
+  const withheldKinds = Array.isArray(j.withheld_kinds) ? j.withheld_kinds.map(String) : [];
+  return { ...out, state: "ok", examined: j.examined, counts, states, entries, partial, withheldKinds };
 }
 
 interface Job {
@@ -285,6 +289,7 @@ export function readUsage(
     project,
     since: since.toISOString(),
     days,
+    coveredFrom: null,
     status: "none",
     errors: [],
     logsRead: 0,
@@ -307,12 +312,16 @@ export function readUsage(
   const folders = sessionFolders(opts.projectsDir ?? PROJECTS_DIR);
   const seen = new Set<string>();
   const add = (key: string) => (out.uses[key] = (out.uses[key] ?? 0) + 1);
+  // The oldest moment any log reaches: the window shown is from here, not `days` ago.
+  let earliest = Infinity;
   for (const f of files) {
     const file = join(logDir, f);
     let text: string;
     try {
-      if (statSync(file).mtimeMs < since.getTime()) {
+      const mtime = statSync(file).mtimeMs;
+      if (mtime < since.getTime()) {
         out.logsRead++;
+        earliest = Math.min(earliest, mtime); // it reaches back before the window
         continue; // nothing in it is newer than the window
       }
       text = readFileSync(file, "utf8");
@@ -331,6 +340,7 @@ export function readUsage(
         continue;
       }
       const ts = Date.parse(r?.ts ?? "");
+      if (!Number.isNaN(ts)) earliest = Math.min(earliest, ts);
       if (Number.isNaN(ts) || ts < since.getTime() || ts > now.getTime()) continue;
       const folder = folders.get(String(r?.sid ?? ""));
       if (!folder || ownerOf(folder, known) !== mine) continue;
@@ -342,6 +352,7 @@ export function readUsage(
     }
   }
   out.sessions = seen.size;
+  if (earliest !== Infinity) out.coveredFrom = new Date(Math.max(earliest, since.getTime())).toISOString();
   out.status = out.errors.length ? (out.logsRead ? "partial" : "unreadable") : out.logsRead ? "ok" : "none";
   return out;
 }

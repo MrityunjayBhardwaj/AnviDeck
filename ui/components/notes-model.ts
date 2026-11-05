@@ -8,7 +8,7 @@
  *                                  counted exactly as its summary line counts them
  *                                  (🟡 drifted + 🔴 dangling, of the entries it examined)
  *   - the series:                  the fleet snapshots, health-<date>.json (dates UTC)
- *   - uses / 30d:                  the injector's log, /tmp/anvi-hook-<sid>.log (GET /api/notes/usage)
+ *   - uses (in the logs' window):  the injector's log, /tmp/anvi-hook-<sid>.log (GET /api/notes/usage)
  *   - which catalogue, when:       the routing table in ~/.claude/CLAUDE.md (GET /api/routing-architecture)
  */
 import type { CurrencyAnswer, CurrencyEntry, GtCheckAnswer, SnapshotSeries, UsageAnswer } from "../../shared/notes-types";
@@ -29,6 +29,37 @@ export function outOfDate(c: CurrencyAnswer | null): { n: number; of: number; ye
   return { n: c.counts.YELLOW + c.counts.RED, of: c.examined, yellow: c.counts.YELLOW, red: c.counts.RED };
 }
 
+/**
+ * What the report itself says it could not look at: reference areas it was refused, verdicts it
+ * graded with such an area set aside (PARTIAL), entries it could not grade at all (WITHHELD).
+ * null when it looked at everything. Shown beside every out-of-date figure, so a run over part
+ * of the evidence never reads as a complete one.
+ */
+export function currencyCaveat(c: CurrencyAnswer | null): string | null {
+  if (!c || c.state !== "ok") return null;
+  const parts: string[] = [];
+  const kinds = c.withheldKinds ?? [];
+  if (kinds.length) parts.push(`reference areas withheld, not read: ${kinds.join(", ")}`);
+  if (c.partial) parts.push(`${c.partial} ${c.partial === 1 ? "verdict" : "verdicts"} partial (graded with a withheld area set aside)`);
+  const w = c.counts?.WITHHELD ?? 0;
+  if (w) parts.push(`${w} ${w === 1 ? "entry" : "entries"} withheld (not graded)`);
+  return parts.length ? `over less than this project holds: ${parts.join("; ")}` : null;
+}
+
+/** The header's currency part. A refusal (withheld) is never shown as a failure, nor the reverse. */
+export function currencyHeadline(c: CurrencyAnswer | null): string | null {
+  if (!c) return null;
+  const o = outOfDate(c);
+  if (o) {
+    const cav = currencyCaveat(c);
+    return `${o.n.toLocaleString("en-US")} of ${o.of.toLocaleString("en-US")} out of date${cav ? ` (${cav})` : ""}`;
+  }
+  if (c.state === "measuring") return "currency: measuring…";
+  if (c.state === "none") return "currency: no catalogues";
+  if (c.state === "withheld") return "currency: withheld (the report refused to read the catalogues)";
+  return "currency: could not read";
+}
+
 export const isOutOfDate = (v: Pick<CurrencyEntry, "status">) => v.status === "YELLOW" || v.status === "RED";
 
 /** "catalogue/ID" → anvi's verdict. The report repeats nothing per ID, but the first wins if it did. */
@@ -43,10 +74,11 @@ export function freshnessText(c: CurrencyAnswer | null, v: CurrencyEntry | undef
   if (!c || c.state === "measuring") return "currency: measuring";
   if (c.state !== "ok") return `currency: could not read`;
   if (!v) return "not in anvi's report";
-  if (v.status === "RED") return "dangling";
+  const part = v.partial ? " · partial (a withheld area was set aside)" : "";
+  if (v.status === "RED") return `dangling${part}`;
   const state = v.state || v.status.toLowerCase();
   // anvi's summary counts every 🟡 as drifted, including entries it has never confirmed.
-  return v.status === "YELLOW" && state !== "drifted" ? `${state} · out of date` : state;
+  return (v.status === "YELLOW" && state !== "drifted" ? `${state} · out of date` : state) + part;
 }
 
 export function entryNote(e: CatalogueEntry, c: CurrencyAnswer | null, v: CurrencyEntry | undefined): string {
@@ -249,6 +281,24 @@ export function seriesPoints(s: SnapshotSeries | null, c: CurrencyAnswer | null)
   const o = outOfDate(c);
   if (o && c?.ranAt) pts.push({ label: `now`, value: o.n, of: o.of, live: true });
   return pts;
+}
+
+/**
+ * The window the injector's figures really cover: from the oldest log line read (logs in /tmp
+ * do not keep 30 days) to now. `full` only when the logs reach the whole window asked for.
+ */
+export function usageWindow(u: Pick<UsageAnswer, "since" | "days" | "coveredFrom">, now: Date): { text: string; short: string; full: boolean } {
+  if (!u.coveredFrom) return { text: "in no time at all (no injector log line was read)", short: "0d", full: false };
+  const from = Date.parse(u.coveredFrom);
+  if (from <= Date.parse(u.since)) return { text: `in the last ${u.days} days`, short: `${u.days}d`, full: true };
+  const d = Math.max(0, (now.getTime() - from) / 86_400_000);
+  const days = d < 10 ? d.toFixed(1) : String(Math.round(d));
+  const at = new Date(from).toISOString().slice(0, 16).replace("T", " ");
+  return {
+    text: `since ${at} UTC (${days} days: the oldest injector log line left; the ${u.days} days asked for reach further back than the logs do)`,
+    short: `${days}d`,
+    full: false,
+  };
 }
 
 export interface UsedRow {

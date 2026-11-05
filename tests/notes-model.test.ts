@@ -6,6 +6,8 @@ import {
   batches,
   citations,
   countGap,
+  currencyCaveat,
+  currencyHeadline,
   folderOf,
   freshnessText,
   headerCounts,
@@ -18,6 +20,7 @@ import {
   sectionsText,
   seriesPoints,
   subsystemOf,
+  usageWindow,
   verdicts,
 } from "../ui/components/notes-model";
 import { currencyFromRun } from "../server/readers/notes";
@@ -58,6 +61,39 @@ describe("out of date, as anvi's report counts it", () => {
     expect(freshnessText(ok([], { state: "unreadable" }), undefined)).toBe("currency: could not read");
     expect(freshnessText(ok([], { state: "measuring" }), undefined)).toBe("currency: measuring");
     expect(freshnessText(ok([]), undefined)).toBe("not in anvi's report");
+  });
+
+  test("a run over part of the evidence says so beside its count; a complete one says nothing extra", () => {
+    // AnviDeck's real run looked everywhere: no caveat.
+    expect(currencyCaveat(realAnswer())).toBeNull();
+    expect(currencyHeadline(realAnswer())).toBe("7 of 30 out of date");
+    // The report's own JSON when ref and investigations were refused (partial:2, withheld_kinds, one WITHHELD row).
+    const held = currencyFromRun({ project: "p", path: "/p", command: "c", startedAt: null }, {
+      code: 0, stderr: "", timedOut: false,
+      stdout: JSON.stringify({ ...REAL, partial: 2, withheld_kinds: ["ref", "investigations"], counts: { ...REAL.counts, GRAY: 17, WITHHELD: 1 } }),
+    }, "t");
+    const cav = currencyCaveat(held)!;
+    expect(cav).toContain("reference areas withheld, not read: ref, investigations");
+    expect(cav).toContain("2 verdicts partial");
+    expect(cav).toContain("1 entry withheld (not graded)");
+    expect(currencyHeadline(held)).toBe(`7 of 30 out of date (${cav})`);
+    // Each alone is enough to say so.
+    expect(currencyCaveat(ok([], { partial: 1 }))).toContain("1 verdict partial");
+    expect(currencyCaveat(ok([], { withheldKinds: ["ref"] }))).toContain("ref");
+    expect(currencyCaveat(ok([v({ id: "W", status: "WITHHELD" })]))).toContain("1 entry withheld");
+  });
+
+  test("an entry graded with a withheld area set aside reads as partial", () => {
+    expect(freshnessText(ok([]), v({ id: "A", partial: true }))).toBe("drifted · partial (a withheld area was set aside)");
+    expect(freshnessText(ok([]), v({ id: "A", status: "RED", partial: true }))).toBe("dangling · partial (a withheld area was set aside)");
+    expect(freshnessText(ok([]), v({ id: "A" }))).toBe("drifted");
+  });
+
+  test("the header tells a refusal from a failure", () => {
+    expect(currencyHeadline(ok([], { state: "withheld" }))).toBe("currency: withheld (the report refused to read the catalogues)");
+    expect(currencyHeadline(ok([], { state: "unreadable" }))).toBe("currency: could not read");
+    expect(currencyHeadline(ok([], { state: "none" }))).toBe("currency: no catalogues");
+    expect(currencyHeadline(null)).toBeNull();
   });
 
   test("an entry anvi never confirmed but counts as 🟡 says it is out of date", () => {
@@ -209,7 +245,7 @@ describe("Currency over time, and entries still in use", () => {
   });
 
   const usage = (uses: Record<string, number>, status: UsageAnswer["status"] = "ok"): UsageAnswer => ({
-    project: "p", since: "", days: 30, status, errors: [], logsRead: 1, sessions: 1, edits: 3, delivered: { hetvabhasa: 0, vyapti: 0, dharana: 0 }, uses, malformed: 0,
+    project: "p", since: "", days: 30, coveredFrom: null, status, errors: [], logsRead: 1, sessions: 1, edits: 3, delivered: { hetvabhasa: 0, vyapti: 0, dharana: 0 }, uses, malformed: 0,
   });
 
   test("only out-of-date entries the injector delivered, longest unchanged first", () => {
@@ -219,6 +255,20 @@ describe("Currency over time, and entries still in use", () => {
     expect(rows.map((r) => [r.id, r.lastChanged, r.uses])).toEqual([["H2", "2026-08-01", 1], ["H1", "2026-09-01", 4], ["V1", null, 2]]);
     // A delivery of the same ID from another catalogue does not count.
     expect(oldestStillUsed(ok([v({ id: "H1" })]), null, usage({ "vyapti/H1": 3 }))).toEqual([]);
+  });
+
+  test("the window shown is where the logs reach, not the 30 days asked for", () => {
+    const now = new Date("2026-11-05T12:00:00Z");
+    const since = "2026-10-06T12:00:00.000Z";
+    // Observed 2026-11-05: the oldest /tmp/anvi-hook-*.log line was 2026-11-03T14:30Z.
+    const short = usageWindow({ since, days: 30, coveredFrom: "2026-11-03T14:30:00.000Z" }, now);
+    expect(short.full).toBe(false);
+    expect(short.short).toBe("1.9d");
+    expect(short.text).toContain("since 2026-11-03 14:30 UTC (1.9 days");
+    expect(short.text).not.toContain("in the last 30 days");
+    expect(usageWindow({ since, days: 30, coveredFrom: since }, now)).toEqual({ text: "in the last 30 days", short: "30d", full: true });
+    expect(usageWindow({ since, days: 30, coveredFrom: null }, now).full).toBe(false);
+    expect(usageWindow({ since, days: 30, coveredFrom: null }, now).text).not.toContain("30 days");
   });
 
   test("an injector log that could not be read gives no rows (the screen says why), not 'unused'", () => {

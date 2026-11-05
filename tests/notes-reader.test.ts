@@ -41,6 +41,20 @@ describe("anvi's currency report, one run", () => {
     expect(a.counts!.YELLOW).toBe(1);
     expect(a.states).toEqual({ primaries: 1, verified: 0, drifted: 1, "never confirmed": 0, "not checked": 0 });
     expect(a.entries![0]!.gone).toEqual(["x/y.js", "z.js"]);
+    expect(a.partial).toBe(0);
+    expect(a.withheldKinds).toEqual([]);
+  });
+
+  test("keeps what the report says it could not look at: partial verdicts, withheld areas, per entry", () => {
+    const j = JSON.parse(report([
+      { catalogue: "hetvabhasa", id: "H1", status: "YELLOW", state: "drifted", partial: true, drifted: [], gone: null, anchor: "VALIDATED" },
+      { catalogue: "hetvabhasa", id: "H2", status: "WITHHELD", state: "not checked", partial: false, drifted: [], gone: null, anchor: "none" },
+    ]));
+    const a = currencyFromRun(base, run({ stdout: JSON.stringify({ ...j, partial: 1, withheld_kinds: ["ref"] }) }), "t");
+    expect(a.state).toBe("ok");
+    expect(a.partial).toBe(1);
+    expect(a.withheldKinds).toEqual(["ref"]);
+    expect(a.entries!.map((e) => e.partial ?? false)).toEqual([true, false]);
   });
 
   test("each failure says what it is and is never 'ok' with nothing in it", () => {
@@ -148,6 +162,23 @@ describe("injector deliveries, for one project's sessions", () => {
     expect(u.delivered).toEqual({ hetvabhasa: 3, vyapti: 1, dharana: 1 });
     expect(u.malformed).toBe(1);
     expect(u.logsRead).toBe(4);
+  });
+
+  test("where the logs reach: the oldest line read, never before the window; null when nothing was read", () => {
+    const { logs, projects, now } = setup();
+    // s1 has a line from 2026-09-01, before the 30-day window: the logs reach the whole window.
+    expect(readUsage("proj", "/a/proj", [], { now, logDir: logs, projectsDir: projects, days: 30 }).coveredFrom).toBe("2026-10-06T12:00:00.000Z");
+    // Only logs from the last day: the window shown starts at their oldest line, whoever's session it is.
+    const fresh = dir();
+    writeFileSync(join(fresh, "anvi-hook-x.log"), JSON.stringify({ ts: "2026-11-05T09:00:00Z", sid: "nobody", patterns: [] }) + "\n" + JSON.stringify({ ts: "2026-11-05T11:00:00Z", sid: "nobody", patterns: [] }));
+    expect(readUsage("proj", "/a/proj", [], { now, logDir: fresh, projectsDir: projects }).coveredFrom).toBe("2026-11-05T09:00:00.000Z");
+    // A log untouched since before the window reaches the whole window without being read.
+    const old = dir();
+    writeFileSync(join(old, "anvi-hook-y.log"), "x");
+    const t = new Date("2026-08-01T00:00:00Z");
+    utimesSync(join(old, "anvi-hook-y.log"), t, t);
+    expect(readUsage("proj", "/a/proj", [], { now, logDir: old, projectsDir: projects }).coveredFrom).toBe("2026-10-06T12:00:00.000Z");
+    expect(readUsage("proj", "/a/proj", [], { now, logDir: dir(), projectsDir: projects }).coveredFrom).toBeNull();
   });
 
   test("a log untouched since before the window is skipped without reading", () => {

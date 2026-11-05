@@ -12,6 +12,7 @@ import { resolveDir } from "../../shared/anvi-paths";
  *                                                  "measuring" until it finishes) and the fleet
  *                                                  snapshot series for the project
  *   GET /api/notes/usage?project=                 injector deliveries per entry, last 30 days
+ *                                                  at most (coveredFrom: where the logs reach)
  *   GET /api/notes/grounding?project=             anvi's Ground Truth citation check of the ref folder
  */
 export function notesRoutes(deps: { projects?: () => KnownProject[]; spawnFn?: SpawnFn; script?: string; gtScript?: string; healthDir?: string } = {}): Hono {

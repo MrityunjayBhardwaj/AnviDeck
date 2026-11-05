@@ -20,6 +20,8 @@ import {
   batches,
   citations,
   countGap,
+  currencyCaveat,
+  currencyHeadline,
   entryNote,
   headerCounts,
   key,
@@ -33,6 +35,7 @@ import {
   routingMatrix,
   sectionsText,
   seriesPoints,
+  usageWindow,
   verdicts,
   whyOutOfDate,
   type Batch,
@@ -177,10 +180,8 @@ export function NotesScreen(projectName: string | null, params: URLSearchParams)
       parts.push(`${fmt(h.notes)} notes`);
       if (h.backedPct !== null) parts.push(`${h.backedPct}% backed by source`);
     }
-    const o = outOfDate(st.currency);
-    if (o) parts.push(`${fmt(o.n)} of ${fmt(o.of)} out of date`);
-    else if (st.currency?.state === "measuring") parts.push("currency: measuring…");
-    else if (st.currency) parts.push(`currency: ${st.currency.state === "none" ? "no catalogues" : "could not read"}`);
+    const cur = currencyHeadline(st.currency);
+    if (cur) parts.push(cur);
     sub.textContent = parts.join(" · ");
     const top = batches(st.currency)[0];
     headRecheck.hidden = !top;
@@ -258,7 +259,7 @@ export function NotesScreen(projectName: string | null, params: URLSearchParams)
         ? "Reading the injector's log…"
         : u.status === "unreadable"
           ? `The injector's log could not be read: ${u.errors.join("; ")}.`
-          : `On edits, last ${u.days} days: the injector delivered ${fmt(u.delivered.hetvabhasa)} error patterns, ${fmt(u.delivered.vyapti)} invariants and ${fmt(u.delivered.dharana)} focus-map boundaries on ${fmt(u.edits)} edits in ${fmt(u.sessions)} ${u.sessions === 1 ? "session" : "sessions"} of ${project}${u.status === "partial" ? ` (some logs could not be read: ${u.errors.length})` : ""}.`;
+          : `On edits ${usageWindow(u, new Date()).text}: the injector delivered ${fmt(u.delivered.hetvabhasa)} error patterns, ${fmt(u.delivered.vyapti)} invariants and ${fmt(u.delivered.dharana)} focus-map boundaries on ${fmt(u.edits)} edits in ${fmt(u.sessions)} ${u.sessions === 1 ? "session" : "sessions"} of ${project}${u.status === "partial" ? ` (some logs could not be read: ${u.errors.length})` : ""}.`;
     card.append(t,
       el("div", { class: "sh-dim nt-note" }, el("i", { class: "nt-dot" }), ` named for the activity in the routing table (${src?.path ?? "~/.claude/CLAUDE.md"}).${unnamed.length ? ` No row names ${unnamed.join(" or ")}.` : ""}`),
       el("div", { class: "nt-note", id: "nt-injected" }, injected));
@@ -314,13 +315,15 @@ export function NotesScreen(projectName: string | null, params: URLSearchParams)
       const rows = oldestStillUsed(c, st.dates, u);
       if (st.usageError || u?.status === "unreadable") used.append(el("div", { class: "nt-bad" }, `Could not read the injector's log: ${st.usageError ?? u?.errors.join("; ")}`));
       else if (!u) used.append(el("div", { class: "sh-dim" }, "Reading the injector's log…"));
-      else if (!rows.length) used.append(el("div", { class: "sh-dim", id: "nt-used-none" }, `The injector delivered none of the ${fmt(outOfDate(c)!.n)} out-of-date entries on an edit in the last ${u.days} days (${fmt(u.edits)} edits of ${project} read in ${fmt(u.logsRead)} logs).`));
+      else if (!rows.length) used.append(el("div", { class: "sh-dim", id: "nt-used-none" }, `The injector delivered none of the ${fmt(outOfDate(c)!.n)} out-of-date entries on an edit ${usageWindow(u, new Date()).text} (${fmt(u.edits)} edits of ${project} read in ${fmt(u.logsRead)} logs).`));
       else {
         used.append(el("table", { class: "nt-table", id: "nt-used" },
-          el("tr", {}, el("th", {}, "entry"), el("th", {}, "text last changed"), el("th", { class: "num" }, `uses / ${u.days}d`)),
+          el("tr", {}, el("th", {}, "entry"), el("th", {}, "text last changed"), el("th", { class: "num", title: usageWindow(u, new Date()).text }, `uses / ${usageWindow(u, new Date()).short}`)),
           ...rows.map((r) => el("tr", {}, el("td", { class: "nt-mono" }, r.id), el("td", { class: "nt-mono" }, r.lastChanged?.slice(0, 10) ?? (st.dates ? "unknown" : st.datesNote)), el("td", { class: "num" }, String(r.uses))))));
-        used.append(el("div", { class: "sh-dim nt-note" }, `Uses: deliveries by the injector on edits (/tmp/anvi-hook-<sid>.log, sessions of ${project}). Last changed: the entry's text, from the catalogue's git history${st.dates ? "" : ` (${st.datesNote})`}.`));
+        used.append(el("div", { class: "sh-dim nt-note" }, `Uses: deliveries by the injector on edits ${usageWindow(u, new Date()).text} (/tmp/anvi-hook-<sid>.log, sessions of ${project}). Last changed: the entry's text, from the catalogue's git history${st.dates ? "" : ` (${st.datesNote})`}.`));
       }
+      const cav = currencyCaveat(c);
+      if (cav) used.append(el("div", { class: "nt-bad nt-note", id: "nt-caveat" }, `anvi's report ran ${cav}. Its counts on this screen are not a complete measurement.`));
       const sv = c.states ?? {};
       used.append(el("div", { class: "nt-note", id: "nt-states" }, `anvi's freshness of ${fmt(sv.primaries ?? 0)} primary entries: verified ${fmt(sv.verified ?? 0)} · drifted ${fmt(sv.drifted ?? 0)} · never confirmed ${fmt(sv["never confirmed"] ?? 0)} · not checked ${fmt(sv["not checked"] ?? 0)}.`));
     } else used.append(currencyState(c));
