@@ -189,7 +189,7 @@ export function HistoryScreen(projectName: string | null, params: URLSearchParam
           }
           if (n > 1 || row.key === "refusals") svg.append(sv("text", { x, y: y - 9, "text-anchor": "middle", fill: "#e6e9f0", "font-size": 9.5, "font-family": "IBM Plex Mono, monospace" }, String(n)));
         }
-        const hit = sv("rect", { x: x - colW / 2, y: y - lh / 2, width: colW, height: lh, fill: "transparent", class: "hs-cell", "data-row": row.key, "data-day": d, tabindex: 0 });
+        const hit = sv("rect", { x: x - colW / 2, y: y - lh / 2, width: colW, height: lh, fill: "transparent", class: "hs-cell", "data-row": row.key, "data-day": d, "data-n": n, "data-lane": state, tabindex: 0 });
         hit.append(sv("title", {}, `${row.label} · ${d}: ${n}`));
         hit.addEventListener("click", () => pick(row, d));
         hit.addEventListener("keydown", (e) => (e as KeyboardEvent).key === "Enter" && pick(row, d));

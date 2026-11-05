@@ -208,6 +208,7 @@ function render(root: HTMLElement, project: string, r: ChangesResponse, list: Ch
 
   const target = commentTarget(r.sessions, { state: "loading" });
   const cmtNote = el("div", "chg-cmt-note sh-dim");
+  cmtNote.dataset.tour = "line-comments";
   mid.append(cmtNote);
   let currentTarget: CommentTarget = target;
   const paintTarget = () => {
@@ -216,6 +217,7 @@ function render(root: HTMLElement, project: string, r: ChangesResponse, list: Ch
   paintTarget();
 
   const diffCard = el("div", "chg-diff");
+  diffCard.dataset.tour = "diff";
   mid.append(diffCard);
   const fileEls = new Map<string, HTMLElement>();
   const priorComments: SentMessage[] = [];
@@ -362,6 +364,7 @@ function render(root: HTMLElement, project: string, r: ChangesResponse, list: Ch
   // ── right: evidence, tour, self-review ──
   const ev = evidenceView(pr.body);
   const evCard = el("div", "sh-card chg-card", "<h3>Evidence</h3>");
+  evCard.dataset.tour = "evidence";
   if (ev.evidence.state === "not-in-format") evCard.append(el("div", "chg-note sh-dim", esc(ev.evidence.why)));
   else {
     const e = ev.evidence.value;

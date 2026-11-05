@@ -108,7 +108,7 @@ export function NotesScreen(projectName: string | null, params: URLSearchParams)
   const project = projectName;
 
   let tab: Tab = (TABS.find((t) => t.k === params.get("tab"))?.k ?? "cat") as Tab;
-  const tabBar = el("div", { class: "nt-tabs", role: "tablist" });
+  const tabBar = el("div", { class: "nt-tabs", role: "tablist", "data-tour": "notes-tabs" });
   const body = el("div", { class: "nt-body" });
   const confirm = el("div", { class: "sh-card nt-confirm", id: "nt-confirm", hidden: "" });
   const sources = el("div", { class: "sh-dim nt-sources", id: "nt-sources" });
@@ -339,7 +339,7 @@ export function NotesScreen(projectName: string | null, params: URLSearchParams)
       for (const b of bs) {
         const btn = el("button", { type: "button", class: "sh-btn nt-warn", "data-subsystem": b.subsystem }, "Re-check");
         btn.onclick = () => askRecheck(b);
-        re.append(el("details", { class: "nt-batch" },
+        re.append(el("details", { class: "nt-batch", "data-tour": "recheck" },
           el("summary", {}, el("b", {}, b.subsystem), ` · ${b.entries.length} out of date `, btn),
           el("div", { class: "nt-batch-list" }, ...b.entries.map((v) => el("div", {}, el("span", { class: "nt-id" }, v.id), el("span", { class: "sh-dim" }, ` ${v.catalogue} · ${whyOutOfDate(v)}`))))));
       }

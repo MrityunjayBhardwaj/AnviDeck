@@ -23,6 +23,8 @@ import { ChangesScreen } from "./components/ChangesScreen";
 import { NotesScreen } from "./components/NotesScreen";
 import { DesignScreen } from "./components/DesignScreen";
 import { HistoryScreen } from "./components/HistoryScreen";
+import { HelpScreen } from "./components/HelpScreen";
+import { createTour } from "./shell/tour";
 import { createStartAgent } from "./shell/start-agent";
 import { parseRoute, screen, type Route, type ScreenId } from "./shell/routes";
 import type { AgentsRead, StripAgent } from "./shell/activity";
@@ -246,6 +248,8 @@ function renderMain() {
     mainEl.appendChild(DesignScreen(currentProjectName, route.params));
   } else if (id === "history") {
     mainEl.appendChild(HistoryScreen(currentProjectName, route.params));
+  } else if (id === "flows") {
+    mainEl.appendChild(HelpScreen((i) => tour.start(i)));
   } else if (id === "changes") {
     mainEl.appendChild(ChangesScreen(route.params.get("project") ?? currentProjectName, route.params.get("pr")));
   } else if (id === "routing") {
@@ -380,11 +384,15 @@ const palette = createPalette({
   entries: paletteData,
   choose: (e) => {
     if (e.command === "start-from-issue") startAgent.open(currentProjectName);
+    else if (e.flow !== undefined) tour.start(e.flow);
     else if (e.project) setProject(e.project);
     else if (e.hash) go(e.hash);
     else if (e.href) location.href = e.href;
   },
 });
+
+// Help's guided flows (#91): they open screens and highlight, never press.
+const tour = createTour({ go, project: () => currentProjectName, finished: () => go("#flows") });
 
 // WebSocket
 function pushEvent(kind: "ok" | "info" | "warn" | "bad", text: string) {

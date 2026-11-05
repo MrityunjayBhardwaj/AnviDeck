@@ -177,8 +177,8 @@ export function DesignScreen(projectName: string | null, params: URLSearchParams
     if (rows.length) {
       const table = el("table", { class: "dz-table" }, el("tr", {}, el("th", {}, "when"), el("th", {}, "edge"), el("th", {}, "file"), el("th", {}, "refused by")));
       for (const row of rows) {
-        table.append(el("tr", { "data-key": row.key }, el("td", { class: "dz-mono" }, day(row.at).slice(5)), el("td", { class: "dz-mono" }, arrow(row.edge)), el("td", { class: "dz-mono", title: row.file }, row.file.split("/").pop() ?? row.file), el("td", {}, row.refusedBy, row.design ? el("span", { class: "sh-dim" }, ` · design ${row.design}`) : el("span", { class: "sh-dim" }, " · before refusals named a design"))));
-        table.append(el("tr", { class: "dz-callrow" }, el("td", { colspan: "4" }, refusalCall({ key: row.key, project, refusal: { session: row.session, tool: row.tool, file: row.file, at: row.at } }))));
+        table.append(el("tr", { "data-key": row.key, "data-tour": "blocked-edit", "data-at": row.at, "data-session": row.session },el("td", { class: "dz-mono" }, day(row.at).slice(5)), el("td", { class: "dz-mono" }, arrow(row.edge)), el("td", { class: "dz-mono", title: row.file }, row.file.split("/").pop() ?? row.file), el("td", {}, row.refusedBy, row.design ? el("span", { class: "sh-dim" }, ` · design ${row.design}`) : el("span", { class: "sh-dim" }, " · before refusals named a design"))));
+        table.append(el("tr", { class: "dz-callrow", "data-tour": "your-call" },el("td", { colspan: "4" }, refusalCall({ key: row.key, project, refusal: { session: row.session, tool: row.tool, file: row.file, at: row.at } }))));
       }
       card.append(table);
     }
@@ -193,10 +193,10 @@ export function DesignScreen(projectName: string | null, params: URLSearchParams
 
   function placed(): HTMLElement {
     const grid = el("div", { class: "dz-grid2" });
-    grid.append(el("div", { class: "sh-card", id: "dz-placement" }, el("h3", {}, "Placement in review"), el("div", { class: "dz-gap" }, NO_PLACEMENT)));
+    grid.append(el("div", { class: "sh-card", id: "dz-placement", "data-tour": "placement" },el("h3", {}, "Placement in review"), el("div", { class: "dz-gap" }, NO_PLACEMENT)));
     const s = measured();
     const askBtn = el("button", { class: "sh-btn", type: "button", id: "dz-ask" }, "Ask");
-    const card = el("div", { class: "sh-card", id: "dz-askcard" }, el("h3", {}, "Ask before writing"), el("div", { class: "dz-composer" }, question, askBtn), confirm);
+    const card = el("div", { class: "sh-card", id: "dz-askcard", "data-tour": "ask-placement" },el("h3", {}, "Ask before writing"), el("div", { class: "dz-composer" }, question, askBtn), confirm);
     const gap = structureGap(st.structure, st.structureError);
     if (gap || !s) {
       askBtn.disabled = true;
@@ -248,7 +248,7 @@ export function DesignScreen(projectName: string | null, params: URLSearchParams
   // ── Consolidated ──────────────────────────────────────────────────────────────────────
   function consolidated(): HTMLElement {
     const grid = el("div", { class: "dz-grid2" });
-    const card = el("div", { class: "sh-card", id: "dz-clusters" }, el("h3", {}, "Where problems cluster"));
+    const card = el("div", { class: "sh-card", id: "dz-clusters", "data-tour": "clusters" },el("h3", {}, "Where problems cluster"));
     const gap = structureGap(st.structure, st.structureError);
     const s = measured();
     if (gap) card.append(el("div", { class: "dz-gap" }, gap));
@@ -262,7 +262,7 @@ export function DesignScreen(projectName: string | null, params: URLSearchParams
         for (const r of rows) t.append(el("tr", {}, el("td", { class: "dz-mono" }, r.where), el("td", { class: "num" }, String(r.count))));
         card.append(t);
       }
-      card.append(el("div", { class: "sh-dim dz-note" }, `Measured by anvi's structure guard at ${measuredPhrase(s)}: ${s.counts.divergence.grandfathered} held of ${s.counts.examinedBetweenComponents} imports between components.`));
+      card.append(el("div", { class: "sh-dim dz-note", "data-tour": "clusters-measured" }, `Measured by anvi's structure guard at ${measuredPhrase(s)}: ${s.counts.divergence.grandfathered} held of ${s.counts.examinedBetweenComponents} imports between components.`));
     }
     card.append(el("div", { class: "dz-gap", id: "dz-no-signals" }, NO_FATALITY_SIGNALS));
     card.append(el("div", { class: "dz-sub" }, "Boundaries where the project's catalogue says the fatality test tripped"));
@@ -327,7 +327,7 @@ export function DesignScreen(projectName: string | null, params: URLSearchParams
 
   // ── Path to target ────────────────────────────────────────────────────────────────────
   function path(): HTMLElement {
-    const card = el("div", { class: "sh-card", id: "dz-path" }, el("h3", {}, "From current to declared design"), el("div", { class: "dz-gap" }, NO_MOVES_SOURCE));
+    const card = el("div", { class: "sh-card", id: "dz-path", "data-tour": "path" },el("h3", {}, "From current to declared design"), el("div", { class: "dz-gap" }, NO_MOVES_SOURCE));
     const gap = structureGap(st.structure, st.structureError);
     const s = measured();
     if (gap) return (card.append(el("div", { class: "dz-gap" }, gap)), card);

@@ -327,6 +327,7 @@ function tabsRow(agents: HostAgent[], sel: ReturnType<typeof selected>): HTMLEle
   const d = S.deps!;
   const row = el("div", "aw-tabs");
   row.id = "aw-tabs";
+  row.dataset.tour = "agent-tabs";
   const t = d.project ? S.terminals.get(d.project) : undefined;
   const terms = t?.state === "ok"
     ? [...t.data.sessions].sort((a, b) => (b.lastTs ?? b.modifiedAt).localeCompare(a.lastTs ?? a.modifiedAt)).slice(0, TAB_ROW_TERMINALS)
@@ -757,6 +758,7 @@ function tool(t: ToolCall, _cwd: string | undefined): HTMLElement {
 function refusalCard(r: Refusal, t: ToolCall, cwd: string | undefined): HTMLElement {
   const card = el("div", "aw-refusal");
   card.dataset.refusal = r.file;
+  card.dataset.tour = "refusal-card";
   card.append(el("div", "aw-card-head", el("b", "", `Blocked edit · ${r.file}`), el("span", "r", el("span", "aw-chip bad", `design guard · ${r.pkg}`), stamp(t.result?.at ?? t.at))));
   for (const v of r.violations) {
     const layer = (name: string | undefined, file: string) => el("span", "layer", name ? el("i", "", name) : "", file);
