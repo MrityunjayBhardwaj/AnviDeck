@@ -69,7 +69,6 @@ export const SCREENS: readonly ScreenDef[] = [
     label: "Design",
     group: "project",
     rail: "project",
-    buildsIn: 87,
     blurb: "Five lenses on the project's design: Armed, Placed, Consolidated, Path to target, System flows.",
   },
   {

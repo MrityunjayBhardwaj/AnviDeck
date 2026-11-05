@@ -102,6 +102,8 @@ export function refusalCall(target: RefusalCallTarget): HTMLElement {
       else reloadCalls();
       note.value = "";
       out.textContent = `recorded in ${r.file}`;
+      // Screens that count calls (Design's trial record) recount from the record the server returned.
+      root.dispatchEvent(new CustomEvent<CallRecord>("refusal-call-recorded", { bubbles: true, detail: r.recorded }));
       paintAll();
     } catch (e) {
       out.className = "rc-out rc-warn";
