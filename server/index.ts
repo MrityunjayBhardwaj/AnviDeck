@@ -24,6 +24,7 @@ app.route("/api/structure", (await import("./routes/structure")).default);
 app.route("/api/home", (await import("./routes/home")).default);
 app.route("/api", (await import("./routes/work")).workRoutes()); // Work screen (#85)
 app.route("/api", (await import("./routes/work-actions")).workActionRoutes()); // Work screen actions: New issue, Merge (#85)
+app.route("/api/changes", (await import("./routes/changes")).default);
 app.route("/api", api);
 app.route("/api/replay", (await import("./routes/replay")).default);
 

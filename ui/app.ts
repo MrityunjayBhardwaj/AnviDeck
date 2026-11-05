@@ -17,6 +17,7 @@ import { permissionQueue, type AskingAgent } from "../shared/permission-requests
 import type { HomeResponse } from "../shared/home-types";
 import { MapView } from "./components/MapView";
 import { WorkScreen } from "./components/WorkScreen";
+import { ChangesScreen } from "./components/ChangesScreen";
 import { createStartAgent } from "./shell/start-agent";
 import { parseRoute, screen, type Route, type ScreenId } from "./shell/routes";
 import type { AgentsRead, StripAgent } from "./shell/activity";
@@ -185,6 +186,7 @@ function setProject(name: string) {
   // Screens that show one project follow the switcher.
   const s = route.screen;
   if (s === "project" || s === "brain" || s === "github-trace" || s === "agents") go(screenHash(s, name));
+  else if (s === "changes") go(`#changes?project=${encodeURIComponent(name)}`);
   else if (screen(s).group === "project" || s === "older") renderMain();
 }
 
@@ -230,6 +232,8 @@ function renderMain() {
     mainEl.appendChild(MapView(nav));
   } else if (id === "work") {
     mainEl.appendChild(WorkScreen(currentProjectName, route.params, { startAgent: (p, n) => startAgent.open(p, n) }));
+  } else if (id === "changes") {
+    mainEl.appendChild(ChangesScreen(route.params.get("project") ?? currentProjectName, route.params.get("pr")));
   } else if (id === "routing") {
     mainEl.appendChild(RoutingView(nav));
   } else if (id === "github-trace") {
