@@ -16,6 +16,7 @@ import { needsCount, badgeText, stripText, type HostAsks, type NeedsCount } from
 import { permissionQueue, type AskingAgent } from "../shared/permission-requests";
 import type { HomeResponse } from "../shared/home-types";
 import { MapView } from "./components/MapView";
+import { WorkScreen } from "./components/WorkScreen";
 import { createStartAgent } from "./shell/start-agent";
 import { parseRoute, screen, type Route, type ScreenId } from "./shell/routes";
 import type { AgentsRead, StripAgent } from "./shell/activity";
@@ -227,6 +228,8 @@ function renderMain() {
     mainEl.appendChild(AgentsView(projects.map((p) => p.name), r));
   } else if (id === "map") {
     mainEl.appendChild(MapView(nav));
+  } else if (id === "work") {
+    mainEl.appendChild(WorkScreen(currentProjectName, route.params, { startAgent: (p, n) => startAgent.open(p, n) }));
   } else if (id === "routing") {
     mainEl.appendChild(RoutingView(nav));
   } else if (id === "github-trace") {

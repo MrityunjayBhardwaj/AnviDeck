@@ -1,0 +1,59 @@
+/* Project · Work (#85). Loaded by ui/components/WorkScreen.ts. The prototype's board and
+   pipeline on the shell's tokens (shell.css): colour only for state. */
+
+.wk { max-width: 1180px; }
+.wk .sh-head .wk-acts { margin-left: auto; }
+.wk h3 { margin: 0; font-size: 13px; font-weight: 600; }
+.wk-src { font-size: 12px; }
+.wk-warn b { color: var(--yellow); }
+.wk-bad { color: var(--red); }
+.wk-ok { color: var(--green); }
+.wk-mono { font: 12px var(--font-mono); }
+.wk-prs-in, .wk-board-in { display: flex; flex-direction: column; gap: 10px; }
+
+/* your workflow */
+.wk-pr h3 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px; }
+.wk-pr-title a { color: var(--sh-ink) !important; font-weight: 500; }
+.wk-pr-by { font-weight: 400; font-size: 12px; }
+.wk-pipeline { display: flex; align-items: center; flex-wrap: wrap; }
+.wk-st { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--sh-line); background: var(--sh-panel-2); font-size: 12px; margin-left: -1px; cursor: default; }
+.wk-st:first-child { border-radius: 8px 0 0 8px; margin-left: 0; }
+.wk-st:last-child { border-radius: 0 8px 8px 0; }
+.wk-st.done { color: var(--green); }
+.wk-st.missing, .wk-st.todo { color: var(--sh-ink-3); }
+.wk-st.failed { color: var(--red); }
+.wk-st.now { background: var(--sh-accent-soft); border-color: var(--accent); color: var(--sh-ink); font-weight: 600; position: relative; z-index: 1; }
+.wk-st.failed.now { color: var(--red); border-color: var(--red); }
+
+/* merge checks */
+.wk-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.wk-chk { cursor: default; }
+.wk-chk.ok { color: var(--green); border-color: rgba(74, 222, 128, .35); background: var(--glow-green); }
+.wk-chk.bad { color: var(--red); border-color: rgba(248, 113, 113, .35); background: var(--glow-red); }
+.wk-chk.pending, .wk-chk.unknown { color: var(--yellow); border-color: rgba(250, 204, 21, .35); }
+.wk-chk.none { color: var(--sh-ink-2); }
+.wk-merge { margin-left: auto; display: inline-flex; gap: 6px; }
+.wk-merge-btn, .wk-merge-go { border-color: var(--accent) !important; font-weight: 600; }
+.wk-merge-go { background: var(--sh-accent-soft); }
+.wk-merge-btn:disabled { opacity: .5; cursor: not-allowed; }
+.wk-merge-out { font-size: 12.5px; min-height: 0; }
+.wk-others { font-size: 12px; }
+
+/* board */
+.wk-board { display: grid; gap: 12px; }
+.wk-col { background: var(--sh-panel); border: 1px solid var(--sh-line); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px; min-height: 200px; min-width: 0; }
+.wk-count { font-weight: 400; }
+.wk-issue { background: var(--sh-panel-2); border: 1px solid var(--sh-line); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 5px; }
+.wk-issue-h { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.wk-issue-t { color: var(--sh-ink) !important; font-weight: 600; text-decoration: none; }
+.wk-issue-t:hover { text-decoration: underline; }
+.wk-issue .wk-start { align-self: flex-start; font-size: 12px; padding: 2px 9px; }
+.wk-note, .wk-more { font-size: 12px; }
+.wk-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 8px; }
+
+/* new issue (.sh-card sets display: flex, which would override [hidden]) */
+.wk-ni[hidden] { display: none; }
+.wk-ni input, .wk-ni textarea { background: var(--bg-0); color: var(--sh-ink); border: 1px solid var(--sh-line); border-radius: 6px; padding: 6px 8px; font: 13px var(--sh-font-ui); }
+.wk-ni textarea { font: 12.5px var(--font-mono); resize: vertical; }
+
+@media (max-width: 900px) { .wk-board { grid-template-columns: 1fr !important; } }

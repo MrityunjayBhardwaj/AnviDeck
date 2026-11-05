@@ -31,7 +31,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Record<string,
   return e;
 }
 
-export function createStartAgent(deps: StartAgentDeps): { open: (project: string | null) => void; close: () => void } {
+export function createStartAgent(deps: StartAgentDeps): { open: (project: string | null, issue?: number) => void; close: () => void } {
   const project = el("select", { id: "sa-project", "aria-label": "Project" });
   const issue = el("input", { id: "sa-issue", type: "text", inputmode: "numeric", placeholder: "issue number", size: "8", "aria-label": "Issue number" });
   const note = el("textarea", { id: "sa-note", rows: "2", placeholder: "optional note for this run (it wins over the workflow where they differ)", "aria-label": "Note" });
@@ -119,10 +119,12 @@ export function createStartAgent(deps: StartAgentDeps): { open: (project: string
   });
 
   return {
-    open(current) {
+    open(current, issueNumber) {
       const names = deps.projects();
       project.replaceChildren(...names.map((n) => el("option", { value: n }, n)));
       if (current && names.includes(current)) project.value = current;
+      // Opened from an issue (Work's Start agent, #85): its number is filled in.
+      if (issueNumber !== undefined) issue.value = String(issueNumber);
       out.replaceChildren();
       bg.classList.add("on");
       issue.focus();

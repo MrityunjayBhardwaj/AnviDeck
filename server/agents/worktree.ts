@@ -1,6 +1,6 @@
-import { appendFileSync, existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, symlinkSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, readFileSync, readlinkSync, symlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { existingDirs } from "../../shared/anvi-paths";
 
 /**
@@ -15,13 +15,10 @@ import { existingDirs } from "../../shared/anvi-paths";
  * After linking we ask anvi's own `worktreeLinkGap` what is still missing (see anviLinkCheck).
  */
 
-export interface RunResult {
-  code: number;
-  stdout: string;
-  stderr: string;
-}
-/** Runs a command and never throws: a missing binary is code 127 with the reason in stderr. */
-export type Run = (cmd: string, args: string[], opts?: { cwd?: string }) => Promise<RunResult>;
+import { git, githubRepoOf, mainCheckout, real, type Run, type RunResult } from "../readers/repo";
+
+// Read-only repo questions live with the readers (#85); re-exported here for the agent host.
+export { git, githubRepoOf, mainCheckout, type Run, type RunResult };
 
 export const spawnRun: Run = async (cmd, args, opts) => {
   try {
@@ -32,35 +29,6 @@ export const spawnRun: Run = async (cmd, args, opts) => {
     return { code: 127, stdout: "", stderr: (e as Error).message };
   }
 };
-
-/** git -C <dir> ...: stdout trimmed, or an Error carrying git's own words. */
-export async function git(run: Run, dir: string, args: string[]): Promise<string> {
-  const r = await run("git", ["-C", dir, ...args]);
-  if (r.code !== 0) throw new Error(`git ${args.join(" ")}: ${(r.stderr || r.stdout).trim() || `exit ${r.code}`}`);
-  return r.stdout.trim();
-}
-
-const real = (p: string) => {
-  try {
-    return realpathSync(p);
-  } catch {
-    return p;
-  }
-};
-
-/** The main checkout of the repository `dir` is in (a linked worktree's main, or the repo itself). */
-export async function mainCheckout(run: Run, dir: string): Promise<string> {
-  const common = await git(run, dir, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
-  // A repo whose common dir is not "<checkout>/.git" (bare, submodule) has no main checkout.
-  if (!common.endsWith("/.git")) throw new Error(`${dir} is not in a normal git checkout (git dir ${common})`);
-  return real(dirname(common));
-}
-
-/** "owner/name" of a GitHub remote URL (https or ssh), or null for anything else. */
-export function githubRepoOf(url: string): string | null {
-  const m = /^(?:https?:\/\/(?:[^@/]+@)?github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/.exec(url.trim());
-  return m ? `${m[1]}/${m[2]}` : null;
-}
 
 /**
  * Branch name for an issue: `<kind>/<n>-<slug>`. The kind follows the owner's convention

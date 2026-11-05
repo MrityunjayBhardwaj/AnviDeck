@@ -37,7 +37,7 @@ The prototype's frame replaces today's sidebar:
 | **Project · Code** | File tree coloured by layer, with markers for refused edits, imports that break the design, and files agents touched; a file view with blame and known-trap lines. Editing is off while agents work, behind an **Enable editing** switch. | Structure reader, refusal log, agents' edits, `git blame` | #88 |
 | **Project · Design** | Five lenses: Armed (enforcement mode, allowed rule breaks, trial record), Placed (placement in review, "ask before writing"), Consolidated (where problems cluster, the cost curve of fixes, shown only where files per fix can be measured), Path to target (moves to the declared design, each linked to an issue), System flows. | Structure readers; your recorded calls | #87, #86 |
 | **Project · History** | One timeline of agent turns, edits, refusals, rulings, commits and catalogue changes, each event naming its source; a moment's details; compare two points (code, design, knowledge); replay a session. | Timeline, hook log, replay reader, action log | #90 |
-| **Project · Work** | The board (Todo / In Progress / Done from the GitHub project's Status field; a list if the project has no board), **Start agent**, **New issue**; for each PR your workflow as steps (Friction → Issue → Branch → Fix → Test → Observe → PR → Self-review → Merge, by you) with merge checks (CI green, closing reference parsed, no conflict with other open PRs). **Merge** is a button only you press. | `gh`, `gh project`, `git merge-tree` | #85 (needs #78) |
+| **Project · Work** | The board (Todo / In Progress / Done from the GitHub project's Status field; a list if the project has no board), **Start agent**, **New issue**; for each PR your workflow as steps (Friction → Issue → Branch → Fix → Test → Observe → PR → Self-review → Merge, by you) with merge checks (CI green, closing reference parsed, no conflict with other open PRs). **Merge** is a button only you press. | `gh`, `gh project`, `git merge-tree` | #85, on main: `GET /api/work/board`, `GET /api/work/prs`, `POST /api/issues`, `POST /api/prs/:n/merge { project, head, base }` (readers `server/readers/work.ts`, `work-conflicts.ts`, `boards.ts`, `repo.ts`; actions `server/work/act.ts`; routes `server/routes/work.ts` (GET) and `work-actions.ts` (POST)); conflicts are checked in a scratch bare clone under `ANVIDECK_WORK_TMP`, never in the project |
 | **Help** | Six guided flows played over the real screens: start a task, a blocked edit and your call, review a change, notes go out of date, place new code, fix a boundary. A step whose data isn't there is skipped, and the tour says so. | All screens | #91 |
 
 ---
@@ -58,7 +58,7 @@ The prototype's frame replaces today's sidebar:
                      └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Readers are read-only.** They read files, spawn `git`/`gh`/`node` to ask questions, and the structure reader keeps a scratch folder under `ANVIDECK_STRUCTURE_TMP` for anvi's structure guard. They never write into a project, a catalogue, memory or the store. A test will enforce that no reader imports the agent host or writes a file (#76).
+- **Readers are read-only.** They read files, spawn `git`/`gh`/`node` to ask questions, the structure reader keeps a scratch folder under `ANVIDECK_STRUCTURE_TMP` for anvi's structure guard, and Work's conflict reader keeps a scratch bare repo under `ANVIDECK_WORK_TMP` that it fetches PR heads into and runs `git merge-tree --write-tree` in. They never write into a project, a catalogue, memory or the store. A test will enforce that no reader imports the agent host or writes a file (#76).
 - **The agent host is the only module that acts** (#75). Everything AnviDeck does beyond reading goes through it or the action log.
 - **Catalogues, memory and Ground Truth docs are changed only by agents**, never by AnviDeck directly (#89, #93).
 
@@ -76,7 +76,7 @@ The prototype's frame replaces today's sidebar:
 
 ### Starting an agent from an issue (#78, on main)
 
-**Start agent** on an issue (⌘K "Start an agent on an issue", and a box on `/agent-host`; the Work and Home buttons come with #85 and #81): `POST /api/agents/from-issue { project | repo, issue, note? }`, previewed without writing by `GET /api/agents/from-issue/plan` (`server/agents/from-issue.ts`, `worktree.ts`, `issue-prompt.ts`, `board.ts`).
+**Start agent** on an issue (⌘K "Start an agent on an issue", and a box on `/agent-host`; Work's Start agent on each Todo issue (#85); Home's button comes with #81): `POST /api/agents/from-issue { project | repo, issue, note? }`, previewed without writing by `GET /api/agents/from-issue/plan` (`server/agents/from-issue.ts`, `worktree.ts`, `issue-prompt.ts`, `board.ts`).
 - Creates the worktree `<main checkout>/.claude/worktrees/issue-<n>` (beside Claude Code's own) on a new branch `feat|fix|chore/<n>-<slug>` (fix for a `bug` label, chore for `chore` or `documentation`, else feat), from the local default branch.
 - Links `.anvi` and `ref` into it, each to where the main checkout's resolves (what anvi's `worktreeLinkGap` says a linked worktree needs). A tracked `ref` stays the branch's own copy. A link the repo does not already ignore is added to its `info/exclude`. Each link is read back, and anvi's own `worktreeLinkGap` is asked what is still missing.
 - Starts the agent with a prompt built from the issue (repo, number, title, body) plus the workflow (issue → branch → fix → test and observe → PR → self-review; agents never merge) and `PR_SECTIONS_INSTRUCTIONS`. An optional note comes last and wins where it differs.
@@ -97,7 +97,8 @@ Agents AnviDeck starts write two PR-body sections with a fixed shape: **Evidence
 | Readers can't act: a test fails if a reader imports the agent host or writes a file | Planned (#76) |
 | Agents on the Claude Code login only (see Agent host) | Planned (#75) |
 | Your permission rules apply as in the terminal; only uncovered calls reach AnviDeck; no timeout allows a call | **Exists** (#77) |
-| Merge only by you, only the reviewed head; refused if the head moved after review | Planned (#85) |
+| Merge only the reviewed head, into the base the page showed; refused (409 with the current head or base) if either changed | **Exists** (#85) |
+| Merge only by you: no agent can cause a merge | **Partial**: the write token is in the page, so any process on this machine (an agent's shell included) can read it and call Merge; today this rests on agents not trying and on your permission rules (#147) |
 | Code-screen edits only to files no running agent is touching, each through the action log | Planned (#88) |
 
 ### Stack
@@ -128,7 +129,7 @@ Agents AnviDeck starts write two PR-body sections with a fixed shape: **Evidence
 | Notes currency | `~/.anvideck/projects/anvi/instances` |
 | GitHub | `gh`: PR state, your open PRs, issues and PRs |
 
-Planned additions: the agent registry, action log and your calls on blocked edits, in AnviDeck's own store folder (#75, #76, #86); the board via `gh project` (#85).
+Planned additions: the agent registry, action log and your calls on blocked edits, in AnviDeck's own store folder (#75, #76, #86). The Work screen reads the board via `gh project` (#85).
 
 ---
 
@@ -227,7 +228,7 @@ ref/                      ANVI_THESIS.md, DATA_EXAMPLES.md
 
 **Every figure says where it came from.** A reader that could not look says so (`unreadable`, `partial`), never "nothing found". Nothing illustrative is shown as measured (#87).
 
-**Zero config.** Point it at `~/.claude/` and `~/.anvideck/` and it works. Overrides are environment variables (`PORT`, `HOST`, `ANVIDECK_HEALTH_DIR`, `ANVIDECK_STRUCTURE_TMP`, `ANVIDECK_STRUCTURE_GUARD`).
+**Zero config.** Point it at `~/.claude/` and `~/.anvideck/` and it works. Overrides are environment variables (`PORT`, `HOST`, `ANVIDECK_HEALTH_DIR`, `ANVIDECK_STRUCTURE_TMP`, `ANVIDECK_STRUCTURE_GUARD`, `ANVIDECK_WORK_TMP`).
 
 **Local by default.** This machine only; no cloud service of AnviDeck's own and no telemetry. Network use is GitHub through `gh` and the agents' own Claude Code sessions on your login.
 
