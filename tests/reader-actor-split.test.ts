@@ -41,7 +41,7 @@ const ALLOWED: { file: string; call: string; count: number; why: string }[] = [
  * list, the way every reader passes them to its run function.
  */
 const SPAWN_WRITE =
-  /["'](?:clone|fetch|push|update-ref|--write-tree|init|checkout|reset|worktree|commit-tree|gc)["']|["'](?:pr|issue)["']\s*,\s*["'](?:merge|create|edit|close|comment|reopen)["']|["']project["']\s*,\s*["']item-(?:add|edit|delete|archive)["']/g;
+  /["'](?:clone|fetch|push|update-ref|--write-tree|init|checkout|reset|commit-tree|gc)["']|["']worktree["']\s*,\s*["'](?:add|remove|prune|move|lock|unlock|repair)["']|["'](?:pr|issue)["']\s*,\s*["'](?:merge|create|edit|close|comment|reopen)["']|["']project["']\s*,\s*["']item-(?:add|edit|delete|archive)["']/g;
 
 export function spawnWritesIn(src: string): string[] {
   return [...code(src).matchAll(SPAWN_WRITE)].map((m) => m[0]);
@@ -125,10 +125,10 @@ describe("reader/actor split", () => {
   });
 
   test("the spawn detector fires on git and gh commands that write, and not on ones that read", () => {
-    for (const w of [`run("git", ["clone", "--bare", a, b])`, `["--git-dir", d, "fetch", url]`, `["merge-tree", "--write-tree", a, b]`, `run("gh", ["pr", "merge", "7"])`, `["issue", "create", "--repo", r]`, `["project", "item-edit", "--id", x]`, `['push', 'origin']`]) {
+    for (const w of [`run("git", ["clone", "--bare", a, b])`, `["--git-dir", d, "fetch", url]`, `["merge-tree", "--write-tree", a, b]`, `run("gh", ["pr", "merge", "7"])`, `["issue", "create", "--repo", r]`, `["project", "item-edit", "--id", x]`, `['push', 'origin']`, `["worktree", "add", p, b]`, `["-C", d, "worktree", "remove", p]`]) {
       expect(spawnWritesIn(w).length).toBe(1);
     }
-    for (const r of [`["log", "--oneline"]`, `["pr", "view", "7"]`, `["issue", "list"]`, `["merge-tree", "--name-only"]`, `kind: "commit"`, `Pick<PrInfo, "number" | "merge">`, `// git fetch in a comment`, `["project", "item-list", "1"]`]) {
+    for (const r of [`["log", "--oneline"]`, `["pr", "view", "7"]`, `["issue", "list"]`, `["merge-tree", "--name-only"]`, `kind: "commit"`, `Pick<PrInfo, "number" | "merge">`, `// git fetch in a comment`, `["project", "item-list", "1"]`, `["git", "-C", p, "worktree", "list", "--porcelain"]`]) {
       expect(spawnWritesIn(r)).toEqual([]);
     }
   });
