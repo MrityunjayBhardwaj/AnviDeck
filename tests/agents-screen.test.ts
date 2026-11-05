@@ -7,12 +7,21 @@ import {
   agentTabs,
   buildTimeline,
   gridAgents,
+  hookWindow,
+  hostLineArrived,
+  hostReadDone,
+  hostReadFailed,
+  hostSourceLine,
+  mergeHostLines,
   parseAgentsScreenParams,
   parseRefusal,
   planFrom,
+  restoreFocus,
   sourceLine,
   toolTarget,
+  type FocusTarget,
   type HostAgent,
+  type HostLoad,
   type TLine,
   type ToolCall,
 } from "../ui/components/agents-model";
@@ -429,6 +438,139 @@ describe("reader: one session's transcript, hook meter and hook log", () => {
   });
 });
 
+// ── an AnviDeck agent's host transcript, as it arrives ────────────────────────────────────
+
+describe("host transcript: no line is lost between the read and the WebSocket", () => {
+  const ln = (seq: number): TLine => ({ ...say(seq, `m${seq}`), seq });
+  const seqs = (h: HostLoad | null) => (h && h.state === "ok" ? h.lines.map((l) => l.seq) : h && "early" in h ? h.early.map((l) => l.seq) : null);
+
+  test("a line that arrives while the read is in flight is kept and merged into the answer", () => {
+    let h: HostLoad | null = { state: "loading", early: [] };
+    h = hostLineArrived(h, ln(3));
+    expect(seqs(h)).toEqual([3]);
+    // The server built its answer before line 3 was recorded.
+    const done = hostReadDone(h!, [ln(1), ln(2)], 0, at(9));
+    expect(seqs(done)).toEqual([1, 2, 3]);
+  });
+
+  test("a line both in the answer and over the socket is shown once, in seq order", () => {
+    let h: HostLoad | null = { state: "loading", early: [] };
+    h = hostLineArrived(h, ln(2));
+    expect(seqs(hostReadDone(h!, [ln(1), ln(2)], 0, at(9)))).toEqual([1, 2]);
+    expect(mergeHostLines([ln(5), ln(1)], [ln(3), ln(5)]).map((l) => l.seq)).toEqual([1, 3, 5]);
+  });
+
+  test("once read, lines are appended; a duplicate changes nothing", () => {
+    const ok = hostReadDone(undefined, [ln(1)], 0, at(9));
+    const next = hostLineArrived(ok, ln(2));
+    expect(seqs(next)).toEqual([1, 2]);
+    expect(hostLineArrived(next!, ln(2))).toBe(next);
+  });
+
+  test("a re-read after the socket reconnects adds what was missed and keeps what was shown", () => {
+    const shown = hostReadDone(undefined, [ln(1), ln(2)], 0, at(9));
+    // Lines 3 and 4 were sent while the socket was down.
+    expect(seqs(hostReadDone(shown, [ln(1), ln(2), ln(3), ln(4)], 0, at(10)))).toEqual([1, 2, 3, 4]);
+  });
+
+  test("a failed read keeps an earlier answer, and a first failure keeps the lines that arrived", () => {
+    const shown = hostReadDone(undefined, [ln(1)], 0, at(9));
+    expect(hostReadFailed(shown, "500")).toBe(shown);
+    const failed = hostReadFailed(hostLineArrived({ state: "loading", early: [] }, ln(4))!, "500");
+    expect(failed).toMatchObject({ state: "error", error: "500" });
+    expect(seqs(hostReadDone(failed, [ln(1)], 0, at(9)))).toEqual([1, 4]);
+  });
+
+  test("an agent the screen has not asked for keeps nothing: its first read will carry the line", () => {
+    expect(hostLineArrived(undefined, ln(1))).toBeNull();
+  });
+
+  test("Sources: lines the server could not read make the transcript partial, never complete", () => {
+    const partial = hostSourceLine(hostReadDone(undefined, [ln(1), ln(2)], 1, at(9)), "a1");
+    expect(partial.tone).toBe("warn");
+    expect(partial.text).toContain("1 line could not be read");
+    expect(hostSourceLine(hostReadDone(undefined, [ln(1)], 0, at(9)), "a1")).toEqual({ text: "1 line (GET /api/agents/a1, live)", tone: "ok" });
+    expect(hostSourceLine(hostReadFailed(undefined, "boom"), "a1")).toEqual({ text: "could not read: boom", tone: "bad" });
+    expect(hostSourceLine(undefined, "a1").tone).toBe("neutral");
+  });
+});
+
+// ── hook sources read only from the newest records ─────────────────────────────────────────
+
+describe("hook sources read in a window: earlier calls say 'not read', not 'none'", () => {
+  test("hookWindow is the earliest record read, only when records were left out", () => {
+    expect(hookWindow({ count: 2, total: 2, records: [{ at: at(5) }, { at: at(6) }] })).toBeNull();
+    expect(hookWindow({ count: 2, records: [{ at: at(5) }] })).toBeNull();
+    expect(hookWindow({ count: 2, total: 9, records: [{ at: at(6) }, { at: null }, { at: at(5) }] })).toEqual({ from: at(5), count: 2, total: 9 });
+  });
+
+  test("calls that started before the window are marked and counted; later ones are not", () => {
+    const lines = [use(1, "early", "Edit", { file_path: "/p/a.ts" }), result(2, "early", "ok"), use(10, "late", "Edit", { file_path: "/p/b.ts" }), result(11, "late", "ok")];
+    const tl = buildTimeline({ lines, hooksFrom: at(5) });
+    expect(tool(tl, "early").hooksUnread).toBe(true);
+    expect(tool(tl, "late").hooksUnread).toBeUndefined();
+    expect(tl.hooksUnread).toBe(1);
+    // Read whole: nothing is marked.
+    const whole = buildTimeline({ lines, hooksFrom: null });
+    expect(whole.hooksUnread).toBe(0);
+    expect(tool(whole, "early").hooksUnread).toBeUndefined();
+  });
+});
+
+// ── the cursor across a repaint ────────────────────────────────────────────────────────────
+
+describe("focus: a repaint gives the cursor back to the field being typed in", () => {
+  function field(connected = true) {
+    const calls: string[] = [];
+    const f: FocusTarget = {
+      isConnected: connected,
+      focus: () => calls.push("focus"),
+      setSelectionRange: (a, b) => calls.push(`sel ${a}-${b}`),
+    };
+    return { f, calls };
+  }
+  const BODY = { body: true };
+
+  test("focus fell to the body: it goes back, with the cursor where it was", () => {
+    const { f, calls } = field();
+    expect(restoreFocus({ el: f, start: 3, end: 5 }, BODY, BODY)).toBe(true);
+    expect(calls).toEqual(["focus", "sel 3-5"]);
+    expect(restoreFocus({ el: f, start: null, end: null }, null, BODY)).toBe(true);
+  });
+
+  test("not taken back: still focused, moved to something else, gone from the page, or nothing saved", () => {
+    const { f, calls } = field();
+    expect(restoreFocus({ el: f, start: 0, end: 0 }, f, BODY)).toBe(false);
+    expect(restoreFocus({ el: f, start: 0, end: 0 }, { other: true }, BODY)).toBe(false);
+    expect(restoreFocus({ el: field(false).f, start: 0, end: 0 }, BODY, BODY)).toBe(false);
+    expect(restoreFocus(null, BODY, BODY)).toBe(false);
+    expect(calls).toEqual([]);
+  });
+});
+
+// ── styles: this screen's classes are its own ──────────────────────────────────────────────
+
+describe("styles: agents.css shares no selector with the other stylesheets", () => {
+  const classes = (css: string) => new Set([...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/\.([a-zA-Z][\w-]*)/g)].map((m) => m[1]));
+  const css = readFileSync(join(ROOT, "ui/styles/agents.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const mine = new Set([...classes(css)].filter((c) => c === "aw" || c.startsWith("aw-")));
+  const selectors = [...css.matchAll(/([^{}]+)\{/g)].map((m) => m[1].trim()).filter((s) => !s.startsWith("@")).flatMap((s) => s.split(",").map((x) => x.trim()));
+
+  test("every rule in agents.css starts at an aw class, and no aw class is defined in deck.css or shell.css", () => {
+    expect(selectors.length).toBeGreaterThan(50);
+    expect(selectors.filter((s) => !/^\.aw(-[\w-]+)?\b/.test(s))).toEqual([]);
+    for (const other of ["ui/styles/deck.css", "ui/styles/shell.css"]) {
+      const theirs = classes(readFileSync(join(ROOT, other), "utf8"));
+      expect({ other, shared: [...mine].filter((c) => theirs.has(c)) }).toEqual({ other, shared: [] });
+    }
+  });
+
+  test("the screen uses no ag- class (the replay view's, in deck.css)", () => {
+    const screen = readFileSync(join(ROOT, "ui/components/AgentsScreen.ts"), "utf8");
+    expect(screen.match(/["` ]ag-[a-z]/g) ?? []).toEqual([]);
+  });
+});
+
 // ── the screen's wiring (read from source: the page has no DOM test harness) ────────────────
 
 describe("the screen acts only through the shared pieces", () => {
@@ -450,5 +592,26 @@ describe("the screen acts only through the shared pieces", () => {
     expect(app).toMatch(/id === "agents" && !parseAgentsScreenParams\(route\.params\)\.replay/);
     expect(app).toContain("agentsScreenLine(m.id, m.line)");
     expect(app.match(/agentsScreenAgents\(hostAgents\)/g)?.length).toBe(2);
+  });
+
+  test("a reconnected socket re-reads the agents' transcripts (lines sent while it was down)", () => {
+    expect(app).toMatch(/ws\.onopen = \(\) => \{[^}]*agentsScreenReconnected\(\)/);
+    expect(screen).toMatch(/export function agentsScreenReconnected\(\): void \{\s*for \(const id of S\.host\.keys\(\)\) loadHost\(id\);/);
+  });
+
+  test("the host read keeps the lines that arrived meanwhile and passes on the lines it could not read", () => {
+    expect(screen).toContain("hostReadDone(S.host.get(id), fetched, r.unreadableLines ?? 0,");
+    expect(screen).toContain("hostLineArrived(h, {");
+    expect(screen).toContain('["Agent host transcript", hostSourceLine(S.host.get(a.id), a.id)]');
+  });
+
+  test("a host agent's timeline is told where its hook sources start, and the card offers Read all", () => {
+    expect(screen).toContain("hooksFrom: cli ? hookWindow(cli.transcript)?.from ?? null : null");
+    expect(screen).toMatch(/hooksWindowNote\(a\.sessionId, session\.data, tl\.hooksUnread\)/);
+  });
+
+  test("paint gives focus back right after it replaces the screen's children", () => {
+    expect(screen).toMatch(/root\.replaceChildren\(\.\.\.kids\);\s*(\/\/[^\n]*\n\s*)*restoreFocus\(S\.focus, document\.activeElement, document\.body\);/);
+    expect(screen).toContain("watchFocus(S.root);");
   });
 });

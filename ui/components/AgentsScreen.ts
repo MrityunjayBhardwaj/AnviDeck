@@ -26,15 +26,22 @@ import {
   agentTabs,
   buildTimeline,
   gridAgents,
+  hookWindow,
+  hostLineArrived,
+  hostReadDone,
+  hostReadFailed,
+  hostSourceLine,
   hostTone,
   planProgress,
+  restoreFocus,
   sortHostAgents,
   sourceLine,
   type AgentsScreenRoute,
   type HostAgent,
+  type HostLoad,
   type Item,
   type Refusal,
-  type TLine,
+  type SavedFocus,
   type Timeline,
   type ToolCall,
 } from "./agents-model";
@@ -65,8 +72,8 @@ const S = {
   deps: null as AgentsScreenDeps | null,
   root: null as HTMLElement | null,
   overview: { state: "loading" } as Load<Overview>,
-  /** Host transcripts by agent id. */
-  host: new Map<string, Load<{ lines: TLine[] }>>(),
+  /** Host transcripts by agent id; lines that arrive while one is read are merged in (agents-model). */
+  host: new Map<string, HostLoad>(),
   /** Claude Code's own view of a session (transcript, hook meter, hook log), by session id. */
   sessions: new Map<string, Load<AgentSessionResponse>>(),
   /** Terminal sessions by project. */
@@ -78,6 +85,8 @@ const S = {
   refetch: new Map<string, ReturnType<typeof setTimeout>>(),
   /** Sessions read whole (Read all): how many records to ask for. */
   tails: new Map<string, number>(),
+  /** The field the owner was typing in, and where the cursor was: given back after a repaint. */
+  focus: null as SavedFocus | null,
 };
 
 const TAB_ROW_TERMINALS = 6;
@@ -91,7 +100,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", ...kids: (N
 
 const hhmm = (iso: string | null | undefined) => (iso ? `${iso.slice(11, 19)}` : "");
 function stamp(iso: string | null | undefined): HTMLElement {
-  const s = el("span", "ag-note", hhmm(iso));
+  const s = el("span", "aw-note", hhmm(iso));
   if (iso) s.title = `${iso} (UTC)`;
   return s;
 }
@@ -117,11 +126,22 @@ function loadOverview(): void {
   ).finally(paint);
 }
 
+/**
+ * Read an agent's host transcript. Lines that arrive over the WebSocket meanwhile are merged into
+ * the answer (hostReadDone), and a re-read (after the socket reconnects) merges with what is shown.
+ */
 function loadHost(id: string): void {
-  if (!S.host.has(id)) S.host.set(id, { state: "loading" });
-  getJson<{ transcript: { seq: number; at: string; from: "sdk" | "host"; message: Record<string, unknown> }[] }>(`/api/agents/${encodeURIComponent(id)}`).then(
-    (r) => S.host.set(id, { state: "ok", data: { lines: r.transcript.map((l) => ({ seq: l.seq, at: l.at, from: l.from, message: l.message ?? {} })) }, readAt: new Date().toISOString() }),
-    (e: Error) => S.host.set(id, { state: "error", error: e.message }),
+  if (!S.host.has(id)) S.host.set(id, { state: "loading", early: [] });
+  getJson<{ transcript: { seq: number; at: string; from: "sdk" | "host"; message: Record<string, unknown> }[]; unreadableLines?: number }>(`/api/agents/${encodeURIComponent(id)}`).then(
+    (r) => {
+      const fetched = r.transcript.map((l) => ({ seq: l.seq, at: l.at, from: l.from, message: l.message ?? {} }));
+      S.host.set(id, hostReadDone(S.host.get(id), fetched, r.unreadableLines ?? 0, new Date().toISOString()));
+    },
+    (e: Error) => {
+      const had = S.host.get(id);
+      if (had?.state === "ok") console.warn(`[agents] re-read of agent ${id} failed: ${e.message}`);
+      S.host.set(id, hostReadFailed(had, e.message));
+    },
   ).finally(paint);
 }
 
@@ -162,11 +182,21 @@ function loadTerminals(project: string): void {
 /** A host transcript line arrived over the WebSocket. */
 export function agentsScreenLine(id: string, line: { seq: number; at: string; from: "sdk" | "host"; message: Record<string, unknown> }): void {
   const h = S.host.get(id);
-  if (h?.state !== "ok" || h.data.lines.some((l) => l.seq === line.seq)) return;
-  h.data.lines.push({ seq: line.seq, at: line.at, from: line.from, message: line.message ?? {} });
+  const next = hostLineArrived(h, { seq: line.seq, at: line.at, from: line.from, message: line.message ?? {} });
+  if (!next || next === h) return;
+  S.host.set(id, next);
   const sid = hostAgents().find((a) => a.id === id)?.sessionId;
   if (sid && line.from === "sdk" && (line.message?.type === "user" || line.message?.type === "result")) refetchSoon(sid);
   paintSoon();
+}
+
+/**
+ * The WebSocket (re)connected: lines sent while it was down never arrive, so every host
+ * transcript the screen holds is read again and merged; the Claude Code side too, for hook context.
+ */
+export function agentsScreenReconnected(): void {
+  for (const id of S.host.keys()) loadHost(id);
+  for (const a of hostAgents()) if (a.sessionId && S.sessions.has(a.sessionId)) refetchSoon(a.sessionId);
 }
 
 /** The host's agent list changed (status, a parked request): repaint if the screen is open. */
@@ -189,8 +219,9 @@ function paintSoon(): void {
 
 export function AgentsScreen(deps: AgentsScreenDeps): HTMLElement {
   S.deps = deps;
-  S.root = el("section", "ag");
+  S.root = el("section", "aw");
   S.root.id = "s-agents";
+  watchFocus(S.root);
   loadOverview();
   if (deps.project) loadTerminals(deps.project);
   paint();
@@ -223,36 +254,60 @@ function paint(): void {
   keepCardsOf(agents as unknown as AskingAgent[]);
   const sel = selected();
 
-  const gridBtn = el("button", `ag-btn${d.route.grid ? " on" : ""}`, d.route.grid ? "Tabs" : "2×2 grid");
-  gridBtn.id = "ag-grid-toggle";
+  const gridBtn = el("button", `aw-btn${d.route.grid ? " on" : ""}`, d.route.grid ? "Tabs" : "2×2 grid");
+  gridBtn.id = "aw-grid-toggle";
   gridBtn.type = "button";
   gridBtn.onclick = () => d.go(hashFor({ grid: d.route.grid ? undefined : "1", agent: d.route.agent, session: d.route.session }));
-  const newBtn = el("button", "ag-btn", "+ New agent");
-  newBtn.id = "ag-new";
+  const newBtn = el("button", "aw-btn", "+ New agent");
+  newBtn.id = "aw-new";
   newBtn.type = "button";
   newBtn.onclick = () => d.newAgent();
 
-  const head = el("div", "ag-head",
+  const head = el("div", "aw-head",
     el("h1", "", "Agents"),
-    el("span", "ag-sub", "agents AnviDeck started, live · sessions started in a terminal, view only"),
-    el("div", "ag-acts", gridBtn, newBtn));
+    el("span", "aw-sub", "agents AnviDeck started, live · sessions started in a terminal, view only"),
+    el("div", "aw-acts", gridBtn, newBtn));
 
   const kids: HTMLElement[] = [head, hostLine(d.hostAgents), tabsRow(agents, sel)];
   if (d.route.grid) kids.push(grid(agents));
   else if (sel?.kind === "host") kids.push(hostDetail(sel.agent));
   else if (sel?.kind === "terminal") kids.push(terminalDetail(sel.sid));
-  else if (d.route.agent) kids.push(el("div", "ag-empty ag-err", `No agent ${d.route.agent} in the agent host's list (${d.hostAgents.state === "ok" ? "read" : "could not read the list"}).`));
-  else kids.push(el("div", "ag-empty", d.hostAgents.state === "ok" ? "No agent AnviDeck started yet. + New agent starts one on an issue; terminal sessions are in the tabs above." : "The agent host's list could not be read (see above)."));
+  else if (d.route.agent) kids.push(el("div", "aw-empty aw-err", `No agent ${d.route.agent} in the agent host's list (${d.hostAgents.state === "ok" ? "read" : "could not read the list"}).`));
+  else kids.push(el("div", "aw-empty", d.hostAgents.state === "ok" ? "No agent AnviDeck started yet. + New agent starts one on an issue; terminal sessions are in the tabs above." : "The agent host's list could not be read (see above)."));
   root.replaceChildren(...kids);
+  // Replacing the children detaches the message box and permission cards for a moment, which
+  // blurs them; give the cursor back to where the owner was typing.
+  restoreFocus(S.focus, document.activeElement, document.body);
+}
+
+/** Remember the field the owner types in (and the cursor in it); forget it once they move on. */
+let focusDocWatched = false;
+function watchFocus(root: HTMLElement): void {
+  const isField = (t: EventTarget | null): t is HTMLInputElement | HTMLTextAreaElement =>
+    t instanceof HTMLTextAreaElement || (t instanceof HTMLInputElement && !["button", "submit", "checkbox", "radio"].includes(t.type));
+  const save = (e: Event) => {
+    if (isField(e.target)) S.focus = { el: e.target, start: e.target.selectionStart, end: e.target.selectionEnd };
+  };
+  for (const ev of ["focusin", "input", "keyup", "select", "mouseup"]) root.addEventListener(ev, save);
+  if (focusDocWatched) return;
+  focusDocWatched = true;
+  // Pressing elsewhere, or focus going to another element, is the owner moving on.
+  document.addEventListener("pointerdown", (e) => {
+    if (S.focus && (e.target as unknown) !== S.focus.el) S.focus = null;
+  }, true);
+  // (A field inside the screen is saved again by the root's own listener, which runs after this.)
+  document.addEventListener("focusin", (e) => {
+    if (S.focus && (e.target as unknown) !== S.focus.el) S.focus = null;
+  }, true);
 }
 
 /** One line: how many agents, the cap, and the login they run on. Unread is never zero. */
 function hostLine(read: AgentsRead): HTMLElement {
-  const line = el("div", "ag-note");
-  line.id = "ag-host-line";
+  const line = el("div", "aw-note");
+  line.id = "aw-host-line";
   if (read.state === "loading") line.append("Agent host: checking…");
-  else if (read.state === "off") line.append(el("span", "ag-err", `Agent host off: ${read.reason}`));
-  else if (read.state === "failed") line.append(el("span", "ag-err", `Could not read the agent host: ${read.reason}`));
+  else if (read.state === "off") line.append(el("span", "aw-err", `Agent host off: ${read.reason}`));
+  else if (read.state === "failed") line.append(el("span", "aw-err", `Could not read the agent host: ${read.reason}`));
   else {
     const running = (read.agents as unknown as HostAgent[]).filter((a) => a.running).length;
     line.append(`Agent host: ${read.agents.length} agent${read.agents.length === 1 ? "" : "s"}, ${running} running`);
@@ -260,32 +315,32 @@ function hostLine(read: AgentsRead): HTMLElement {
     if (o.state === "ok") {
       const l = o.data.login;
       line.append(` of at most ${o.data.cap} · login `,
-        l.error ? el("span", "ag-err", `could not read (${l.error})`) : el("span", l.ok ? "ag-ok" : "ag-err", `${l.authMethod ?? "?"} · plan ${l.plan ?? "?"}${l.loggedIn ? "" : " · NOT logged in"}`),
+        l.error ? el("span", "aw-err", `could not read (${l.error})`) : el("span", l.ok ? "aw-ok" : "aw-err", `${l.authMethod ?? "?"} · plan ${l.plan ?? "?"}${l.loggedIn ? "" : " · NOT logged in"}`),
         ` · registry ${o.data.registry} (GET /api/agents)`);
-    } else if (o.state === "error") line.append(el("span", "ag-err", ` · login and cap could not be read (${o.error})`));
+    } else if (o.state === "error") line.append(el("span", "aw-err", ` · login and cap could not be read (${o.error})`));
   }
   return line;
 }
 
 function tabsRow(agents: HostAgent[], sel: ReturnType<typeof selected>): HTMLElement {
   const d = S.deps!;
-  const row = el("div", "ag-tabs");
-  row.id = "ag-tabs";
+  const row = el("div", "aw-tabs");
+  row.id = "aw-tabs";
   const t = d.project ? S.terminals.get(d.project) : undefined;
   const terms = t?.state === "ok"
     ? [...t.data.sessions].sort((a, b) => (b.lastTs ?? b.modifiedAt).localeCompare(a.lastTs ?? a.modifiedAt)).slice(0, TAB_ROW_TERMINALS)
     : [];
   const tabs = agentTabs(agents, terms.map((s) => ({ sessionId: s.sessionId, project: s.project, cwd: s.cwd, lastTs: s.lastTs, modifiedAt: s.modifiedAt })));
-  row.append(el("span", "ag-tabs-k", "AnviDeck"));
-  if (!agents.length) row.append(el("span", "ag-note", d.hostAgents.state === "ok" ? "no agents yet" : "list not read"));
+  row.append(el("span", "aw-tabs-k", "AnviDeck"));
+  if (!agents.length) row.append(el("span", "aw-note", d.hostAgents.state === "ok" ? "no agents yet" : "list not read"));
   let termHead = false;
   for (const tab of tabs) {
     if (tab.kind === "terminal" && !termHead) {
       termHead = true;
-      row.append(el("span", "ag-tabs-k", `· ${d.project} terminal sessions`));
+      row.append(el("span", "aw-tabs-k", `· ${d.project} terminal sessions`));
     }
     const on = !d.route.grid && sel !== null && (sel.kind === "host" ? tab.kind === "host" && sel.agent.id === tab.id : tab.kind === "terminal" && sel.sid === tab.id);
-    const b = el("button", `ag-tab${on ? " on" : ""}`, el("span", `ag-dot ${tab.tone}`), el("span", "l", tab.label), el("span", "st", tab.status));
+    const b = el("button", `aw-tab${on ? " on" : ""}`, el("span", `aw-dot ${tab.tone}`), el("span", "l", tab.label), el("span", "st", tab.status));
     b.type = "button";
     b.dataset.tab = tab.key;
     b.title = tab.kind === "terminal" ? `${tab.id} · started in a terminal: view only` : tab.id;
@@ -294,12 +349,12 @@ function tabsRow(agents: HostAgent[], sel: ReturnType<typeof selected>): HTMLEle
   }
   if (d.project && !termHead) {
     // Absent and unread are said differently from "none".
-    if (!t || t.state === "loading") row.append(el("span", "ag-note", `· ${d.project} terminal sessions: reading…`));
-    else if (t.state === "error") row.append(el("span", "ag-note ag-err", `· ${d.project} terminal sessions: could not read (${t.error})`));
-    else if (t.data.status !== "ok" && t.data.status !== "none") row.append(el("span", "ag-note ag-err", `· ${d.project} terminal sessions: could not read (${t.data.status}${t.data.detail ? `: ${t.data.detail}` : ""})`));
-    else row.append(el("span", "ag-note", `· ${d.project}: no terminal sessions in its transcripts`));
+    if (!t || t.state === "loading") row.append(el("span", "aw-note", `· ${d.project} terminal sessions: reading…`));
+    else if (t.state === "error") row.append(el("span", "aw-note aw-err", `· ${d.project} terminal sessions: could not read (${t.error})`));
+    else if (t.data.status !== "ok" && t.data.status !== "none") row.append(el("span", "aw-note aw-err", `· ${d.project} terminal sessions: could not read (${t.data.status}${t.data.detail ? `: ${t.data.detail}` : ""})`));
+    else row.append(el("span", "aw-note", `· ${d.project}: no terminal sessions in its transcripts`));
   } else if (t?.state === "ok" && t.data.sessions.length > terms.length) {
-    const more = el("a", "ag-note", `${t.data.sessions.length - terms.length} older in the replay view`);
+    const more = el("a", "aw-note", `${t.data.sessions.length - terms.length} older in the replay view`);
     (more as HTMLAnchorElement).href = hashFor({ view: "replay", project: d.project ?? undefined });
     row.append(more);
   }
@@ -308,7 +363,7 @@ function tabsRow(agents: HostAgent[], sel: ReturnType<typeof selected>): HTMLEle
 
 // ── one AnviDeck agent ──────────────────────────────────────────────────────────────────────
 
-function timelineFor(a: HostAgent): { tl: Timeline | null; lines: Load<{ lines: TLine[] }>; session: Load<AgentSessionResponse> | null } {
+function timelineFor(a: HostAgent): { tl: Timeline | null; lines: HostLoad; session: Load<AgentSessionResponse> | null } {
   if (!S.host.has(a.id)) loadHost(a.id);
   if (a.sessionId && !S.sessions.has(a.sessionId)) loadSession(a.sessionId);
   const lines = S.host.get(a.id)!;
@@ -316,12 +371,14 @@ function timelineFor(a: HostAgent): { tl: Timeline | null; lines: Load<{ lines: 
   if (lines.state !== "ok") return { tl: null, lines, session };
   const cli = session?.state === "ok" ? session.data : null;
   const tl = buildTimeline({
-    lines: lines.data.lines,
+    lines: lines.lines,
     attachments: cli?.transcript.records.filter((r) => r.type === "attachment"),
     meter: cli?.meter.rows,
     hookLog: cli?.hookLog.rows,
     cwd: a.cwd,
     live: a.running,
+    // Only the newest Claude Code records were read: calls before them have no hook data read.
+    hooksFrom: cli ? hookWindow(cli.transcript)?.from ?? null : null,
   });
   return { tl, lines, session };
 }
@@ -329,36 +386,36 @@ function timelineFor(a: HostAgent): { tl: Timeline | null; lines: Load<{ lines: 
 function statusChip(a: HostAgent): HTMLElement {
   const waiting = a.pendingPermissions.length;
   const cls = waiting ? "warn" : a.status === "failed" ? "bad" : a.status === "done" ? "ok" : "";
-  return el("span", `ag-chip ${cls}`, waiting ? `waiting on you · ${waiting}` : a.status);
+  return el("span", `aw-chip ${cls}`, waiting ? `waiting on you · ${waiting}` : a.status);
 }
 
 function controls(a: HostAgent, out: HTMLElement): HTMLElement {
   const box = el("span", "r");
   const act = async (label: string, url: string, body?: unknown) => {
-    out.className = "ag-composer-out ag-note";
+    out.className = "aw-composer-out aw-note";
     out.textContent = `${label}…`;
     try {
       await write("POST", url, body);
-      out.className = "ag-composer-out ag-ok";
+      out.className = "aw-composer-out aw-ok";
       out.textContent = `${label}: done.`;
     } catch (e) {
-      out.className = "ag-composer-out ag-err";
+      out.className = "aw-composer-out aw-err";
       out.textContent = `${label} refused: ${(e as Error).message}`;
     }
   };
   if (a.running) {
-    const stop = el("button", "ag-btn sm bad", "Stop");
+    const stop = el("button", "aw-btn sm bad", "Stop");
     stop.dataset.act = "stop";
     stop.onclick = () => void act("Stop", `/api/agents/${encodeURIComponent(a.id)}/stop`);
     box.append(stop);
   } else if (a.sessionId) {
-    const resume = el("button", "ag-btn sm", "Resume");
+    const resume = el("button", "aw-btn sm", "Resume");
     resume.dataset.act = "resume";
     resume.title = "Resume its session; the message box's text, if any, is the prompt (else \"Continue.\")";
     resume.onclick = () => {
       const ta = S.composers.get(a.id)?.querySelector("textarea");
       void act("Resume", `/api/agents/${encodeURIComponent(a.id)}/resume`, { prompt: ta?.value ?? "" }).then(() => {
-        if (ta && out.classList.contains("ag-ok")) ta.value = "";
+        if (ta && out.classList.contains("aw-ok")) ta.value = "";
       });
     };
     box.append(resume);
@@ -374,32 +431,32 @@ function composer(a: HostAgent): HTMLElement {
   ta.rows = 2;
   ta.placeholder = "Message this agent… (arrives on its next turn)";
   ta.setAttribute("aria-label", "Message the agent");
-  const send = el("button", "ag-btn", "Send");
+  const send = el("button", "aw-btn", "Send");
   send.dataset.act = "send";
-  const out = el("div", "ag-composer-out");
-  box = el("div", "", el("div", "ag-composer", ta, send), out);
+  const out = el("div", "aw-composer-out");
+  box = el("div", "", el("div", "aw-composer", ta, send), out);
   box.dataset.composer = a.id;
   send.onclick = async () => {
-    out.className = "ag-composer-out ag-note";
+    out.className = "aw-composer-out aw-note";
     out.textContent = "sending…";
     try {
       await write("POST", `/api/agents/${encodeURIComponent(a.id)}/message`, { text: ta.value });
       ta.value = "";
-      out.className = "ag-composer-out ag-ok";
+      out.className = "aw-composer-out aw-ok";
       out.textContent = "Queued. It arrives on the agent's next turn; its delivery shows in the log.";
     } catch (e) {
-      out.className = "ag-composer-out ag-err";
+      out.className = "aw-composer-out aw-err";
       out.replaceChildren((e as Error).message);
       if (e instanceof WriteError && e.status === 409 && e.body.resumable === true) {
-        const b = el("button", "ag-btn sm", "Resume with this message");
+        const b = el("button", "aw-btn sm", "Resume with this message");
         b.onclick = async () => {
           try {
             await write("POST", `/api/agents/${encodeURIComponent(a.id)}/resume`, { prompt: ta.value });
             ta.value = "";
-            out.className = "ag-composer-out ag-ok";
+            out.className = "aw-composer-out aw-ok";
             out.textContent = "Resumed with your message.";
           } catch (e2) {
-            out.className = "ag-composer-out ag-err";
+            out.className = "aw-composer-out aw-err";
             out.textContent = (e2 as Error).message;
           }
         };
@@ -413,35 +470,58 @@ function composer(a: HostAgent): HTMLElement {
 
 function hostCard(a: HostAgent, compact: boolean): HTMLElement {
   const { tl, lines, session } = timelineFor(a);
-  const card = el("div", "ag-card");
+  const card = el("div", "aw-card");
   card.dataset.agent = a.id;
-  const out = el("div", "ag-composer-out");
+  const out = el("div", "aw-composer-out");
   const title = el("b", "", agentLabel(a));
   title.title = a.prompt;
-  const head = el("div", "ag-card-head", el("span", `ag-dot ${hostTone(a)}`), title,
-    el("span", "ag-note", `${a.id} · ${a.cwd}`), statusChip(a), controls(a, out));
+  const head = el("div", "aw-card-head", el("span", `aw-dot ${hostTone(a)}`), title,
+    el("span", "aw-note", `${a.id} · ${a.cwd}`), statusChip(a), controls(a, out));
   if (compact) {
     title.style.cursor = "pointer";
     title.onclick = () => S.deps!.go(hashFor({ agent: a.id }));
   }
   card.append(head);
-  if (a.reason && !a.running) card.append(el("div", `ag-note ${a.status === "failed" ? "ag-err" : ""}`, a.reason));
+  if (a.reason && !a.running) card.append(el("div", `aw-note ${a.status === "failed" ? "aw-err" : ""}`, a.reason));
   if (compact && tl?.plan) card.append(planBlock(tl, true));
   // Its parked permission requests, each with Allow and Deny: the same cards as Home's.
   const perms = agentRequests(a as unknown as AskingAgent);
   if (perms.length) card.append(...perms);
-  if (lines.state === "loading") card.append(el("div", "ag-note", "reading its transcript…"));
-  else if (lines.state === "error") card.append(el("div", "ag-err", `Could not read its transcript: ${lines.error}`));
-  else if (tl) card.append(log(tl, compact ? 6 : undefined, a.cwd));
+  if (lines.state === "loading") card.append(el("div", "aw-note", "reading its transcript…"));
+  else if (lines.state === "error") card.append(el("div", "aw-err", `Could not read its transcript: ${lines.error}`));
+  else if (tl) {
+    if (!compact && tl.hooksUnread && a.sessionId && session?.state === "ok") card.append(hooksWindowNote(a.sessionId, session.data, tl.hooksUnread));
+    card.append(log(tl, compact ? 6 : undefined, a.cwd));
+  }
   card.append(composer(a), out);
-  if (!compact && session?.state === "error") card.append(el("div", "ag-note ag-err", `Claude Code's transcript for hook context could not be read: ${session.error}`));
+  if (!compact && session?.state === "error") card.append(el("div", "aw-note aw-err", `Claude Code's transcript for hook context could not be read: ${session.error}`));
   return card;
+}
+
+/**
+ * Its tool calls come from the whole host transcript, but hook context and the meter only from
+ * the newest Claude Code records: say so on the card, and offer to read the rest.
+ */
+function hooksWindowNote(sid: string, cli: AgentSessionResponse, unread: number): HTMLElement {
+  const t = cli.transcript;
+  const all = el("button", "aw-btn sm", `Read all ${t.total}`);
+  all.id = "aw-read-all";
+  all.onclick = () => {
+    S.tails.set(sid, t.total!);
+    all.disabled = true;
+    all.textContent = "reading…";
+    loadSession(sid);
+  };
+  const note = el("div", "aw-note aw-warn",
+    `Hooks and context were read from Claude Code's newest ${t.count} of ${t.total} records: ${unread} earlier call${unread === 1 ? "" : "s"} show${unread === 1 ? "s" : ""} "hooks not read", not "none". `, all);
+  note.id = "aw-hooks-window";
+  return note;
 }
 
 function hostDetail(a: HostAgent): HTMLElement {
   const { tl, session } = timelineFor(a);
-  const side = el("div", "ag-side",
-    el("div", "ag-card",
+  const side = el("div", "aw-side",
+    el("div", "aw-card",
       el("h3", "", "Session"),
       kv([
         ["agent", a.id],
@@ -454,23 +534,23 @@ function hostDetail(a: HostAgent): HTMLElement {
         ["started", a.createdAt.replace("T", " ").slice(0, 19) + " UTC"],
         ["usage estimate", a.costEstimateUsd !== undefined ? `$${a.costEstimateUsd.toFixed(2)} (Claude Code's estimate, not a bill)` : "not reported yet"],
       ])),
-    tl ? planCard(tl) : el("div", "ag-card ag-note", "Plan: reading…"),
+    tl ? planCard(tl) : el("div", "aw-card aw-note", "Plan: reading…"),
     tl ? hooksCard(tl) : el("div", ""),
     sourcesCard([
-      ["Agent host transcript", S.host.get(a.id)?.state === "ok" ? { text: `${(S.host.get(a.id) as { data: { lines: TLine[] } }).data.lines.length} lines (GET /api/agents/${a.id}, live)`, tone: "ok" } : { text: S.host.get(a.id)?.state === "error" ? "could not read" : "reading…", tone: S.host.get(a.id)?.state === "error" ? "bad" : "neutral" }],
+      ["Agent host transcript", hostSourceLine(S.host.get(a.id), a.id)],
       ...sessionSources(a.sessionId, session),
     ]),
   );
-  return el("div", "ag-split", hostCard(a, false), side);
+  return el("div", "aw-split", hostCard(a, false), side);
 }
 
 function grid(agents: HostAgent[]): HTMLElement {
-  const g = el("div", "ag-grid");
-  g.id = "ag-grid";
+  const g = el("div", "aw-grid");
+  g.id = "aw-grid";
   const shown = gridAgents(agents);
-  if (!shown.length) g.append(el("div", "ag-empty", "No agent AnviDeck started to show. The grid shows up to four, running ones first; terminal sessions open one at a time from the tabs."));
+  if (!shown.length) g.append(el("div", "aw-empty", "No agent AnviDeck started to show. The grid shows up to four, running ones first; terminal sessions open one at a time from the tabs."));
   for (const a of shown) g.append(hostCard(a, true));
-  if (agents.length > shown.length) g.append(el("div", "ag-note", `${agents.length - shown.length} more in the tabs above (the grid shows four).`));
+  if (agents.length > shown.length) g.append(el("div", "aw-note", `${agents.length - shown.length} more in the tabs above (the grid shows four).`));
   return g;
 }
 
@@ -480,20 +560,20 @@ function terminalDetail(sid: string): HTMLElement {
   if (!S.sessions.has(sid)) loadSession(sid);
   const s = S.sessions.get(sid)!;
   const d = S.deps!;
-  const card = el("div", "ag-card");
+  const card = el("div", "aw-card");
   card.dataset.session = sid;
-  const replay = el("a", "ag-note", "Open the replay (changes, notes used)") as HTMLAnchorElement;
+  const replay = el("a", "aw-note", "Open the replay (changes, notes used)") as HTMLAnchorElement;
   replay.href = hashFor({ view: "replay", project: d.project ?? undefined, sid });
-  card.append(el("div", "ag-card-head", el("span", "ag-dot view"), el("b", "", sid.slice(0, 8)), el("span", "ag-viewonly", "view only"),
-    el("span", "ag-note", "started in a terminal: AnviDeck cannot message, stop or answer it"), el("span", "r", replay)));
+  card.append(el("div", "aw-card-head", el("span", "aw-dot view"), el("b", "", sid.slice(0, 8)), el("span", "aw-viewonly", "view only"),
+    el("span", "aw-note", "started in a terminal: AnviDeck cannot message, stop or answer it"), el("span", "r", replay)));
   let tl: Timeline | null = null;
-  if (s.state === "loading") card.append(el("div", "ag-note", "reading its transcript…"));
-  else if (s.state === "error") card.append(el("div", "ag-err", `Could not read the session: ${s.error}`));
+  if (s.state === "loading") card.append(el("div", "aw-note", "reading its transcript…"));
+  else if (s.state === "error") card.append(el("div", "aw-err", `Could not read the session: ${s.error}`));
   else {
     const t = s.data.transcript;
-    if (t.status === "not-found" || t.status === "unreadable") card.append(el("div", "ag-err", `Could not read its transcript: ${t.detail ?? t.status}`));
+    if (t.status === "not-found" || t.status === "unreadable") card.append(el("div", "aw-err", `Could not read its transcript: ${t.detail ?? t.status}`));
     else {
-      if (t.cwd) card.append(el("div", "ag-note", t.cwd));
+      if (t.cwd) card.append(el("div", "aw-note", t.cwd));
       tl = buildTimeline({
         lines: t.records.map((r) => ({ at: r.at, from: "cli" as const, message: r as unknown as Record<string, unknown> })),
         meter: s.data.meter.rows,
@@ -502,30 +582,30 @@ function terminalDetail(sid: string): HTMLElement {
         live: false,
       });
       if (t.total !== undefined && t.total > t.count) {
-        const all = el("button", "ag-btn sm", `Read all ${t.total}`);
-        all.id = "ag-read-all";
+        const all = el("button", "aw-btn sm", `Read all ${t.total}`);
+        all.id = "aw-read-all";
         all.onclick = () => {
           S.tails.set(sid, t.total!);
           all.disabled = true;
           all.textContent = "reading…";
           loadSession(sid);
         };
-        card.append(el("div", "ag-note", `Showing its newest ${t.count} of ${t.total} records: earlier tool calls, refusals and plan changes are not counted until read. `, all));
+        card.append(el("div", "aw-note", `Showing its newest ${t.count} of ${t.total} records: earlier tool calls, refusals and plan changes are not counted until read. `, all));
       }
       card.append(log(tl, undefined, t.cwd));
     }
   }
-  const side = el("div", "ag-side",
+  const side = el("div", "aw-side",
     tl ? planCard(tl) : el("div", ""),
     tl ? hooksCard(tl) : el("div", ""),
     sourcesCard(sessionSources(sid, s)));
-  return el("div", "ag-split", card, side);
+  return el("div", "aw-split", card, side);
 }
 
 // ── shared parts ────────────────────────────────────────────────────────────────────────────
 
 function kv(rows: [string, string][]): HTMLElement {
-  const dl = el("dl", "ag-kv");
+  const dl = el("dl", "aw-kv");
   for (const [k, v] of rows) dl.append(el("dt", "", k), el("dd", "", v));
   return dl;
 }
@@ -543,11 +623,11 @@ function sessionSources(sid: string | undefined, s: Load<AgentSessionResponse> |
 }
 
 function sourcesCard(rows: [string, { text: string; tone: string }][]): HTMLElement {
-  const box = el("div", "ag-card ag-sources");
-  box.id = "ag-sources";
+  const box = el("div", "aw-card aw-sources");
+  box.id = "aw-sources";
   box.append(el("h3", "", "Sources"));
   for (const [k, v] of rows) {
-    const line = el("div", "", `${k}: `, el("span", v.tone === "bad" ? "ag-err" : v.tone === "warn" ? "ag-warn" : v.tone === "ok" ? "" : "ag-note", v.text));
+    const line = el("div", "", `${k}: `, el("span", v.tone === "bad" ? "aw-err" : v.tone === "warn" ? "aw-warn" : v.tone === "ok" ? "" : "aw-note", v.text));
     line.dataset.tone = v.tone;
     box.append(line);
   }
@@ -558,11 +638,11 @@ function planBlock(tl: Timeline, compact: boolean): HTMLElement {
   const p = tl.plan!;
   const box = el("div", "");
   box.dataset.plan = `${p.done}/${p.total}`;
-  const bar = el("div", "ag-bar", el("i"));
+  const bar = el("div", "aw-bar", el("i"));
   (bar.firstChild as HTMLElement).style.width = `${p.total ? Math.round((100 * p.done) / p.total) : 0}%`;
-  box.append(el("div", "ag-note", `Plan: ${planProgress(p)} · from its ${p.source} calls, last changed ${hhmm(p.at)} UTC`), bar);
+  box.append(el("div", "aw-note", `Plan: ${planProgress(p)} · from its ${p.source} calls, last changed ${hhmm(p.at)} UTC`), bar);
   if (!compact) {
-    const ol = el("ol", "ag-plan");
+    const ol = el("ol", "aw-plan");
     for (const it of p.items) ol.append(el("li", it.status === "completed" ? "done" : it.status === "in_progress" ? "now" : "", it.text));
     box.append(ol);
   }
@@ -570,17 +650,17 @@ function planBlock(tl: Timeline, compact: boolean): HTMLElement {
 }
 
 function planCard(tl: Timeline): HTMLElement {
-  const c = el("div", "ag-card");
-  c.id = "ag-plan";
+  const c = el("div", "aw-card");
+  c.id = "aw-plan";
   c.append(el("h3", "", "Plan"));
   if (tl.plan) c.append(planBlock(tl, false));
-  else c.append(el("div", "ag-note", "No plan: the agent made no TodoWrite or TaskCreate call in what was read."));
+  else c.append(el("div", "aw-note", "No plan: the agent made no TodoWrite or TaskCreate call in what was read."));
   return c;
 }
 
 function hooksCard(tl: Timeline): HTMLElement {
-  const c = el("div", "ag-card");
-  c.id = "ag-hooks";
+  const c = el("div", "aw-card");
+  c.id = "aw-hooks";
   const h = tl.hookTotals;
   const ctx = tl.tools.filter((t) => t.context.length).length;
   c.append(el("h3", "", "anvi at its tool calls"),
@@ -588,31 +668,32 @@ function hooksCard(tl: Timeline): HTMLElement {
       ["tool calls", String(tl.tools.length)],
       ["hook runs placed", `${h.runs} (hook meter) · ${h.informed} gave context · ${h.bytes} bytes${h.blocked ? ` · ${h.blocked} blocked` : ""}`],
       ["calls given context", `${ctx} (Claude Code's transcript, joined by tool-call id)`],
+      ...(tl.hooksUnread ? [["hooks not read", `${tl.hooksUnread} of the ${tl.tools.length} calls started before the records read (Read all on the card)`] as [string, string]] : []),
       ["edits refused", `${tl.refusals.length} (in the records read, see Sources)`],
       ["context outside calls", `${tl.sessionContext.length} (session start, prompts)`],
     ]));
   const u = tl.unplaced;
   if (u.meter || u.hookLog || u.context) {
-    c.append(el("div", "ag-note", `Not placed on one of its calls: ${u.meter} hook-meter rows, ${u.hookLog} hook-log rows, ${u.context} context records (subagents' calls, calls that overlapped, or outside the records read).`));
+    c.append(el("div", "aw-note", `Not placed on one of its calls: ${u.meter} hook-meter rows, ${u.hookLog} hook-log rows, ${u.context} context records (subagents' calls, calls that overlapped, or outside the records read).`));
   }
   return c;
 }
 
 const STATE_ICON: Record<ToolCall["state"], [string, string, string]> = {
-  running: ["…", "ag-note", "running"],
-  ok: ["✓", "ag-ok", "ok"],
-  error: ["!", "ag-err", "error"],
-  refused: ["✕", "ag-err", "refused by the design guard"],
-  blocked: ["✕", "ag-err", "blocked by a hook"],
-  denied: ["✕", "ag-warn", "denied"],
-  "no-result": ["?", "ag-warn", "no result recorded"],
+  running: ["…", "aw-note", "running"],
+  ok: ["✓", "aw-ok", "ok"],
+  error: ["!", "aw-err", "error"],
+  refused: ["✕", "aw-err", "refused by the design guard"],
+  blocked: ["✕", "aw-err", "blocked by a hook"],
+  denied: ["✕", "aw-warn", "denied"],
+  "no-result": ["?", "aw-warn", "no result recorded"],
 };
 
 function log(tl: Timeline, last: number | undefined, cwd: string | undefined): HTMLElement {
-  const box = el("div", "ag-log");
+  const box = el("div", "aw-log");
   const items = last ? tl.items.slice(-last) : tl.items;
-  if (last && tl.items.length > last) box.append(el("div", "ag-event", `${tl.items.length - last} earlier steps · open the tab to see all`));
-  if (!items.length) box.append(el("div", "ag-event", "nothing in its transcript yet"));
+  if (last && tl.items.length > last) box.append(el("div", "aw-event", `${tl.items.length - last} earlier steps · open the tab to see all`));
+  if (!items.length) box.append(el("div", "aw-event", "nothing in its transcript yet"));
   for (const it of items) box.append(item(it, cwd));
   requestAnimationFrame(() => (box.scrollTop = box.scrollHeight));
   return box;
@@ -620,20 +701,20 @@ function log(tl: Timeline, last: number | undefined, cwd: string | undefined): H
 
 function item(it: Item, cwd: string | undefined): HTMLElement {
   if (it.kind === "you") {
-    const m = el("div", "ag-msg you", el("div", "ag-who", "You", it.comment ? ` · on ${it.comment}` : "", " · ", stamp(it.at),
-      it.state ? el("span", it.state === "delivered" ? "ag-ok" : it.state === "queued" ? "ag-warn" : "ag-err", ` · ${it.state === "not-delivered" ? `not delivered${it.reason ? `: ${it.reason}` : ""}` : it.state}`) : ""), it.text);
+    const m = el("div", "aw-msg you", el("div", "aw-who", "You", it.comment ? ` · on ${it.comment}` : "", " · ", stamp(it.at),
+      it.state ? el("span", it.state === "delivered" ? "aw-ok" : it.state === "queued" ? "aw-warn" : "aw-err", ` · ${it.state === "not-delivered" ? `not delivered${it.reason ? `: ${it.reason}` : ""}` : it.state}`) : ""), it.text);
     if (it.messageId) m.dataset.message = it.messageId;
     return m;
   }
-  if (it.kind === "agent") return el("div", "ag-msg", el("div", "ag-who", "Agent · ", stamp(it.at)), it.text);
-  if (it.kind === "event") return el("div", `ag-event ${it.tone}`, `${hhmm(it.at)} ${it.text}`);
+  if (it.kind === "agent") return el("div", "aw-msg", el("div", "aw-who", "Agent · ", stamp(it.at)), it.text);
+  if (it.kind === "event") return el("div", `aw-event ${it.tone}`, `${hhmm(it.at)} ${it.text}`);
   return tool(it, cwd);
 }
 
 function tool(t: ToolCall, _cwd: string | undefined): HTMLElement {
   const wrap = el("div", "");
   const [icon, cls, word] = STATE_ICON[t.state];
-  const det = el("details", "ag-tool");
+  const det = el("details", "aw-tool");
   det.dataset.tool = t.id;
   det.dataset.state = t.state;
   det.open = S.open.has(t.id);
@@ -642,28 +723,29 @@ function tool(t: ToolCall, _cwd: string | undefined): HTMLElement {
   const sum = el("summary", "",
     el("span", cls, icon), el("span", "t", `${t.name} · ${t.target}`),
     el("span", "r",
-      t.context.length || t.hooks.length ? el("span", informed ? "ag-o-informed" : "", `${t.hooks.length} hook${t.hooks.length === 1 ? "" : "s"}${t.context.length ? ` · ${t.context.length} gave context` : ""}`) : "",
-      t.hookLog.length ? el("span", "ag-o-informed", `${t.hookLog.length} hook-log`) : "",
-      t.permission ? el("span", "ag-warn", t.permission.answer ? `permission: ${t.permission.answer}` : "asked permission") : "",
+      t.context.length || t.hooks.length ? el("span", informed ? "aw-o-informed" : "", `${t.hooks.length} hook${t.hooks.length === 1 ? "" : "s"}${t.context.length ? ` · ${t.context.length} gave context` : ""}`) : t.hooksUnread ? el("span", "aw-warn", "hooks not read") : "",
+      t.hookLog.length ? el("span", "aw-o-informed", `${t.hookLog.length} hook-log`) : "",
+      t.permission ? el("span", "aw-warn", t.permission.answer ? `permission: ${t.permission.answer}` : "asked permission") : "",
       el("span", cls, word), stamp(t.at)));
   det.append(sum);
   const body = el("div", "body");
   if (t.hooks.length) {
-    const table = el("table", "ag-hooks", el("tr", "", el("th", "", "check"), el("th", "", "outcome"), el("th", "", "bytes"), el("th", "", "source")));
+    const table = el("table", "aw-hooks", el("tr", "", el("th", "", "check"), el("th", "", "outcome"), el("th", "", "bytes"), el("th", "", "source")));
     for (const h of t.hooks) {
-      table.append(el("tr", "", el("td", "", `${h.name}${h.event ? ` (${h.event})` : ""}`), el("td", `ag-o-${h.outcome}`, h.outcome + (h.why ? ` · ${h.why}` : "")),
+      table.append(el("tr", "", el("td", "", `${h.name}${h.event ? ` (${h.event})` : ""}`), el("td", `aw-o-${h.outcome}`, h.outcome + (h.why ? ` · ${h.why}` : "")),
         el("td", "num", h.bytes !== undefined ? String(h.bytes) : "—"), el("td", "", h.source === "meter" ? "hook meter, by time" : "transcript, by call id")));
     }
     body.append(table);
-  } else body.append(el("div", "ag-note", "No hook run placed on this call (see Sources and the not-placed count)."));
-  for (const c of t.context) body.append(el("div", "ag-note", `Context from ${c.hook} (${c.chars} characters, as the agent received it):`), el("pre", "", c.text));
+  } else if (t.hooksUnread) body.append(el("div", "aw-note aw-warn", "Hooks not read for this call: it started before the newest Claude Code records that were read (Read all on the card fetches the rest)."));
+  else body.append(el("div", "aw-note", "No hook run placed on this call (see Sources and the not-placed count)."));
+  for (const c of t.context) body.append(el("div", "aw-note", `Context from ${c.hook} (${c.chars} characters, as the agent received it):`), el("pre", "", c.text));
   for (const r of t.hookLog) {
-    body.append(el("div", "ag-note",
+    body.append(el("div", "aw-note",
       `Hook log ${hhmm(r.ts)}: ${r.file} · boundaries ${r.boundaries.join(", ") || "none"} · ${r.patterns.length} error patterns · ${r.invariants.length} invariants${r.fatality ? " · organisational warning" : ""}`));
   }
-  if (t.permission) body.append(el("div", "ag-note", `Permission request ${t.permission.requestId}: ${t.permission.answer ?? "waiting"}${t.permission.message ? ` · "${t.permission.message}"` : ""}${t.permission.reason ? ` (${t.permission.reason})` : ""}`));
-  body.append(el("div", "ag-note", "Input"), el("pre", "", JSON.stringify(t.input, null, 2)));
-  if (t.result) body.append(el("div", "ag-note", `Result${t.result.isError ? " (error)" : ""} · ${hhmm(t.result.at)}`), el("pre", "", t.result.text));
+  if (t.permission) body.append(el("div", "aw-note", `Permission request ${t.permission.requestId}: ${t.permission.answer ?? "waiting"}${t.permission.message ? ` · "${t.permission.message}"` : ""}${t.permission.reason ? ` (${t.permission.reason})` : ""}`));
+  body.append(el("div", "aw-note", "Input"), el("pre", "", JSON.stringify(t.input, null, 2)));
+  if (t.result) body.append(el("div", "aw-note", `Result${t.result.isError ? " (error)" : ""} · ${hhmm(t.result.at)}`), el("pre", "", t.result.text));
   det.append(body);
   wrap.append(det);
   if (t.refusal) wrap.append(refusalCard(t.refusal, t));
@@ -672,18 +754,18 @@ function tool(t: ToolCall, _cwd: string | undefined): HTMLElement {
 
 /** A blocked edit: the layer path, the rule, and the guard's first remedy. Whole text one click away. */
 function refusalCard(r: Refusal, t: ToolCall): HTMLElement {
-  const card = el("div", "ag-refusal");
+  const card = el("div", "aw-refusal");
   card.dataset.refusal = r.file;
-  card.append(el("div", "ag-card-head", el("b", "", `Blocked edit · ${r.file}`), el("span", "r", el("span", "ag-chip bad", `design guard · ${r.pkg}`), stamp(t.result?.at ?? t.at))));
+  card.append(el("div", "aw-card-head", el("b", "", `Blocked edit · ${r.file}`), el("span", "r", el("span", "aw-chip bad", `design guard · ${r.pkg}`), stamp(t.result?.at ?? t.at))));
   for (const v of r.violations) {
     const layer = (name: string | undefined, file: string) => el("span", "layer", name ? el("i", "", name) : "", file);
     card.append(el("div", "path", layer(v.fromLayer, v.fromFile), el("span", "arrow", "── imports ──▶"), layer(v.toLayer, v.toFile)));
-    card.append(el("div", "ag-note", `Rule (${v.rule}): ${v.detail}`));
+    card.append(el("div", "aw-note", `Rule (${v.rule}): ${v.detail}`));
   }
-  if (!r.violations.length) card.append(el("div", "ag-note", "The guard's text names no import line this screen can read; its whole text is below."));
+  if (!r.violations.length) card.append(el("div", "aw-note", "The guard's text names no import line this screen can read; its whole text is below."));
   if (r.remedy) card.append(el("div", "", `Remedy it gave: ${r.remedy}`));
-  card.append(el("div", "ag-note", `${r.designId ? `Judged under design ${r.designId}. ` : ""}The edit did not land; the agent read this refusal.`));
-  const whole = el("details", "", el("summary", "ag-note", "The refusal as the agent read it"), el("pre", "", r.text));
+  card.append(el("div", "aw-note", `${r.designId ? `Judged under design ${r.designId}. ` : ""}The edit did not land; the agent read this refusal.`));
+  const whole = el("details", "", el("summary", "aw-note", "The refusal as the agent read it"), el("pre", "", r.text));
   card.append(whole);
   return card;
 }

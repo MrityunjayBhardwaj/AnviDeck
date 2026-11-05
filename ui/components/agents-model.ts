@@ -87,6 +87,12 @@ export interface ToolCall {
   hookLog: HookLogRow[];
   /** A permission request the host parked for this call, and what became of it. */
   permission?: { requestId: string; answer?: "allow" | "deny" | "withdrawn"; message?: string; reason?: string };
+  /**
+   * The call started before the hook sources were read (only the newest records of Claude Code's
+   * transcript and the meter rows after them are fetched): no hook run or context on it means
+   * "not read", not "anvi gave nothing".
+   */
+  hooksUnread?: boolean;
 }
 
 export type Item =
@@ -118,6 +124,8 @@ export interface Timeline {
   sessionContext: GivenContext[];
   hookTotals: { runs: number; informed: number; bytes: number; blocked: number };
   unplaced: { meter: number; hookLog: number; context: number };
+  /** Calls that started before the hook sources' window (see ToolCall.hooksUnread). */
+  hooksUnread: number;
 }
 
 export interface TimelineInput {
@@ -130,6 +138,11 @@ export interface TimelineInput {
   cwd?: string;
   /** A Claude Code process is running for it now: calls with no result are "running", not "no result". */
   live?: boolean;
+  /**
+   * The hook sources (attachments, meter) were read only from this moment on (hookWindow()); calls
+   * that started earlier are marked hooksUnread. Absent: they were read whole.
+   */
+  hooksFrom?: string | null;
 }
 
 // ── small readers ────────────────────────────────────────────────────────────────────────────
@@ -423,6 +436,16 @@ export function buildTimeline(input: TimelineInput): Timeline {
   }
 
   for (const t of tools) settle(t, input.live === true);
+  const from = ms(input.hooksFrom);
+  let hooksUnread = 0;
+  if (!Number.isNaN(from)) {
+    for (const t of tools) {
+      if (ms(t.at) < from) {
+        t.hooksUnread = true;
+        hooksUnread++;
+      }
+    }
+  }
   const hookTotals = { runs: 0, informed: 0, bytes: 0, blocked: 0 };
   for (const t of tools) {
     for (const h of t.hooks) {
@@ -441,7 +464,105 @@ export function buildTimeline(input: TimelineInput): Timeline {
     sessionContext,
     hookTotals,
     unplaced,
+    hooksUnread,
   };
+}
+
+/**
+ * Where the hook sources start when only the newest records were read: the earliest record's
+ * time. null when the transcript was read whole (or nothing was read), so no call is marked.
+ */
+export function hookWindow(t: { count: number; total?: number; records: { at: string | null }[] }): { from: string; count: number; total: number } | null {
+  if (t.total === undefined || t.total <= t.count) return null;
+  let from: string | null = null;
+  for (const r of t.records) if (r.at && (from === null || ms(r.at) < ms(from))) from = r.at;
+  return from ? { from, count: t.count, total: t.total } : null;
+}
+
+// ── an AnviDeck agent's host transcript, as it arrives ─────────────────────────────────────
+
+/**
+ * The host transcript of one agent on the page. Lines that arrive over the WebSocket while it is
+ * being read (or after a read failed) are kept in `early` and merged into the answer, so a line
+ * the server recorded after building its answer is not lost.
+ */
+export type HostLoad =
+  | { state: "loading"; early: TLine[] }
+  | { state: "ok"; lines: TLine[]; unreadable: number; readAt: string }
+  | { state: "error"; error: string; early: TLine[] };
+
+/** Union by seq, in seq order; a line without seq is kept once, by its place. */
+export function mergeHostLines(a: TLine[], b: TLine[]): TLine[] {
+  const bySeq = new Map<number, TLine>();
+  const loose: TLine[] = [];
+  for (const l of [...a, ...b]) {
+    if (typeof l.seq !== "number") loose.push(l);
+    else if (!bySeq.has(l.seq)) bySeq.set(l.seq, l);
+  }
+  return [...[...bySeq.values()].sort((x, y) => x.seq! - y.seq!), ...loose];
+}
+
+/** A line arrived over the WebSocket. Returns the new state (null: nothing to keep it in yet). */
+export function hostLineArrived(h: HostLoad | undefined, line: TLine): HostLoad | null {
+  if (!h) return null; // the screen has not asked for this agent: its read will include the line
+  if (h.state === "ok") return h.lines.some((l) => l.seq === line.seq) ? h : { ...h, lines: mergeHostLines(h.lines, [line]) };
+  return { ...h, early: mergeHostLines(h.early, [line]) };
+}
+
+/** A read of GET /api/agents/:id answered: merged with what arrived meanwhile and what was shown. */
+export function hostReadDone(h: HostLoad | undefined, fetched: TLine[], unreadable: number, readAt: string): HostLoad {
+  const had = !h ? [] : h.state === "ok" ? h.lines : h.early;
+  return { state: "ok", lines: mergeHostLines(fetched, had), unreadable, readAt };
+}
+
+/** A read failed: an earlier answer is kept (and the failure only logged); else the error shows. */
+export function hostReadFailed(h: HostLoad | undefined, error: string): HostLoad {
+  if (h?.state === "ok") return h;
+  return { state: "error", error, early: h ? h.early : [] };
+}
+
+/** The host transcript's line in Sources: lines it could not read make it partial, never complete. */
+export function hostSourceLine(h: HostLoad | undefined, id: string): { text: string; tone: "ok" | "neutral" | "bad" | "warn" } {
+  if (!h || h.state === "loading") return { text: "reading…", tone: "neutral" };
+  if (h.state === "error") return { text: `could not read: ${h.error}`, tone: "bad" };
+  const n = `${h.lines.length} line${h.lines.length === 1 ? "" : "s"}`;
+  if (h.unreadable > 0) return { text: `${n}; ${h.unreadable} line${h.unreadable === 1 ? "" : "s"} could not be read, so events may be missing (GET /api/agents/${id}, live)`, tone: "warn" };
+  return { text: `${n} (GET /api/agents/${id}, live)`, tone: "ok" };
+}
+
+// ── keeping the cursor where it was across a repaint ────────────────────────────────────────
+
+/** The parts of a focused element the screen uses (structural, so the rule is testable without a DOM). */
+export interface FocusTarget {
+  isConnected: boolean;
+  focus(o?: { preventScroll?: boolean }): void;
+  selectionStart?: number | null;
+  selectionEnd?: number | null;
+  setSelectionRange?(start: number, end: number): void;
+}
+export interface SavedFocus {
+  el: FocusTarget;
+  start: number | null;
+  end: number | null;
+}
+
+/**
+ * After a repaint: give focus back to the element the owner was typing in, if the repaint (or
+ * a card moved by another screen) took it away. Only when focus fell to nothing (the body): if
+ * the owner moved to something else, that stays. Returns whether focus was given back.
+ */
+export function restoreFocus(saved: SavedFocus | null, active: unknown, body: unknown): boolean {
+  if (!saved || !saved.el.isConnected || active === saved.el) return false;
+  if (active !== null && active !== undefined && active !== body) return false;
+  saved.el.focus({ preventScroll: true });
+  if (saved.start !== null && saved.end !== null && saved.el.setSelectionRange) {
+    try {
+      saved.el.setSelectionRange(saved.start, saved.end);
+    } catch {
+      // an input type without a selection (checkbox, button): focus alone
+    }
+  }
+  return true;
 }
 
 // ── tabs and grid ────────────────────────────────────────────────────────────────────────────

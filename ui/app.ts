@@ -12,7 +12,7 @@ import { BrainView, addBrainHookEvent, addBrainRouteEvent } from "./components/B
 import { GitHubTrace } from "./components/GitHubTrace";
 import { LiveSessions } from "./components/LiveSessions";
 import { AgentsView, parseAgentsHash } from "./components/AgentsView";
-import { AgentsScreen, agentsScreenAgents, agentsScreenLine } from "./components/AgentsScreen";
+import { AgentsScreen, agentsScreenAgents, agentsScreenLine, agentsScreenReconnected } from "./components/AgentsScreen";
 import { parseAgentsScreenParams } from "./components/agents-model";
 import { needsCount, badgeText, stripText, type HostAsks, type NeedsCount } from "./home-count";
 import { permissionQueue, type AskingAgent } from "../shared/permission-requests";
@@ -398,6 +398,7 @@ function connectWebSocket(): void {
       wsConnected = true;
       renderStrip();
       loadAgents(); // anything missed while disconnected
+      agentsScreenReconnected(); // and agents' transcript lines sent meanwhile
     };
     ws.onclose = () => {
       wsConnected = false;
