@@ -82,7 +82,8 @@ export interface ReplayStep {
    */
   words?: StepWords[];
   /**
-   * Thinking blocks in the same turn recorded without their text (only a
+   * Thinking blocks of the same turn, after its previous call (or batch of calls made
+   * back to back) and before this one, recorded without their text (only a
    * signature). Counted so an empty `words` is not read as "it said nothing".
    */
   wordsHidden?: number;

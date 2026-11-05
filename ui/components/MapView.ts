@@ -981,7 +981,7 @@ function wordsHTML(s: ReplayStep): string {
     return `<div class="map-unavail">The agent's own words: this step is ${esc(s.kind === "injection" ? "a note from anvi" : s.kind === "commit" ? "a commit" : s.kind === "pr" ? "a PR link" : s.kind)}, not a call the agent made, so there are none to show.</div>`;
   if (!s.words)
     return `<div class="map-unavail">The agent's own words: <b>not read</b>. This replay did not carry them.</div>`;
-  const hidden = s.wordsHidden ? `<div class="dim">${plural(s.wordsHidden, "thinking block")} in this turn ${s.wordsHidden === 1 ? "is" : "are"} recorded without ${s.wordsHidden === 1 ? "its" : "their"} text.</div>` : "";
+  const hidden = s.wordsHidden ? `<div class="dim">${plural(s.wordsHidden, "thinking block")} of this turn, before this call, ${s.wordsHidden === 1 ? "is" : "are"} recorded without ${s.wordsHidden === 1 ? "its" : "their"} text.</div>` : "";
   if (!s.words.length)
     return `<div class="map-words"><div class="map-steph">The agent's own words</div><div class="map-unavail">The transcript records none next to this call (line ${s.line ?? "?"}).</div>${hidden}</div>`;
   return `<div class="map-words"><div class="map-steph">The agent's own words</div>${s.words
@@ -1401,7 +1401,11 @@ function wire(view: HTMLElement) {
     if (sid) loadReplay();
     draw();
   });
-  tb.querySelector<HTMLInputElement>(".map-sfind")!.addEventListener("input", (e) => {
+  // The query outlives the view (module state): show it in the new box, so what filters
+  // the picker is always what the box says.
+  const sfind = tb.querySelector<HTMLInputElement>(".map-sfind")!;
+  sfind.value = S.sessionQuery;
+  sfind.addEventListener("input", (e) => {
     S.sessionQuery = (e.target as HTMLInputElement).value;
     drawTimebar();
   });

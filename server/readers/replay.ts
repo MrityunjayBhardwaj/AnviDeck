@@ -471,9 +471,17 @@ const WORDS_LOOKBACK = 60;
  * turn that come after the turn's previous tool call (calls made back to back share the
  * words before the first of them), plus the call's own `input.description`. A record with
  * no `message.id` falls back to itself and the record just before it. Records that are not
- * the assistant's (attachments, progress) are stepped over; a user record or another turn
- * ends the search. Thinking recorded without its text is counted in `hidden`, not shown.
+ * the assistant's (attachments, progress) are stepped over, and so is a user record that
+ * holds only tool results: Claude Code writes the result of a parallel call between the
+ * calls of its turn. Any other user record, or another turn, ends the search. Thinking
+ * recorded without its text is counted in `hidden`, not shown.
  */
+/** A user record that carries only tool results, none of the user's own words. */
+function isToolResultsOnly(r: any): boolean {
+  const c = r?.message?.content;
+  return Array.isArray(c) && c.length > 0 && c.every((b: any) => b?.type === "tool_result");
+}
+
 export function wordsForToolUse(recs: any[], i: number, blockIdx: number): { words: StepWords[]; hidden: number } {
   const rec = recs[i];
   const msgId = typeof rec?.message?.id === "string" ? rec.message.id : null;
@@ -485,7 +493,12 @@ export function wordsForToolUse(recs: any[], i: number, blockIdx: number): { wor
     for (let j = i - 1; j >= 0 && j >= i - WORDS_LOOKBACK; j--) {
       const r = recs[j];
       if (!r) continue;
-      if (r.type === "user") break;
+      // A parallel call's result sits between two calls of one turn (stave c1085477,
+      // lines 283, 286, 287): step over it. Any other user record ends the turn.
+      if (r.type === "user") {
+        if (isToolResultsOnly(r)) continue;
+        break;
+      }
       if (r.type !== "assistant") continue;
       if (r.message?.id !== msgId) break;
       if (Array.isArray(r.message.content)) before.push(r.message.content.map((c: any) => ({ c, line: j + 1 })));

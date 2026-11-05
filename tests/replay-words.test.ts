@@ -47,6 +47,38 @@ describe("wordsForToolUse: the rule", () => {
     expect(wordsForToolUse(recs, 2, 0).words.map((w) => w.text)).toEqual(["Reading both."]);
   });
 
+  test("parallel calls share the turn's words when a call's result is written between them", () => {
+    // The real layout (stave c1085477 lines 280-287): the first call's tool_result and
+    // attachments sit between two calls of the same message.id.
+    const result = (id: string) => ({ type: "user", message: { role: "user", content: [{ tool_use_id: id, type: "tool_result", content: "ok" }] } });
+    const recs = [
+      { type: "user", message: { content: "go" } },
+      asst("m1", [{ type: "thinking", thinking: "", signature: "sig" }]),
+      asst("m1", [{ type: "text", text: "Restoring both files." }]),
+      asst("m1", [tool("t1")]),
+      { type: "attachment", attachment: { type: "hook_additional_context" } },
+      result("t1"),
+      asst("m1", [tool("t2")]),
+    ];
+    const first = wordsForToolUse(recs, 3, 0);
+    const second = wordsForToolUse(recs, 6, 0);
+    expect(first.words.map((w) => [w.text, w.line])).toEqual([["Restoring both files.", 3]]);
+    expect(second.words).toEqual(first.words);
+    expect(second.hidden).toBe(1);
+  });
+
+  test("a user record with the user's own words between two calls still ends the turn", () => {
+    const recs = [
+      asst("m1", [{ type: "text", text: "Before the user spoke." }]),
+      asst("m1", [tool("t1")]),
+      { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1" }, { type: "text", text: "stop" }] } },
+      asst("m1", [tool("t2")]),
+    ];
+    expect(wordsForToolUse(recs, 3, 0).words).toEqual([]);
+    const plain = [asst("m1", [{ type: "text", text: "Before." }]), { type: "user", message: { content: "hi" } }, asst("m1", [tool("t2")])];
+    expect(wordsForToolUse(plain, 2, 0).words).toEqual([]);
+  });
+
   test("thinking kept without its text is counted as hidden, not shown as words", () => {
     const recs = [asst("m1", [{ type: "thinking", thinking: "", signature: "sig" }]), asst("m1", [tool("t1")])];
     const r = wordsForToolUse(recs, 1, 0);
