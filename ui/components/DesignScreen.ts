@@ -21,8 +21,11 @@ import type { ProjectState } from "../../shared/types";
 import {
   LENSES,
   NO_MOVES_SOURCE,
+  NO_FATALITY_SIGNALS,
   NO_PLACEMENT,
   askPrompt,
+  askQuestion,
+  filesPhrase,
   boundaryClusters,
   callStates,
   costGap,
@@ -185,7 +188,7 @@ export function DesignScreen(projectName: string | null, params: URLSearchParams
   }
 
   // ── Placed ────────────────────────────────────────────────────────────────────────────
-  const question = el("input", { type: "text", id: "dz-question", placeholder: "Where should a new 'tempo map' module go?", "aria-label": "Placement question" });
+  const question = el("input", { type: "text", id: "dz-question", placeholder: "e.g. where should a new 'tempo map' module go?", "aria-label": "Placement question" });
   const confirm = el("div", { class: "dz-confirm", id: "dz-confirm", hidden: "" });
 
   function placed(): HTMLElement {
@@ -200,21 +203,28 @@ export function DesignScreen(projectName: string | null, params: URLSearchParams
       card.append(el("div", { class: "sh-dim" }, gap ?? "Waiting for the design: the question is asked against it."));
     } else card.append(el("div", { class: "sh-dim dz-note" }, "Ask starts one Claude Code agent with the question. It is shown in full first; nothing starts until you press Start agent."));
     askBtn.onclick = () => {
-      const q = question.value.trim() || question.placeholder;
-      if (s) ask(askPrompt(project, s, q));
+      const q = askQuestion(question.value);
+      if (!q.ok) {
+        confirm.replaceChildren(el("div", { class: "dz-gap", id: "dz-ask-empty" }, q.why));
+        confirm.hidden = false;
+        return;
+      }
+      if (s) ask(askPrompt(project, s, q.question));
     };
     grid.append(card);
     return grid;
   }
 
   function ask(prompt: string) {
-    const cwd = st.project?.path ?? "";
+    // The one request Start agent sends: built once, shown below, and sent as is.
+    const send = Object.freeze({ cwd: st.project?.path ?? "", prompt });
+    const cwd = send.cwd;
     const out = el("div", { "aria-live": "polite" });
     const go = el("button", { type: "button", class: "sh-btn dz-go", id: "dz-start" }, "Start agent");
     const cancel = el("button", { type: "button", class: "sh-btn", id: "dz-cancel" }, "Cancel");
     confirm.replaceChildren(
       el("div", { class: "sh-dim" }, "Nothing has started. Start agent runs one Claude Code agent (on your Claude Code login) in ", el("span", { class: "dz-mono", id: "dz-cwd" }, cwd || "(no folder known)"), " and tells it exactly this:"),
-      el("pre", { class: "dz-prompt", id: "dz-prompt" }, prompt),
+      el("pre", { class: "dz-prompt", id: "dz-prompt" }, send.prompt),
       el("div", { class: "dz-row" }, go, cancel),
       out,
     );
@@ -225,7 +235,7 @@ export function DesignScreen(projectName: string | null, params: URLSearchParams
       go.disabled = true;
       out.replaceChildren(el("span", { class: "sh-dim" }, "Starting…"));
       try {
-        const a = await write<{ id: string; status: string }>("POST", "/api/agents", { cwd, prompt });
+        const a = await write<{ id: string; status: string }>("POST", "/api/agents", { cwd: send.cwd, prompt: send.prompt });
         cancel.textContent = "Close";
         out.replaceChildren(el("span", { class: "dz-ok" }, "Started agent ", el("b", { id: "dz-agent" }, a.id), ` (${a.status}). `), el("a", { href: `#agents?agent=${encodeURIComponent(a.id)}` }, "Open it on Agents"));
       } catch (e) {
@@ -254,6 +264,7 @@ export function DesignScreen(projectName: string | null, params: URLSearchParams
       }
       card.append(el("div", { class: "sh-dim dz-note" }, `Measured by anvi's structure guard at ${measuredPhrase(s)}: ${s.counts.divergence.grandfathered} held of ${s.counts.examinedBetweenComponents} imports between components.`));
     }
+    card.append(el("div", { class: "dz-gap", id: "dz-no-signals" }, NO_FATALITY_SIGNALS));
     card.append(el("div", { class: "dz-sub" }, "Boundaries where the project's catalogue says the fatality test tripped"));
     if (st.projectError) card.append(el("div", { class: "dz-gap" }, `The catalogues could not be read: ${st.projectError}.`));
     else if (!st.project) card.append(el("div", { class: "sh-dim" }, "Reading the catalogues…"));
@@ -350,7 +361,7 @@ export function DesignScreen(projectName: string | null, params: URLSearchParams
         el("div", { class: "sh-dim" }, n.what),
         el("div", { class: "dz-fig" }, n.figure ?? el("span", { class: "sh-dim" }, "not measured here")),
         el("div", { class: "dz-src" }, n.source)));
-      if (i < nodes.length - 1) flow.append(el("div", { class: "dz-arrow", "aria-hidden": "true" }, n.id === "lands" ? "or" : "→"));
+      if (n.next) flow.append(el("div", { class: "dz-arrow", "aria-hidden": "true", title: n.next === "with" ? "at the same time" : "" }, n.next));
     }
     card.append(flow);
     return card;
@@ -362,7 +373,7 @@ export function DesignScreen(projectName: string | null, params: URLSearchParams
     if (s) lines.push(`Design and verdicts: anvi's structure guard (${s.source.label}), ${s.package.source} registry, measured at ${measuredPhrase(s)} (${s.refChosenBy}).`);
     if (st.refusals?.status === "measured") lines.push(`Trial record: ${st.refusals.instrument.path} (sha256 ${st.refusals.instrument.sha256.slice(0, 12)}), run ${st.refusals.instrument.ranAt}; your calls from ${st.refusals.calls.file} (${st.refusals.calls.status} when read at ${st.refusals.calls.readAt}${Object.keys(st.recorded).length ? `; ${Object.keys(st.recorded).length} recorded on this page since` : ""}).`);
     if (st.cost?.status === "measured") lines.push(`Cost curve: ${st.cost.command}`);
-    if (st.hooks) lines.push(`Edit hooks: ${st.hooks.file} (${st.hooks.status}), read ${st.hooks.readAt}.`);
+    if (st.hooks) lines.push(`Edit hooks: ${filesPhrase(st.hooks)}, read ${st.hooks.readAt}; ${st.hooks.notRead}.`);
     sources.replaceChildren(...lines.map((l) => el("div", {}, l)));
   }
 
@@ -396,7 +407,7 @@ export function DesignScreen(projectName: string | null, params: URLSearchParams
     else st.costError = r.error;
     paint();
   });
-  getJson<EditHooksAnswer>("/api/design/hooks").then((r) => {
+  getJson<EditHooksAnswer>(`/api/design/hooks?project=${encodeURIComponent(project)}`).then((r) => {
     if (r.ok) st.hooks = r.value;
     else st.hooksError = r.error;
     paint();

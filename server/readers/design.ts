@@ -1,15 +1,15 @@
 /**
  * The Design screen's own reads (#87). Read only: it runs `git log` on the measured project
- * (at the commit the guard measured, never its working tree) and reads ~/.claude/settings.json.
+ * (at the commit the guard measured, never its working tree) and reads Claude Code's settings files.
  *
  *   readFixCost  — the cost curve: files touched per fix, per component pair, from git history.
- *   readEditHooks — which hooks run before an edit, in order, as Claude Code's settings register them.
+ *   readEditHooks — which hooks the settings files register for an edit (they run in parallel).
  */
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, relative } from "node:path";
 import type { StructureMeasured, StructureProjectResponse } from "../../shared/structure-types";
-import type { EditHook, EditHooksAnswer, FixCostAnswer, FixPoint, PairCost, Trend } from "../../shared/design-types";
+import type { EditHook, EditHooksAnswer, FixCostAnswer, FixPoint, HookSettingsFile, PairCost, Trend } from "../../shared/design-types";
 import type { Run } from "./repo";
 import { timedRun } from "./work";
 import { readStructure } from "./structure";
@@ -173,8 +173,11 @@ export function hookName(command: string): string {
   return m ? m[1] : basename(command.trim().split(/\s+/)[0] ?? command);
 }
 
-/** PreToolUse hooks that run on an edit, in registration order. */
-export function editHooksOf(settings: unknown): EditHook[] {
+/**
+ * PreToolUse hooks registered for an edit, as the file lists them. Claude Code starts all the
+ * matching hooks at once, so this order is not the order they run in.
+ */
+export function editHooksOf(settings: unknown, file = ""): EditHook[] {
   const pre = (settings as { hooks?: { PreToolUse?: unknown } })?.hooks?.PreToolUse;
   if (!Array.isArray(pre)) return [];
   const out: EditHook[] = [];
@@ -184,28 +187,67 @@ export function editHooksOf(settings: unknown): EditHook[] {
     if (!Array.isArray(hooks)) continue;
     for (const h of hooks) {
       const command = typeof (h as { command?: unknown })?.command === "string" ? (h as { command: string }).command : "";
-      if (command) out.push({ matcher: String((group as { matcher?: unknown }).matcher ?? ""), name: hookName(command), command });
+      if (command) out.push({ matcher: String((group as { matcher?: unknown }).matcher ?? ""), name: hookName(command), command, file });
     }
   }
   return out;
 }
 
-export function readEditHooks(file: string = SETTINGS_PATH): EditHooksAnswer {
+/** Where Claude Code's managed (policy) settings live on this platform. */
+export const MANAGED_SETTINGS =
+  process.platform === "darwin" ? "/Library/Application Support/ClaudeCode/managed-settings.json" : process.platform === "win32" ? "C:\\ProgramData\\ClaudeCode\\managed-settings.json" : "/etc/claude-code/managed-settings.json";
+
+/** Places Claude Code loads hooks from that this reader does not read. */
+export const HOOKS_NOT_READ = "hooks from plugins and from skill or agent frontmatter are not read here";
+
+export interface SettingsFileRef {
+  scope: HookSettingsFile["scope"];
+  /** null when the file cannot be located (the project's folder is not known). */
+  file: string | null;
+  reason?: string;
+}
+
+/**
+ * The settings files Claude Code loads hooks from, for a project: yours, the project's shared and
+ * local files, and the managed policy file. `projectDir` null means the project's folder is not
+ * known, so its two files cannot be read; that is said, not skipped.
+ */
+export function settingsFiles(projectDir: string | null, why = "the project's folder is not known"): SettingsFileRef[] {
+  return [
+    { scope: "user", file: SETTINGS_PATH },
+    { scope: "project", file: projectDir ? join(projectDir, ".claude", "settings.json") : null, reason: why },
+    { scope: "project-local", file: projectDir ? join(projectDir, ".claude", "settings.local.json") : null, reason: why },
+    { scope: "managed", file: MANAGED_SETTINGS },
+  ];
+}
+
+/** Read every settings file named and collect the hooks registered for edits in each. */
+export function readEditHooks(refs: SettingsFileRef[] = settingsFiles(null)): EditHooksAnswer {
   const readAt = new Date().toISOString();
-  let text: string;
-  try {
-    text = readFileSync(file, "utf8");
-  } catch (e) {
-    if (isAbsent(e)) return { status: "none", file, readAt, reason: "no settings file: Claude Code runs no hook of yours before an edit" };
-    return { status: "unreadable", file, readAt, reason: (e as NodeJS.ErrnoException).code ?? (e as Error).message };
+  const files: HookSettingsFile[] = [];
+  const hooks: EditHook[] = [];
+  for (const ref of refs) {
+    if (!ref.file) {
+      files.push({ scope: ref.scope, file: `(${ref.scope} settings)`, status: "unreadable", reason: ref.reason ?? "not located" });
+      continue;
+    }
+    let text: string;
+    try {
+      text = readFileSync(ref.file, "utf8");
+    } catch (e) {
+      if (isAbsent(e)) files.push({ scope: ref.scope, file: ref.file, status: "absent" });
+      else files.push({ scope: ref.scope, file: ref.file, status: "unreadable", reason: (e as NodeJS.ErrnoException).code ?? (e as Error).message });
+      continue;
+    }
+    let json: unknown;
+    try {
+      json = JSON.parse(text);
+    } catch (e) {
+      files.push({ scope: ref.scope, file: ref.file, status: "unreadable", reason: `not JSON: ${(e as Error).message}` });
+      continue;
+    }
+    files.push({ scope: ref.scope, file: ref.file, status: "read" });
+    hooks.push(...editHooksOf(json, ref.file));
   }
-  let json: unknown;
-  try {
-    json = JSON.parse(text);
-  } catch (e) {
-    return { status: "unreadable", file, readAt, reason: `not JSON: ${(e as Error).message}` };
-  }
-  const hooks = editHooksOf(json);
-  if (!hooks.length) return { status: "none", file, readAt, reason: "no PreToolUse hook is registered for Write, Edit or MultiEdit" };
-  return { status: "ok", file, readAt, hooks };
+  return { readAt, files, hooks, notRead: HOOKS_NOT_READ };
 }

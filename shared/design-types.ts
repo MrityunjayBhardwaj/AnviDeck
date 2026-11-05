@@ -56,15 +56,37 @@ export interface FixCostNotMeasured {
 
 export type FixCostAnswer = FixCostMeasured | FixCostNotMeasured;
 
-/** One hook registered on PreToolUse for the edit tools, in the order Claude Code runs them. */
+/**
+ * One hook registered on PreToolUse for the edit tools. Claude Code starts every matching hook
+ * at once (its hooks reference: "all matching hooks run in parallel"), so the list's order says
+ * nothing about when a hook runs.
+ */
 export interface EditHook {
   matcher: string;
   /** The script's file name ("structure-guard-hook.js"), or the command when no script is named. */
   name: string;
   command: string;
+  /** The settings file it is registered in. */
+  file: string;
 }
 
-export type EditHooksAnswer =
-  | { status: "ok"; file: string; readAt: string; hooks: EditHook[] }
-  | { status: "none"; file: string; readAt: string; reason: string }
-  | { status: "unreadable"; file: string; readAt: string; reason: string };
+/** A settings file Claude Code loads hooks from, and what reading it gave. */
+export interface HookSettingsFile {
+  scope: "user" | "project" | "project-local" | "managed";
+  file: string;
+  /** read: parsed (it may hold no hook); absent: no such file; unreadable: could not be read or located. */
+  status: "read" | "absent" | "unreadable";
+  reason?: string;
+}
+
+/**
+ * The edit hooks found in the settings files this reader reads. Claude Code also loads hooks from
+ * places not read here (named in `notRead`), so a hook that is not found is "not found here",
+ * never "not running".
+ */
+export interface EditHooksAnswer {
+  readAt: string;
+  files: HookSettingsFile[];
+  hooks: EditHook[];
+  notRead: string;
+}

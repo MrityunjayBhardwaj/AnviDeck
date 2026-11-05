@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -13,6 +13,7 @@ import {
   parseLog,
   readEditHooks,
   readFixCost,
+  settingsFiles,
   trendOf,
   type ComponentMap,
 } from "../server/readers/design";
@@ -165,7 +166,7 @@ describe("the hooks an edit passes through", () => {
     for (const m of ["Read", "Bash", "EditNotebook", "mcp__.*", "dit", "Edi", "Write2", 3]) expect(coversEdit(m)).toBe(false);
   });
 
-  test("hooks are listed in registration order, PreToolUse only", () => {
+  test("edit hooks are the PreToolUse ones (Claude Code runs them in parallel, so no order is claimed)", () => {
     const settings = {
       hooks: {
         PostToolUse: [{ matcher: "Edit", hooks: [{ command: "node post.js" }] }],
@@ -179,16 +180,33 @@ describe("the hooks an edit passes through", () => {
     expect(hookName("/usr/local/bin/thing --x")).toBe("thing");
   });
 
-  test("an absent settings file is none, a damaged one unreadable", () => {
+  test("each settings file is read and its status kept: absent, damaged, read with or without edit hooks", () => {
     const d = mkdtempSync(join(tmpdir(), "design-hooks-"));
-    expect(readEditHooks(join(d, "missing.json")).status).toBe("none");
     writeFileSync(join(d, "bad.json"), "{nope");
-    expect(readEditHooks(join(d, "bad.json")).status).toBe("unreadable");
     writeFileSync(join(d, "ok.json"), JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Edit", hooks: [{ command: "node /x/structure-guard-hook.js" }] }] } }));
-    const r = readEditHooks(join(d, "ok.json"));
-    expect(r.status).toBe("ok");
     writeFileSync(join(d, "none.json"), JSON.stringify({ hooks: {} }));
-    expect(readEditHooks(join(d, "none.json")).status).toBe("none");
+    const r = readEditHooks([
+      { scope: "user", file: join(d, "missing.json") },
+      { scope: "project", file: join(d, "bad.json") },
+      { scope: "project-local", file: join(d, "ok.json") },
+      { scope: "managed", file: join(d, "none.json") },
+    ]);
+    expect(r.files.map((f) => f.status)).toEqual(["absent", "unreadable", "read", "read"]);
+    expect(r.hooks).toEqual([{ matcher: "Edit", name: "structure-guard-hook.js", command: "node /x/structure-guard-hook.js", file: join(d, "ok.json") }]);
+    expect(r.notRead).toContain("plugins");
+    // A project whose folder is not known: its files are unreadable with the reason, never skipped.
+    const u = readEditHooks(settingsFiles(null, "no project named nope"));
+    expect(u.files.map((f) => f.scope)).toEqual(["user", "project", "project-local", "managed"]);
+    expect(u.files.filter((f) => f.scope.startsWith("project")).map((f) => [f.status, f.reason])).toEqual([["unreadable", "no project named nope"], ["unreadable", "no project named nope"]]);
+  });
+
+  test("a guard registered only in the project's own settings is found", () => {
+    const d = mkdtempSync(join(tmpdir(), "design-hooks-proj-"));
+    mkdirSync(join(d, ".claude"));
+    writeFileSync(join(d, ".claude", "settings.json"), JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Write|Edit|MultiEdit", hooks: [{ command: 'node "/a/structure-guard-hook.js"' }] }] } }));
+    const refs = settingsFiles(d).map((f) => (f.scope === "user" || f.scope === "managed" ? { ...f, file: join(d, `no-${f.scope}.json`) } : f));
+    const r = readEditHooks(refs);
+    expect(r.hooks.map((h) => [h.name, h.file])).toEqual([["structure-guard-hook.js", join(d, ".claude", "settings.json")]]);
   });
 });
 
@@ -196,5 +214,13 @@ describe("GET /api/design", () => {
   test("cost needs a project", async () => {
     const app = designRoutes({ cost: { structure: async () => measured() } });
     expect((await app.request("/cost")).status).toBe(400);
+  });
+
+  test("hooks reads the files for the project named", async () => {
+    const asked: (string | null)[] = [];
+    const app = designRoutes({ hookFiles: (p) => (asked.push(p), [{ scope: "user", file: "/nonexistent/settings.json" }]) });
+    const j = (await (await app.request("/hooks?project=stave")).json()) as { files: { status: string }[] };
+    expect(asked).toEqual(["stave"]);
+    expect(j.files[0].status).toBe("absent");
   });
 });

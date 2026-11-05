@@ -51,17 +51,36 @@ export interface KV {
   tone?: "ok" | "warn" | "bad";
 }
 
+export const GUARD_HOOK = "structure-guard-hook.js";
+
+/** The settings files read, in one phrase: "~/.claude/settings.json (read), /p/.claude/settings.json (absent), …". */
+export function filesPhrase(h: EditHooksAnswer): string {
+  return h.files.map((f) => `${f.file} (${f.status}${f.reason ? `: ${f.reason}` : ""})`).join(", ");
+}
+
+/**
+ * Is the guard's hook registered for edits, by the settings files read? "registered" when any
+ * file registers it. Otherwise "unknown" when a file could not be read or located, else
+ * "not-found": never "not running", because Claude Code also loads hooks from places not read
+ * (plugins, frontmatter; `notRead`).
+ */
+export function guardRegistration(h: EditHooksAnswer): "registered" | "unknown" | "not-found" {
+  if (h.hooks.some((x) => x.name === GUARD_HOOK)) return "registered";
+  return h.files.some((f) => f.status === "unreadable") ? "unknown" : "not-found";
+}
+
 export function enforcement(s: StructureMeasured, hooks: EditHooksAnswer | null): KV[] {
   const p = s.package;
   // Registered means judged only if the edit-time hook runs: the settings say whether it does.
+  const reg = hooks ? guardRegistration(hooks) : null;
   const hook =
     hooks === null
       ? { v: "refusing (hook not checked yet)", tone: undefined }
-      : hooks.status === "ok" && hooks.hooks.some((h) => h.name === "structure-guard-hook.js")
-        ? { v: "refusing", tone: "ok" as const }
-        : hooks.status === "unreadable"
-          ? { v: "unknown", tone: "warn" as const, why: `your settings could not be read (${hooks.reason}), so whether the hook runs is unknown` }
-          : { v: "not running", tone: "bad" as const, why: "structure-guard-hook.js is not registered for edits in your settings" };
+      : reg === "registered"
+        ? { v: "refusing", tone: "ok" as const, why: `${GUARD_HOOK} is registered for edits in ${[...new Set(hooks.hooks.filter((h) => h.name === GUARD_HOOK).map((h) => h.file))].join(", ")}` }
+        : reg === "unknown"
+          ? { v: "unknown", tone: "warn" as const, why: `not every settings file could be read (${filesPhrase(hooks)}), so whether ${GUARD_HOOK} runs is unknown` }
+          : { v: "hook not found", tone: "warn" as const, why: `${GUARD_HOOK} is registered for edits in none of the settings files read (${filesPhrase(hooks)}); ${hooks.notRead}, so it may still run` };
   const check = (p.check ?? null) as { mode?: unknown } | null;
   const c = s.counts;
   const rows: KV[] = [
@@ -216,6 +235,14 @@ export function trialSummary(r: RefusalsResponse, t: Tally, merged: number): { l
 export const NO_PLACEMENT =
   "No placement is in review: no source records one. The guard's registry holds, per package, a design, a baseline and the project's own check, and nothing about a proposed move.";
 
+export const ASK_EMPTY = "Type a question first. Ask sends exactly what you type; the example in the empty box is never sent.";
+
+/** The question Ask would send, or why there is none. Only what was typed counts: never a placeholder. */
+export function askQuestion(typed: string): { ok: true; question: string } | { ok: false; why: string } {
+  const q = typed.trim();
+  return q ? { ok: true, question: q } : { ok: false, why: ASK_EMPTY };
+}
+
 /** The prompt "Ask before writing" sends. Shown in full before anything starts; the same string is sent. */
 export function askPrompt(project: string, s: StructureMeasured, question: string): string {
   const q = question.trim();
@@ -231,6 +258,9 @@ export function askPrompt(project: string, s: StructureMeasured, question: strin
 }
 
 // ── Consolidated ───────────────────────────────────────────────────────────────────────────
+
+export const NO_FATALITY_SIGNALS =
+  "Not shown: the prototype's table of the three fatality signals (error patterns at one boundary, an invariant spanning modules, a lifecycle crossing boundaries), each with a count and an over-threshold or approaching state. No reader counts them yet (#210). What is shown instead: the guard's held breaks by pair, and the boundaries whose catalogue heading says the test tripped.";
 
 export interface Cluster {
   where: string;
@@ -319,8 +349,10 @@ export function heldGroups(s: StructureMeasured): HeldGroup[] {
 // ── System flows ───────────────────────────────────────────────────────────────────────────
 
 export interface FlowNode {
-  id: "call" | "context" | "guard" | "lands" | "refusal" | "ruling";
+  id: "call" | "hooks" | "guard" | "lands" | "refusal" | "ruling";
   label: string;
+  /** What joins this step to the next: "→" then, "with" at the same time, "or" one or the other; null on the last. */
+  next: "→" | "with" | "or" | null;
   /** What the step is: a fixed description, the same for every project. */
   what: string;
   /** A measured figure for this step, or null when nothing here measures it. */
@@ -332,28 +364,36 @@ export interface FlowNode {
 export function flowNodes(r: RefusalsResponse | null, hooks: EditHooksAnswer | null, t: Tally | null): FlowNode[] {
   const m = r && r.status === "measured" ? r : null;
   const win = m ? `structure-refusals.js, since ${day(m.window.since)}` : r ? `structure-refusals.js: ${r.status === "measuring" ? "still reading" : "not measured"}` : "structure-refusals.js: not read yet";
-  const hookList = hooks?.status === "ok" ? hooks.hooks.map((h) => h.name) : [];
-  const guardAt = hookList.indexOf("structure-guard-hook.js");
-  const before = guardAt === -1 ? hookList : hookList.slice(0, guardAt);
-  const settings = hooks ? (hooks.status === "ok" ? `PreToolUse on edits in ${hooks.file}, read ${hooks.readAt.slice(0, 16).replace("T", " ")} UTC` : `${hooks.file}: ${hooks.reason}`) : "settings not read yet";
+  const others = hooks ? [...new Set(hooks.hooks.map((h) => h.name).filter((n) => n !== GUARD_HOOK))] : [];
+  const reg = hooks ? guardRegistration(hooks) : null;
+  const count = (st: string) => (hooks ? hooks.files.filter((f) => f.status === st).length : 0);
+  const settings = hooks
+    ? `PreToolUse on edits in ${plural(hooks.files.length, "settings file")} (${count("read")} read, ${count("absent")} absent, ${count("unreadable")} unreadable; each named under the flow), read ${hooks.readAt.slice(0, 16).replace("T", " ")} UTC; plugin and frontmatter hooks are not read`
+    : "settings not read yet";
   return [
-    { id: "call", label: "Agent tool call", what: "Write, Edit or MultiEdit on a file in the package", figure: m ? `${m.totals.edits.toLocaleString("en-US")} edits in ${plural(m.totals.sessions, "session")}` : null, source: win },
+    { id: "call", label: "Agent tool call", next: "→", what: "Write, Edit or MultiEdit on a file in the package", figure: m ? `${m.totals.edits.toLocaleString("en-US")} edits in ${plural(m.totals.sessions, "session")}` : null, source: win },
     {
-      id: "context",
-      label: "Context injected",
-      what: "hooks that run before the guard; the catalogue injector adds the entries for this boundary",
-      figure: hooks?.status === "ok" ? (before.length ? before.join(" → ") : "no hook runs before the guard") : null,
-      source: `${settings}; what they delivered is not counted here`,
+      id: "hooks",
+      label: "Other edit hooks",
+      next: "with",
+      // Claude Code starts every matching hook at once; none of them runs "before" the guard.
+      what: "the other hooks registered for edits, started together with the guard, not before it; some are guards of their own, and the catalogue injector adds the entries for the file",
+      figure: hooks ? (others.length ? others.join(" · ") : "no other hook is registered for edits") : null,
+      source: `${settings}. Claude Code runs matching hooks in parallel (its hooks reference); what they delivered is not counted here`,
     },
     {
       id: "guard",
       label: "Guard decides",
+      next: "→",
       what: "structure-guard-hook.js judges the edit's imports against the design and the baseline",
-      figure: hooks?.status === "ok" && guardAt === -1 ? "structure-guard-hook.js is not registered for edits" : m ? `${m.totals.refused} refused · ${m.totals.deniedOtherwise} denied by something else · ${m.totals.erroredOtherwise} errored` : null,
-      source: hooks?.status === "ok" && guardAt === -1 ? settings : win,
+      figure:
+        reg === "not-found" ? "structure-guard-hook.js not found in the settings read"
+        : reg === "unknown" && !m ? "whether structure-guard-hook.js is registered is unknown"
+        : m ? `${m.totals.refused} refused · ${m.totals.deniedOtherwise} denied by something else · ${m.totals.erroredOtherwise} errored` : null,
+      source: reg === "not-found" || (reg === "unknown" && !m) ? settings : win,
     },
-    { id: "lands", label: "Edit lands", what: "the edit is applied", figure: m ? `${m.totals.applied.toLocaleString("en-US")} applied` : null, source: win },
-    { id: "refusal", label: "Refusal card", what: "the agent reads the guard's reason; the card shows it on Agents and here", figure: t ? plural(t.rows, "refusal") : null, source: win },
-    { id: "ruling", label: "Your ruling", what: "you call each refusal right or wrong", figure: t ? `${t.right + t.wrong} of ${t.rows} called` : null, source: "calls.jsonl in AnviDeck's own folder" },
+    { id: "lands", label: "Edit lands", next: "or", what: "the edit is applied", figure: m ? `${m.totals.applied.toLocaleString("en-US")} applied` : null, source: win },
+    { id: "refusal", label: "Refusal card", next: "→", what: "the agent reads the guard's reason; the card shows it on Agents and here", figure: t ? plural(t.rows, "refusal") : null, source: win },
+    { id: "ruling", label: "Your ruling", next: null, what: "you call each refusal right or wrong", figure: t ? `${t.right + t.wrong} of ${t.rows} called` : null, source: "calls.jsonl in AnviDeck's own folder" },
   ];
 }

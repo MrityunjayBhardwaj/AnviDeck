@@ -1,8 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
+  ASK_EMPTY,
+  NO_FATALITY_SIGNALS,
   NO_MOVES_SOURCE,
   NO_PLACEMENT,
   askPrompt,
+  askQuestion,
+  guardRegistration,
   boundaryClusters,
   callStates,
   callsPhrase,
@@ -20,7 +24,7 @@ import {
 } from "../ui/components/design-model";
 import type { StructureMeasured } from "../shared/structure-types";
 import type { Refusal, RefusalsMeasured, RefusalsResponse } from "../shared/refusal-types";
-import type { EditHooksAnswer, FixCostMeasured, PairCost } from "../shared/design-types";
+import type { EditHooksAnswer, FixCostMeasured, HookSettingsFile, PairCost } from "../shared/design-types";
 import type { BoundaryInfo } from "../shared/types";
 
 function structure(over: Partial<StructureMeasured> = {}): StructureMeasured {
@@ -105,7 +109,10 @@ describe("lenses", () => {
 });
 
 describe("Armed", () => {
-  const hooks = (names: string[]): EditHooksAnswer => ({ status: "ok", file: "/settings.json", readAt: "2026-11-05T12:00:00Z", hooks: names.map((name) => ({ matcher: "Edit", name, command: name })) });
+  const hooks = (names: string[], files: HookSettingsFile[] = [{ scope: "user", file: "/settings.json", status: "read" }]): EditHooksAnswer => ({
+    readAt: "2026-11-05T12:00:00Z", files, notRead: "hooks from plugins and from skill or agent frontmatter are not read here",
+    hooks: names.map((name) => ({ matcher: "Edit", name, command: name, file: files[0]?.file ?? "/settings.json" })),
+  });
 
   test("enforcement names the design, the held breaks with where and when they were measured, and who can change it", () => {
     const rows = Object.fromEntries(enforcement(structure(), hooks(["structure-guard-hook.js"])).map((r) => [r.k, r]));
@@ -122,10 +129,29 @@ describe("Armed", () => {
 
   test("the graph rule refuses only if the edit hook is registered; settings that cannot be read leave it unknown", () => {
     const k = (h: EditHooksAnswer | null) => enforcement(structure(), h).find((r) => r.k === "graph rule")!;
-    expect(k(hooks(["catalogue-context-injector.js"])).v).toBe("not running");
-    expect(k(hooks(["catalogue-context-injector.js"])).tone).toBe("bad");
-    expect(k({ status: "unreadable", file: "/s", readAt: "", reason: "EACCES" }).v).toBe("unknown");
-    expect(k({ status: "none", file: "/s", readAt: "", reason: "no settings" }).v).toBe("not running");
+    const unreadable: HookSettingsFile[] = [{ scope: "user", file: "/s", status: "read" }, { scope: "project", file: "/p/.claude/settings.json", status: "unreadable", reason: "EACCES" }];
+    expect(k(hooks([], unreadable)).v).toBe("unknown");
+    expect(k(hooks([], unreadable)).note).toContain("/p/.claude/settings.json (unreadable: EACCES)");
+  });
+
+  test("a guard hook found in no settings file read is 'not found', never 'not running': plugins are not read", () => {
+    const k = (h: EditHooksAnswer) => enforcement(structure(), h).find((r) => r.k === "graph rule")!;
+    const all: HookSettingsFile[] = [
+      { scope: "user", file: "/u/settings.json", status: "read" },
+      { scope: "project", file: "/p/.claude/settings.json", status: "absent" },
+      { scope: "project-local", file: "/p/.claude/settings.local.json", status: "absent" },
+      { scope: "managed", file: "/m.json", status: "absent" },
+    ];
+    const r = k(hooks(["catalogue-context-injector.js"], all));
+    expect(r.v).toBe("hook not found");
+    expect(r.tone).toBe("warn");
+    expect(r.note).toContain("plugins");
+    expect(r.note).toContain("/p/.claude/settings.json (absent)");
+    // Registered in the project's own settings, not yours: refusing, and it says where.
+    const inProject = hooks(["structure-guard-hook.js"], [all[1], all[0]].map((f) => ({ ...f, status: "read" as const })));
+    expect(guardRegistration(inProject)).toBe("registered");
+    expect(k(inProject).v).toBe("refusing");
+    expect(k(inProject).note).toContain("/p/.claude/settings.json");
   });
 
   test("a new rule break turns the allowed breaks red", () => {
@@ -189,6 +215,12 @@ describe("Placed", () => {
     expect(NO_PLACEMENT).toContain("no source records one");
   });
 
+  test("an empty question is no question: nothing stands in for it", () => {
+    expect(askQuestion("   ")).toEqual({ ok: false, why: ASK_EMPTY });
+    expect(askQuestion("")).toEqual({ ok: false, why: ASK_EMPTY });
+    expect(askQuestion("  where?  ")).toEqual({ ok: true, question: "where?" });
+  });
+
   test("the question is sent verbatim, with the design it is asked against and an instruction to change nothing", () => {
     const p = askPrompt("stave", structure(), "  Where should a tempo map go?  ");
     expect(p).toContain("Question: Where should a tempo map go?\n");
@@ -202,6 +234,10 @@ describe("Placed", () => {
 describe("Consolidated", () => {
   test("clusters are the guard's pairs, most first", () => {
     expect(pairClusters(structure())).toEqual([{ where: "v → w", count: 2 }, { where: "a → w", count: 1 }]);
+  });
+
+  test("the prototype's fatality-signal table is said to be missing, with its issue", () => {
+    for (const w of ["error patterns at one boundary", "an invariant spanning modules", "a lifecycle crossing boundaries", "approaching", "#210"]) expect(NO_FATALITY_SIGNALS).toContain(w);
   });
 
   test("boundaries keep only those whose catalogue says the fatality test tripped, with the heading's own count and date", () => {
@@ -251,17 +287,26 @@ describe("System flows", () => {
   test("each step's figure is measured or null; the guard step says when the hook is not registered", () => {
     const r = refusals([refusal("a", "2026-10-13T00:00:00Z")]);
     const t = tally(trialRows(r).rows, callStates(r));
-    const hooks: EditHooksAnswer = { status: "ok", file: "/s.json", readAt: "2026-11-05T12:00:00Z", hooks: ["tree-lock-guard.js", "catalogue-context-injector.js", "structure-guard-hook.js"].map((name) => ({ matcher: "Edit", name, command: name })) };
+    const hooks: EditHooksAnswer = {
+      readAt: "2026-11-05T12:00:00Z", files: [{ scope: "user", file: "/s.json", status: "read" }], notRead: "plugins are not read",
+      hooks: ["tree-lock-guard.js", "structure-guard-hook.js", "catalogue-context-injector.js"].map((name) => ({ matcher: "Edit", name, command: name, file: "/s.json" })),
+    };
     const n = Object.fromEntries(flowNodes(r, hooks, t).map((x) => [x.id, x]));
     expect(n.call.figure).toBe("704 edits in 26 sessions");
-    expect(n.context.figure).toBe("tree-lock-guard.js → catalogue-context-injector.js");
+    // Claude Code starts matching hooks together: the other hooks are listed, not sequenced, and
+    // a hook listed after the guard is as much "with" it as one listed before.
+    expect(n.hooks.figure).toBe("tree-lock-guard.js · catalogue-context-injector.js");
+    expect(n.hooks.next).toBe("with");
+    expect(n.hooks.label).not.toContain("Context");
+    expect(n.hooks.source).toContain("parallel");
+    expect(flowNodes(r, hooks, t).map((x) => x.next)).toEqual(["→", "with", "→", "or", "→", null]);
     expect(n.guard.figure).toBe("1 refused · 1 denied by something else · 4 errored");
     expect(n.lands.figure).toBe("696 applied");
     expect(n.refusal.figure).toBe("1 refusal");
     expect(n.ruling.figure).toBe("0 of 1 called");
     const none = Object.fromEntries(flowNodes(null, null, null).map((x) => [x.id, x]));
     for (const k of Object.keys(none)) expect(none[k].figure).toBeNull();
-    const noGuard = { ...hooks, hooks: hooks.hooks.slice(0, 2) };
-    expect(flowNodes(r, noGuard, t).find((x) => x.id === "guard")!.figure).toBe("structure-guard-hook.js is not registered for edits");
+    const noGuard = { ...hooks, hooks: hooks.hooks.filter((h) => h.name !== "structure-guard-hook.js") };
+    expect(flowNodes(r, noGuard, t).find((x) => x.id === "guard")!.figure).toBe("structure-guard-hook.js not found in the settings read");
   });
 });
