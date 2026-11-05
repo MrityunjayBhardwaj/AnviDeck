@@ -9,6 +9,7 @@
  */
 import type { ChangesPrList, ChangesResponse } from "../../shared/changes-types";
 import { messagesIn, type SentMessage } from "../../shared/agent-messages";
+import { elsewhereUrl } from "../../shared/agent-elsewhere";
 import { api } from "../api";
 import { write, WriteError } from "../write";
 import {
@@ -213,6 +214,16 @@ function render(root: HTMLElement, project: string, r: ChangesResponse, list: Ch
   let currentTarget: CommentTarget = target;
   const paintTarget = () => {
     cmtNote.textContent = currentTarget.enabled ? `Line comments: ${currentTarget.note} Click a line number to comment.` : `Line comments off: ${currentTarget.why}`;
+    // An agent another server runs: link to this PR's Changes screen on that server (#104).
+    const there = !currentTarget.enabled ? currentTarget.elsewhere : undefined;
+    const url = there && project ? elsewhereUrl(there.at, location, `#changes?project=${encodeURIComponent(project)}&pr=${pr.number}`) : null;
+    if (url) {
+      const a = document.createElement("a");
+      a.href = url;
+      a.textContent = ` Open it on port ${there!.at.port}`;
+      a.dataset.elsewhere = String(there!.at.port);
+      cmtNote.append(a);
+    }
   };
   paintTarget();
 
@@ -463,7 +474,7 @@ function render(root: HTMLElement, project: string, r: ChangesResponse, list: Ch
         const a = await getJson<{ transcript: { at: string; from: string; message: unknown }[] }>(`/api/agents/${encodeURIComponent(id)}`);
         priorComments.push(...messagesIn(a.transcript).filter((m) => m.comment && paths.has(m.comment.file)));
       } catch (e) {
-        cmtNote.textContent += ` (Earlier comments to ${id} could not be read: ${(e as Error).message})`;
+        cmtNote.append(` (Earlier comments to ${id} could not be read: ${(e as Error).message})`);
       }
     }
     // Redraw the drawn files so earlier comments sit under their lines and line titles say where comments go.

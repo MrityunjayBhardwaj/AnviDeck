@@ -66,6 +66,101 @@ export async function defaultBranch(run: Run, main: string): Promise<string> {
   return v || "main";
 }
 
+/**
+ * The local default branch against origin's, as last fetched (#136). No fetch is made: it is a
+ * network call, and an SSH remote may not answer the server. `startFrom` is the ref the
+ * worktree should start from:
+ *   same      both at one commit                           → the local branch
+ *   behind    local is an ancestor of origin's (pull only)  → origin's: nothing local is lost, and
+ *                                                              it is the tip the PR merges into
+ *   ahead     origin's is an ancestor of local's            → the local branch (its unpushed commits
+ *                                                              go into the PR; said so)
+ *   diverged  each has commits the other lacks              → none: refused, not guessed
+ *   no-local  only origin's exists                          → origin's
+ *   unknown   origin's was never fetched, or git could not compare → the local branch, and the
+ *             summary says the comparison could not be made (never "up to date")
+ */
+export interface UpstreamCompare {
+  state: "same" | "behind" | "ahead" | "diverged" | "no-local" | "unknown";
+  base: string;
+  localSha?: string;
+  originSha?: string;
+  /** Commits on origin's branch that the local one lacks, and the other way round. */
+  behind: number;
+  ahead: number;
+  /** When this checkout last updated origin's branch (its reflog), if git recorded it. */
+  fetchedAt?: string;
+  /** The ref the worktree starts from (`main` or `origin/main`), or null when refused. */
+  startFrom: string | null;
+  startSha?: string;
+  /** One sentence for the plan, the dialog and the agent's prompt. */
+  summary: string;
+}
+
+const commits = (n: number) => `${n} commit${n === 1 ? "" : "s"}`;
+
+export async function compareWithOrigin(run: Run, main: string, base: string): Promise<UpstreamCompare> {
+  const sha = async (ref: string) => {
+    const r = await run("git", ["-C", main, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+    return r.code === 0 ? r.stdout.trim() : undefined;
+  };
+  const localSha = await sha(`refs/heads/${base}`);
+  const originSha = await sha(`refs/remotes/origin/${base}`);
+  const o = `origin/${base}`;
+  let fetchedAt: string | undefined;
+  if (originSha) {
+    const r = await run("git", ["-C", main, "reflog", "show", "-n1", "--date=iso-strict", "--format=%gd", `refs/remotes/origin/${base}`]);
+    fetchedAt = r.code === 0 ? /@\{(.+)\}/.exec(r.stdout.trim())?.[1] : undefined;
+  }
+  const asOf = `as of the last fetch${fetchedAt ? ` (${fetchedAt})` : ""}`;
+  const at = (s: string) => s.slice(0, 12);
+  if (!localSha && !originSha) {
+    return { state: "unknown", base, behind: 0, ahead: 0, startFrom: null, summary: `${main} has neither a local ${base} nor a fetched ${o} to start from` };
+  }
+  if (!originSha) {
+    return {
+      state: "unknown", base, localSha, behind: 0, ahead: 0, startFrom: base, startSha: localSha,
+      summary: `no ${o} has been fetched in this checkout, so whether ${base} is behind it could not be checked; the worktree starts from the local ${base} at ${at(localSha!)}`,
+    };
+  }
+  if (!localSha) {
+    return {
+      state: "no-local", base, originSha, behind: 0, ahead: 0, fetchedAt, startFrom: o, startSha: originSha,
+      summary: `there is no local ${base}; the worktree starts from ${o} at ${at(originSha)}, ${asOf}`,
+    };
+  }
+  const r = await run("git", ["-C", main, "rev-list", "--left-right", "--count", `refs/heads/${base}...refs/remotes/origin/${base}`]);
+  const m = r.code === 0 ? /^(\d+)\s+(\d+)\s*$/.exec(r.stdout.trim()) : null;
+  if (!m) {
+    return {
+      state: "unknown", base, localSha, originSha, behind: 0, ahead: 0, fetchedAt, startFrom: base, startSha: localSha,
+      summary: `git could not compare ${base} with ${o} (${(r.stderr || r.stdout).trim().slice(0, 200) || `exit ${r.code}`}); the worktree starts from the local ${base} at ${at(localSha)}`,
+    };
+  }
+  const ahead = Number(m[1]);
+  const behind = Number(m[2]);
+  const common = { base, localSha, originSha, behind, ahead, fetchedAt };
+  if (!ahead && !behind) {
+    return { ...common, state: "same", startFrom: base, startSha: localSha, summary: `${base} is at ${o}, ${asOf}; the worktree starts from ${base} at ${at(localSha)}` };
+  }
+  if (!ahead) {
+    return {
+      ...common, state: "behind", startFrom: o, startSha: originSha,
+      summary: `the local ${base} is ${commits(behind)} behind ${o} ${asOf}; the worktree starts from ${o} at ${at(originSha)}, not the local ${base} at ${at(localSha)}`,
+    };
+  }
+  if (!behind) {
+    return {
+      ...common, state: "ahead", startFrom: base, startSha: localSha,
+      summary: `the local ${base} is ${commits(ahead)} ahead of ${o} ${asOf} (not pushed); the worktree starts from the local ${base} at ${at(localSha)}, so the PR carries those commits too`,
+    };
+  }
+  return {
+    ...common, state: "diverged", startFrom: null,
+    summary: `the local ${base} and ${o} have diverged ${asOf}: ${base} has ${commits(ahead)} that ${o} lacks, and is ${commits(behind)} behind it`,
+  };
+}
+
 /** Does a local branch or a remote-tracking branch of this name exist? Names which. */
 export async function branchExists(run: Run, main: string, branch: string): Promise<string | null> {
   for (const ref of [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`]) {

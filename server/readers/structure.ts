@@ -104,7 +104,7 @@ export function readRegistry(paths: { locked?: string; user?: string } = {}): Re
 
 // ── projects ────────────────────────────────────────────────────────────────────────────────
 
-interface Project { name: string; path: string }
+export interface Project { name: string; path: string }
 
 /**
  * Projects as AnviDeck already knows them (~/.claude/projects/<encoded path>), kept only when
@@ -138,7 +138,7 @@ export function discoverProjects(reg: Registry = readRegistry()): Project[] {
  * "deepest", a parent folder that is itself a known project (~/Documents/projects) would claim
  * every package below it and show a design it does not have.
  */
-function ownerOf(dir: string, projects: Project[]): Project | null {
+export function ownerOf(dir: string, projects: Project[]): Project | null {
   const d = realOr(dir);
   let best: Project | null = null;
   for (const p of projects) {

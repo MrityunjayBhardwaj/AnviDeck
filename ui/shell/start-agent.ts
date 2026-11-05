@@ -15,6 +15,9 @@ export interface StartAgentDeps {
 interface Link { kind: string; state: string; path: string; target?: string; resolvesTo?: string; resolves: boolean; note: string }
 interface Plan {
   project: string; repo: string; branch: string; worktree: string; base: string; baseSha: string;
+  /** The ref the worktree starts from, and the local base against origin's as last fetched (#136). */
+  startFrom?: string;
+  upstream?: { state: string; behind: number; ahead: number; summary: string };
   issue: { number: number; title: string; url: string };
 }
 interface Started extends Plan {
@@ -56,7 +59,9 @@ export function createStartAgent(deps: StartAgentDeps): { open: (project: string
     return [
       el("div", {}, el("b", {}, `#${p.issue.number} ${p.issue.title}`), el("span", { class: "sh-dim" }, `  ${p.repo}`)),
       el("div", {}, el("span", { class: "sh-dim" }, "worktree "), el("span", { id: "sa-worktree" }, p.worktree)),
-      el("div", {}, el("span", { class: "sh-dim" }, "branch "), el("span", { id: "sa-branch" }, p.branch), el("span", { class: "sh-dim" }, `  from ${p.base} at ${p.baseSha.slice(0, 12)}`)),
+      el("div", {}, el("span", { class: "sh-dim" }, "branch "), el("span", { id: "sa-branch" }, p.branch), el("span", { class: "sh-dim" }, `  from ${p.startFrom ?? p.base} at ${p.baseSha.slice(0, 12)}`)),
+      // The server's own sentence: same, behind (starts from origin's), ahead, or could not be checked.
+      ...(p.upstream ? [el("div", { id: "sa-upstream", "data-state": p.upstream.state, class: p.upstream.state === "same" ? "sh-dim" : p.upstream.state === "unknown" ? "sh-sa-err" : "" }, p.upstream.summary)] : []),
     ];
   }
 
