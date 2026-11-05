@@ -334,7 +334,17 @@ function tabsRow(agents: HostAgent[], sel: ReturnType<typeof selected>): HTMLEle
     : [];
   const tabs = agentTabs(agents, terms.map((s) => ({ sessionId: s.sessionId, project: s.project, cwd: s.cwd, lastTs: s.lastTs, modifiedAt: s.modifiedAt })));
   row.append(el("span", "aw-tabs-k", "AnviDeck"));
-  if (!agents.length) row.append(el("span", "aw-note", d.hostAgents.state === "ok" ? "no agents yet" : "list not read"));
+  if (!agents.length) {
+    const h = d.hostAgents;
+    const note = el("span", "aw-note", h.state === "ok" ? "no agents yet" : "list not read");
+    // For Help's tour (#91): unread and still reading are told apart from "no agents yet".
+    if (h.state === "loading") note.dataset.read = "reading";
+    else if (h.state !== "ok") {
+      note.dataset.read = "unread";
+      note.title = `the agent host's list was not read: ${h.state === "off" ? `agent host off: ${h.reason}` : h.reason}`;
+    }
+    row.append(note);
+  }
   let termHead = false;
   for (const tab of tabs) {
     if (tab.kind === "terminal" && !termHead) {
@@ -351,7 +361,11 @@ function tabsRow(agents: HostAgent[], sel: ReturnType<typeof selected>): HTMLEle
   }
   if (d.project && !termHead) {
     // Absent and unread are said differently from "none".
-    if (!t || t.state === "loading") row.append(el("span", "aw-note", `· ${d.project} terminal sessions: reading…`));
+    if (!t || t.state === "loading") {
+      const reading = el("span", "aw-note", `· ${d.project} terminal sessions: reading…`);
+      reading.dataset.read = "reading";
+      row.append(reading);
+    }
     else if (t.state === "error") row.append(el("span", "aw-note aw-err", `· ${d.project} terminal sessions: could not read (${t.error})`));
     else if (t.data.status !== "ok" && t.data.status !== "none") row.append(el("span", "aw-note aw-err", `· ${d.project} terminal sessions: could not read (${t.data.status}${t.data.detail ? `: ${t.data.detail}` : ""})`));
     else row.append(el("span", "aw-note", `· ${d.project}: no terminal sessions in its transcripts`));

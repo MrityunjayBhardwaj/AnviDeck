@@ -56,6 +56,19 @@ describe("deciding a step", () => {
     expect(decide(step, look({ ready: true, sinceReady: 5_000, gap: { text: "measuring", transient: true }, elapsed: 5_000 }), ctx).kind).toBe("wait");
   });
 
+  test("a screen that is ready and also states a reason: the reason wins over 'no data'", () => {
+    // History's #hs-svg is ready while an unreadable lane cell is the gap; Work's
+    // #wk-board-unreadable is both a ready marker and a gap.
+    const gap = { text: "the Refusals & rulings lane could not be read", transient: false };
+    expect(decide(step, look({ ready: true, sinceReady: 5_000, elapsed: 5_000, gap }), ctx)).toEqual({
+      kind: "skip",
+      why: "gap",
+      text: "the screen says: the Refusals & rulings lane could not be read",
+    });
+    expect(decide(step, look({ target: true, needs: false, ready: true, sinceReady: 5_000, elapsed: 5_000, gap }), ctx).kind).toBe("skip");
+    expect((decide(step, look({ target: true, needs: false, ready: true, sinceReady: 5_000, elapsed: 5_000, gap }), ctx) as { why: string }).why).toBe("gap");
+  });
+
   test("ready but within the grace period: keep looking (rows arrive after the frame)", () => {
     expect(decide(step, look({ ready: true, sinceReady: 500, elapsed: 600 }), ctx).kind).toBe("wait");
   });
@@ -229,7 +242,206 @@ describe("the runner on a page", () => {
   });
 });
 
+/**
+ * Play one step on a fake page where only `present` selectors are found (with their attributes),
+ * and return the card's status after `ms`. Earlier steps of the flow are passed over with Next.
+ */
+function playStep(title: string, present: Record<string, Record<string, string>>, ms = LOOK_MS) {
+  const page = fakePage((sel) => present[sel] ?? null);
+  const r = createTourRunner(page.host);
+  const flow = FLOWS.findIndex((f) => f.steps.some((s) => s.title === title));
+  r.start(flow);
+  while (FLOWS[flow]!.steps[r.pos()!.step]!.title !== title) r.next();
+  page.advance(ms);
+  return { status: page.card()!.status, outcome: r.outcome(), highlighted: page.log.highlighted.filter(Boolean) };
+}
+const stepNamed = (title: string) => FLOWS.flatMap((f) => f.steps).find((s) => s.title === title)!;
+
+describe("a lane, list or board the screen could not read is never reported as no data", () => {
+  const timeline = stepNamed("Recorded on the timeline");
+  const lane = (state: string) => ({
+    "#hs-svg": {},
+    [`.hs-cell[data-row="refusals"][data-lane="${state}"]`]: {},
+    "#hs-status": { text: "basher · 2026-10-23 – 2026-11-05 · 246 events" },
+  });
+
+  test("History: a Refusals lane with no source, or only partly read, is the screen's reason", () => {
+    expect(timeline.ready).toBe("#hs-svg");
+    const na = playStep("Recorded on the timeline", lane("not-available"));
+    expect(na.status).toEqual({ kind: "skipped", text: "skipped: the screen says: the Refusals & rulings lane has no source for this project" });
+    const partial = playStep("Recorded on the timeline", lane("partial"));
+    expect(partial.status).toEqual({ kind: "skipped", text: "skipped: the screen says: the Refusals & rulings lane was only partly read" });
+    // Control: a lane read whole with nothing in it is "none".
+    const none = playStep("Recorded on the timeline", lane("ok"));
+    expect(none.status.text).toStartWith("skipped: no refusal or call of stave in the window shown");
+  });
+
+  test("Changes: a failed PR-list read is the reason on every Changes step, not 'no open PR'", () => {
+    const failed = { ".chg-pick": {}, ".chg-pick[title]": { title: "502 could not list the open PRs: rate limit" } };
+    for (const t of ["Read the diff", "Comment on a line", "Check the evidence"]) {
+      expect({ t, status: playStep(t, failed).status }).toEqual({ t, status: { kind: "skipped", text: "skipped: the screen says: 502 could not list the open PRs: rate limit" } });
+    }
+    // Control: a list read whole with no PR is "no open PR".
+    for (const t of ["Comment on a line", "Check the evidence"]) {
+      expect(playStep(t, { ".chg-pick": {} }).status.text).toBe("skipped: no open PR in stave");
+    }
+  });
+
+  test("Agents: terminal sessions unread, still reading, or the host list unread is not 'no tabs'", () => {
+    const row = { '[data-tour="agent-tabs"]': {}, "#aw-host-line": {} };
+    const err = playStep("It runs here", { ...row, "#aw-tabs .aw-err": { text: "· stave terminal sessions: could not read (Failed to fetch)" } }, 5_000);
+    expect(err.status).toEqual({ kind: "skipped", text: "skipped: the screen says: · stave terminal sessions: could not read (Failed to fetch)" });
+
+    // Still reading past the 4 s grace: wait, then say it was still reading, never "none".
+    const reading = { ...row, '#aw-tabs [data-read="reading"]': { text: "· stave terminal sessions: reading…" } };
+    expect(playStep("It runs here", reading, 5_000).status.kind).toBe("looking");
+    expect(playStep("It runs here", reading, 31_000).status.text).toBe("skipped: still reading after 30 s: · stave terminal sessions: reading…");
+
+    const unread = playStep("It runs here", { ...row, '#aw-tabs [data-read="unread"]': { text: "list not read", title: "the agent host's list was not read: agent host off: no SDK" } }, 5_000);
+    expect(unread.status.text).toBe("skipped: the screen says: the agent host's list was not read: agent host off: no SDK");
+
+    // Control: both lists read, no tab.
+    expect(playStep("It runs here", row, 5_000).status.text).toBe("skipped: no agent started here and no terminal session of stave to show as a tab");
+  });
+
+  test("Work: a board that could not be read, with no issue drawn, is the reason", () => {
+    const ready = "#wk-board-src, #wk-issues-src, #wk-no-board, #wk-several-boards, #wk-board-unreadable";
+    const unread = { [ready]: {}, "#wk-board-unreadable": { text: "could not read the board — showing open issues · gh: API rate limit exceeded" } };
+    for (const t of ["Pick an issue", "Start the agent"]) {
+      expect(playStep(t, unread).status.text).toBe("skipped: the screen says: could not read the board — showing open issues · gh: API rate limit exceeded");
+    }
+    // With an issue drawn under the unread board's head, the step is shown.
+    expect(playStep("Pick an issue", { ...unread, '[data-tour="issue"]': {} }).status.kind).toBe("shown");
+  });
+});
+
+/**
+ * A fake browser for tour.ts: elements the tour finds on a screen are proxies that record every
+ * member the tour touches, so a press in any spelling (`.click()`, `["click"]()`, dispatchEvent,
+ * focus, a property set) is seen, not only the spellings a source scan knows.
+ */
+function fakeBrowser() {
+  const touched: string[] = [];
+  const marked = new Set<string>();
+  const marks: string[] = [];
+  const connected = new Map<string, boolean>();
+  const MAY = new Set(["getAttribute", "classList", "scrollIntoView", "getBoundingClientRect", "isConnected", "innerText", "textContent"]);
+  const pageEls = new Map<string, object>();
+  const pageEl = (sel: string) => {
+    if (pageEls.has(sel)) return pageEls.get(sel)!;
+    connected.set(sel, true);
+    const classList = new Proxy({}, {
+      get: (_t, k) => {
+        if (k === "add") return (c: string) => (marks.push(`${sel}:${c}`), marked.add(`${sel}:${c}`));
+        if (k === "remove") return (c: string) => marked.delete(`${sel}:${c}`);
+        touched.push(`classList.${String(k)}`);
+        return () => {};
+      },
+    });
+    const e = new Proxy({}, {
+      get: (_t, k) => {
+        if (typeof k === "symbol") return undefined;
+        if (!MAY.has(k)) {
+          touched.push(k);
+          return () => {};
+        }
+        if (k === "getAttribute") return (n: string) => (n === "href" ? "#work?pr=1&project=stave" : "x");
+        if (k === "classList") return classList;
+        if (k === "scrollIntoView") return () => {};
+        if (k === "getBoundingClientRect") return () => ({ height: 10 });
+        if (k === "isConnected") return connected.get(sel);
+        return sel; // innerText, textContent
+      },
+      set: (_t, k) => {
+        touched.push(`set ${String(k)}`);
+        return true;
+      },
+    });
+    pageEls.set(sel, e);
+    return e;
+  };
+  const made = () => {
+    const o: Record<string, unknown> = { dataset: {}, style: {} };
+    for (const m of ["setAttribute", "append", "appendChild", "addEventListener"]) o[m] = () => {};
+    return o;
+  };
+  const intervals = new Map<number, () => void>();
+  let nextId = 1;
+  let observer: (() => void) | null = null;
+  const g = globalThis as Record<string, unknown>;
+  const names = ["document", "location", "matchMedia", "innerHeight", "MutationObserver", "setInterval", "clearInterval"];
+  const saved = Object.fromEntries(names.map((n) => [n, g[n]]));
+  const location = { hash: "#home" };
+  Object.assign(g, {
+    document: {
+      head: made(),
+      body: made(),
+      createElement: made,
+      addEventListener: () => {},
+      querySelector: (sel: string) => (sel === "link[data-help-css]" ? null : pageEl(sel)),
+    },
+    location,
+    matchMedia: () => ({ matches: true }),
+    innerHeight: 800,
+    MutationObserver: class {
+      constructor(fn: () => void) {
+        observer = fn;
+      }
+      observe() {}
+      disconnect() {
+        observer = null;
+      }
+    },
+    setInterval: (fn: () => void) => {
+      intervals.set(nextId, fn);
+      return nextId++;
+    },
+    clearInterval: (id: number) => intervals.delete(id),
+  });
+  return {
+    touched,
+    marked,
+    marks,
+    location,
+    tick: () => [...intervals.values()].forEach((f) => f()),
+    redraw: () => {
+      for (const k of connected.keys()) connected.set(k, false);
+      pageEls.clear();
+      observer?.();
+    },
+    restore: () => Object.assign(g, saved),
+  };
+}
+
 describe("the tour only navigates and highlights", () => {
+  test("played over every step, the tour touches a screen's elements only to read and mark them", async () => {
+    const b = fakeBrowser();
+    try {
+      const { createTour } = await import("../ui/shell/tour");
+      let done = 0;
+      const tour = createTour({ go: (h) => (b.location.hash = h), project: () => "stave", finished: () => done++ });
+      tour.start(0);
+      let steps = 0;
+      while (tour.pos()) {
+        b.tick();
+        expect(tour.outcome()).toEqual({ kind: "show" });
+        b.redraw(); // a screen that redraws: the highlight moves to the new element
+        steps++;
+        tour.next();
+      }
+      expect(steps).toBe(FLOWS.reduce((n, f) => n + f.steps.length, 0));
+      expect(done).toBe(1);
+      // Each step's element was marked, and marked again after its screen redrew.
+      const targets = new Set(FLOWS.flatMap((f) => f.steps.map((s) => `${s.target}:ht-hl`)));
+      expect(new Set(b.marks)).toEqual(targets);
+      expect(b.marks.length).toBe(2 * steps);
+      expect(b.marked.size).toBe(0); // the last mark is taken off at the end
+      expect(b.touched).toEqual([]);
+    } finally {
+      b.restore();
+    }
+  });
+
   const files = ["ui/shell/tour.ts", "ui/shell/tour-runner.ts", "ui/shell/tour-model.ts", "ui/components/HelpScreen.ts"];
   test("no file of the tour presses, sends or writes", () => {
     for (const f of files) {
@@ -261,6 +473,12 @@ describe("every element a step points at is marked on its screen", () => {
 
   test("History's cells say their count and the lane's state, so an empty lane is not an unread one", () => {
     expect(ui).toContain('"data-n": n, "data-lane": state');
+  });
+
+  test("Agents' tab row says when a list is unread or still being read", () => {
+    const agents = readFileSync("ui/components/AgentsScreen.ts", "utf8");
+    expect(agents).toContain('dataset.read = "reading"');
+    expect(agents).toContain('dataset.read = "unread"');
   });
 });
 

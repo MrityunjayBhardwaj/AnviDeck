@@ -102,6 +102,17 @@ export function historyHashFor(c: TourCtx): string {
 
 const WORK_READY = "#wk-board-src, #wk-issues-src, #wk-no-board, #wk-several-boards, #wk-board-unreadable";
 /**
+ * Work's reasons for showing no issue card. "could not read the board — showing open issues"
+ * is drawn as a ready head, so it is also a gap: with an issue card on the screen the step is
+ * shown before gaps are looked at; with none, the unread board is the reason, not "no issue".
+ */
+const WORK_GAPS: Gap[] = [{ sel: "#wk-board-error" }, { sel: "#wk-issues-error" }, { sel: "#wk-board-unreadable" }];
+/**
+ * Changes' reasons for showing no PR: the PR list or the PR could not be read. A failed list
+ * read draws a plain card and puts the reason in the picker's title.
+ */
+const CHANGES_GAPS: Gap[] = [{ sel: ".chg-screen > .chg-bad" }, { sel: ".chg-pick[title]" }];
+/**
  * Where a Design card says why it shows no measurement: a structure gap (no design registered,
  * the guard could not measure), or "Measuring…" while the guard runs. `after` is what precedes
  * it in the card: the heading, or the card's fixed note.
@@ -123,7 +134,7 @@ export const FLOWS: readonly Flow[] = [
         // The first card: the board's first column (Todo on a board), or the first open issue.
         target: '[data-tour="issue"]',
         ready: WORK_READY,
-        gaps: [{ sel: "#wk-board-error" }, { sel: "#wk-issues-error" }],
+        gaps: WORK_GAPS,
         none: (c) => `no issue on ${proj(c)}'s board or among its open issues`,
         what: "the board",
       },
@@ -134,7 +145,7 @@ export const FLOWS: readonly Flow[] = [
         to: () => "#work",
         target: '[data-tour="start-agent"]',
         ready: WORK_READY,
-        gaps: [{ sel: "#wk-board-error" }, { sel: "#wk-issues-error" }],
+        gaps: WORK_GAPS,
         // States Work's rule (work-model.ts canStartAgent), not a guess at which part of it failed.
         none: (c) => `no issue on ${proj(c)}'s board offers Start agent (Work offers it only on an issue of the project's own repository, outside Done and In Progress)`,
         what: "a Start agent button",
@@ -148,6 +159,13 @@ export const FLOWS: readonly Flow[] = [
         needs: '[data-tour="agent-tabs"] .aw-tab',
         ready: "#aw-host-line",
         graceMs: 4_000,
+        // A row with no tabs is "none" only when both lists were read: the terminal sessions could
+        // not be read (red), are still being read, or the agent host's list was not read.
+        gaps: [
+          { sel: "#aw-tabs .aw-err" },
+          { sel: '#aw-tabs [data-read="reading"]', transient: true },
+          { sel: '#aw-tabs [data-read="unread"]' },
+        ],
         none: (c) => `no agent started here and no terminal session of ${proj(c)} to show as a tab`,
         what: "the agent tabs",
       },
@@ -227,6 +245,9 @@ export const FLOWS: readonly Flow[] = [
           { sel: "#hs-status.hs-bad" },
           { sel: '.hs-cell[data-row="refusals"][data-lane="unreadable"]', say: "the Refusals & rulings lane could not be read" },
           { sel: '.hs-cell[data-row="refusals"][data-lane="measuring"]', say: "the Refusals & rulings lane is still measuring", transient: true },
+          // Never "none" either (shared/history-types.ts LaneStatus): no source here, or only partly read.
+          { sel: '.hs-cell[data-row="refusals"][data-lane="not-available"]', say: "the Refusals & rulings lane has no source for this project" },
+          { sel: '.hs-cell[data-row="refusals"][data-lane="partial"]', say: "the Refusals & rulings lane was only partly read" },
         ],
         none: (c) => `no refusal or call of ${proj(c)} in the window shown`,
         noneQuote: "#hs-status",
@@ -246,7 +267,8 @@ export const FLOWS: readonly Flow[] = [
         target: '[data-tour="diff"]',
         needs: '[data-tour="diff"] .chg-fsec',
         ready: ".chg-pick",
-        gaps: [{ sel: ".chg-screen > .chg-bad" }, { sel: '[data-tour="diff"] > .chg-bad-annot' }, { sel: ".chg-pick[title]" }],
+        // The diff's own error first: with a PR open, it is why no file is drawn, not the list.
+        gaps: [{ sel: '[data-tour="diff"] > .chg-bad-annot' }, ...CHANGES_GAPS],
         none: (c) => `no open PR in ${proj(c)}`,
         noneQuote: ".chg-screen > .sh-card",
         capture: { checklist: { attr: "href", sel: ".chg-primary" } },
@@ -260,7 +282,7 @@ export const FLOWS: readonly Flow[] = [
         to: (c) => withProject("changes", c),
         target: '[data-tour="line-comments"]',
         ready: ".chg-pick",
-        gaps: [{ sel: ".chg-screen > .chg-bad" }],
+        gaps: CHANGES_GAPS,
         none: (c) => `no open PR in ${proj(c)}`,
         quote: true,
         what: "the line comments",
@@ -273,7 +295,7 @@ export const FLOWS: readonly Flow[] = [
         to: (c) => withProject("changes", c),
         target: '[data-tour="evidence"]',
         ready: ".chg-pick",
-        gaps: [{ sel: ".chg-screen > .chg-bad" }],
+        gaps: CHANGES_GAPS,
         none: (c) => `no open PR in ${proj(c)}`,
         quote: true,
         what: "the evidence",

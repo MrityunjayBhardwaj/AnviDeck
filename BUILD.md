@@ -19,7 +19,7 @@ The work that state serves is done by agents: Claude Code sessions that edit cod
 ### Shell (#80)
 
 The prototype's frame replaces today's sidebar:
-- **Rail:** Home (with its badge), Map, Agents, Changes, Notes, Project (tabs: Code, Design, History, Work), Help.
+- **Rail:** Home (with its badge), Map, Agents, Changes, Notes, Project (tabs: Code, Design, History, Work). Help is the **? Help** menu in the top bar (and ⌘K), not a rail item.
 - **Project switcher** and a **"Guards on"** indicator.
 - **Activity strip** at the bottom ("4 agents · 1 working · 3 waiting on you").
 - **⌘K palette:** screens, agents, issues, and commands such as starting `/anvi:debug` in a new agent.
