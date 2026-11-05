@@ -77,7 +77,6 @@ export const SCREENS: readonly ScreenDef[] = [
     label: "Code",
     group: "project",
     rail: "project",
-    buildsIn: 88,
     blurb:
       "The file tree coloured by layer, with refused edits, imports that break the design and files agents touched; a file view with blame and known-trap lines.",
   },

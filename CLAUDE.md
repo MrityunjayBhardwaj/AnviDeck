@@ -19,7 +19,7 @@ AnviDeck started as an observability dashboard that only read the framework's fi
 **What AnviDeck will write once the workspace lands** (none of this is on `main` yet):
 - Agent actions: start an agent (#75), in its own worktree and branch for an issue (#78, on main: `POST /api/agents/from-issue`); stop and resume it; answer its permission requests (#77); send it messages and diff comments (#79).
 - Merge a PR, only when you press **Merge**, and only the head you reviewed (#85).
-- Edit a file from the Code screen, only one no running agent is touching (#88).
+- Edit a file from the Code screen, only one no running agent is touching (#88; `server/code-edit.ts`, in its PR).
 - Its own records, in AnviDeck's own folder in the store: the action log (#76), your calls on blocked edits (#86: recorded from the Agents screen's refusal card into `calls.jsonl`; Design and History will show them), the agent registry (#75).
 
 **Changed only by agents, not by AnviDeck directly:** catalogues (`.anvi/`), memory and Ground Truth docs. A change to them (Re-check a batch, Promote) starts an agent with that task (#89); the agent makes the change, as in a terminal session.

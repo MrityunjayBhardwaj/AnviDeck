@@ -35,6 +35,8 @@ app.route("/api", (await import("./routes/refusals")).refusalRoutes()); // refus
 const agents = (await import("./routes/agents")).createAgentHost(broadcast);
 app.route("/api/agents", agents.api);
 app.route("/", agents.page);
+// Project · Code (#88): its edits ask the agent host which files a running agent is touching.
+app.route("/api/code", (await import("./routes/code")).codeRoutes({ host: () => agents.host, hostOff: () => "the agent host is off: its registry could not be read (GET /api/agents says why)" }));
 
 // Mount WebSocket route
 app.route("/", ws);
