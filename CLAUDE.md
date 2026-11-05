@@ -33,7 +33,7 @@ AnviDeck started as an observability dashboard that only read the framework's fi
 | Every action (what, target, result, time) is appended to the action log (`actions.jsonl` in the agent registry folder; `GET /api/actions`) and shown in History | Logged on `main` (#76); History planned (#90) |
 | Agents run on the installed Claude Code and its claude.ai login, never an API key: API-key and provider variables are removed from each agent's environment, and an agent whose init message reports an `apiKeySource` other than `none` is stopped at once | Planned (#75) |
 | Your normal permission rules apply, as in the terminal; only calls they don't cover come to AnviDeck, on Home and the agent's row of `/agent-host`, with Allow / Deny (`POST /api/agents/:id/permissions/:requestId`, `shared/permission-requests.ts`, `tests/permission-requests.test.ts`). A request nobody answers keeps waiting, and a timeout never allows it; if the agent stops it is withdrawn | On `main` (#77) |
-| Agents never merge; Merge is a button only you press | An agent started from an issue is told so in its prompt (#78, on main); Merge button planned (#85) |
+| Agents never merge; Merge is a button only you press | An agent started from an issue is told so in its prompt (#78, on main); Merge button on Work: squash-merges only the head the page showed, else 409 (#85, on main) |
 | Deleting the old views needs the owner's go on the PR | Planned (#92) |
 
 ### Current state (`main` at `dd71c3e`, 2026-11-05)

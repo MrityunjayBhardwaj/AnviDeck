@@ -88,7 +88,6 @@ export const SCREENS: readonly ScreenDef[] = [
     label: "Work",
     group: "project",
     rail: "project",
-    buildsIn: 85,
     blurb:
       "The board, Start agent, New issue, and each PR's workflow as steps with merge checks. Merge is a button only you press.",
   },
