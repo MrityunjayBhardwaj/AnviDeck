@@ -61,7 +61,6 @@ export const SCREENS: readonly ScreenDef[] = [
     label: "Notes",
     group: "rail",
     rail: "notes",
-    buildsIn: 89,
     blurb:
       "Catalogues by kind with search, which catalogue is used when, freshness and re-checks, grounding, and project memory with Promote.",
   },

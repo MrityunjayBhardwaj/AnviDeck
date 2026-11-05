@@ -1,0 +1,59 @@
+/* Notes (#89). Loaded by ui/components/NotesScreen.ts. The prototype's Knowledge screen on the
+   shell's tokens (shell.css): colour only for state. */
+
+.nt { max-width: 1280px; }
+.nt .sh-head .nt-acts { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.nt h3 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+.nt-acts input { background: var(--bg-0); color: var(--sh-ink); border: 1px solid var(--sh-line); border-radius: 7px; padding: 4px 9px; font: 12.5px var(--sh-font-ui); width: 200px; }
+.nt-warn { border-color: rgba(250, 204, 21, .45) !important; color: var(--yellow) !important; }
+.nt-ok { color: var(--green); }
+.nt-bad { color: var(--red); }
+.nt-mono { font: 12px var(--font-mono); }
+.nt-note { font-size: 12px; margin-top: 8px; }
+.nt-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+.nt-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--sh-line); }
+.nt-tabs button { background: none; border: 0; border-bottom: 2px solid transparent; padding: 6px 12px; color: var(--sh-ink-2); font: 13px var(--sh-font-ui); cursor: pointer; }
+.nt-tabs button.on { color: var(--sh-ink); border-bottom-color: var(--accent); }
+.nt-body { display: flex; flex-direction: column; gap: 10px; }
+
+.nt-grid4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.nt-grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: start; }
+.nt-span2 { grid-column: 1 / -1; }
+.nt-col { background: var(--sh-panel); border: 1px solid var(--sh-line); border-radius: 10px; padding: 10px; min-width: 0; }
+.nt-gap { font-size: 11.5px; margin-bottom: 6px; }
+.nt-list { display: flex; flex-direction: column; gap: 6px; max-height: 62vh; overflow: auto; }
+.nt-entry { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px 6px 10px; background: var(--sh-panel-2); border-radius: 7px; border-left: 3px solid var(--sh-line); font-size: 12.5px; }
+.nt-entry.ok { border-left-color: var(--green); }
+.nt-entry.warn { border-left-color: var(--yellow); }
+.nt-entry.bad { border-left-color: var(--red); }
+.nt-entry b { font-weight: 500; color: var(--sh-ink); }
+.nt-entry .sh-dim { font-size: 11.5px; }
+.nt-id { font: 11.5px var(--font-mono); color: var(--sh-ink-3); }
+
+.nt-matrix, .nt-table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+.nt-matrix th, .nt-matrix td, .nt-table th, .nt-table td { padding: 5px 8px; border-bottom: 1px solid var(--sh-line); text-align: left; }
+.nt-matrix td { text-align: center; }
+.nt-matrix td.l { text-align: left; }
+.nt-table .num, .nt-table th.num { text-align: right; }
+.nt-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); vertical-align: middle; }
+
+.nt-batch { border-top: 1px solid var(--sh-line); padding: 6px 0; }
+.nt-batch summary { cursor: pointer; font-size: 12.5px; }
+.nt-batch summary .sh-btn { margin-left: 8px; font-size: 12px; padding: 2px 9px; }
+.nt-batch-list { display: flex; flex-direction: column; gap: 3px; padding: 6px 0 2px 14px; font-size: 12px; }
+
+.nt-stack { display: flex; flex-direction: column; gap: 6px; }
+.nt-mem { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; padding: 6px 0; border-bottom: 1px solid var(--sh-line); font-size: 12.5px; }
+.nt-mem .sh-btn { margin-left: auto; font-size: 12px; padding: 2px 9px; }
+.nt-hint { font-size: 12px; color: var(--yellow); flex-basis: 100%; }
+
+.nt-confirm[hidden] { display: none; }
+.nt-confirm { border-color: var(--accent) !important; }
+.nt-prompt { white-space: pre-wrap; background: var(--bg-0); border: 1px solid var(--sh-line); border-radius: 7px; padding: 8px 10px; font: 12px var(--font-mono); max-height: 320px; overflow: auto; margin: 6px 0; }
+.nt-go { border-color: var(--accent) !important; font-weight: 600; }
+.nt-sources { font-size: 11.5px; display: flex; flex-direction: column; gap: 3px; }
+.nt-again { align-self: flex-start; font-size: 12px; }
+
+@media (max-width: 1000px) { .nt-grid4, .nt-grid2 { grid-template-columns: 1fr; } }
+#nt-chart { max-height: 220px; }
