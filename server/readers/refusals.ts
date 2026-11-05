@@ -31,6 +31,7 @@ import type {
   RefusalTotals,
   RefusalWindow,
   RefusalCallState,
+  RefusalsMeasured,
   CallsRead,
 } from "../../shared/refusal-types";
 
@@ -108,7 +109,7 @@ export function packageOf(project: string, opts: { path?: string | null; package
 
 // ── running the instrument ─────────────────────────────────────────────────────────────────
 
-interface Spawned { code: number | null; signal: string | null; stdout: string; stderr: string; fd3: string; ms: number; startError?: string }
+interface Spawned { code: number | null; signal: string | null; stdout: string; stderr: string; fd3: string; ms: number; startError?: string; fd3Error?: string }
 
 /** TMPDIR for one run: a folder of its own under TMP_ROOT, removed by done() when the run ends. */
 function scratchTmp(): { dir: string; done: () => void } {
@@ -123,6 +124,7 @@ function spawnNode(args: string[], withFd3: boolean, timeoutMs: number): Promise
   return new Promise<Spawned>((resolve) => {
     let child: ReturnType<typeof spawn> | undefined;
     let stdout = "", stderr = "", fd3 = "";
+    let fd3Error: string | undefined;
     try {
       child = spawn("node", args, {
         env: { ...process.env, TMPDIR: tmp.dir },
@@ -130,7 +132,14 @@ function spawnNode(args: string[], withFd3: boolean, timeoutMs: number): Promise
       });
       child.stdout!.on("data", (d) => (stdout += d));
       child.stderr!.on("data", (d) => (stderr += d));
-      if (withFd3) (child.stdio[3] as NodeJS.ReadableStream).on("data", (d) => (fd3 += d));
+      if (withFd3) {
+        const s3 = child.stdio[3] as NodeJS.ReadableStream;
+        s3.on("data", (d) => (fd3 += d));
+        // Bun (1.3.10) sets the extra pipe up with a socket connect that fails now and then ("Failed to
+        // connect", ENOENT): 6 of 100 spawns in a row on an idle machine, 2026-11-05 (#219). Its report is
+        // then lost; said below, never an unhandled error and never read as "no report".
+        s3.on("error", (e: Error) => (fd3Error = e.message));
+      }
     } catch (e) {
       // Seen under heavy load (2026-11-05): Bun's spawn threw ENOENT setting up the fd 3 pipe. Said, not thrown.
       child?.kill("SIGKILL");
@@ -144,7 +153,7 @@ function spawnNode(args: string[], withFd3: boolean, timeoutMs: number): Promise
     });
     child.on("close", (code, signal) => {
       clearTimeout(timer);
-      resolve({ code, signal, stdout, stderr, fd3, ms: Date.now() - t0 });
+      resolve({ code, signal, stdout, stderr, fd3, ms: Date.now() - t0, ...(fd3Error ? { fd3Error } : {}) });
     });
   }).finally(tmp.done);
 }
@@ -210,6 +219,8 @@ export async function runInstrument(project: string, pkgDir: string, win: Refusa
   if (run.startError) return { status: "unreadable", ...base, reason: `could not start node to run the instrument: ${run.startError}` };
   if (run.signal) return { status: "unreadable", ...base, reason: `the instrument was stopped by ${run.signal}${run.ms >= (opts.timeoutMs ?? RUN_TIMEOUT_MS) ? ` after ${Math.round(run.ms / 1000)} s (the time limit)` : ""}` };
   const report = run.stdout;
+  if (run.fd3Error && !run.fd3.trim())
+    return { status: "unreadable", ...base, reason: `the pipe the instrument writes its --json report to (fd 3) failed: ${run.fd3Error}; ask again` };
   if (!run.fd3.trim()) {
     // The instrument stops before its report when it cannot measure; it says why on its first line.
     const stop = /structure-refusals: NOT MEASURED — (.*)/.exec(report);
@@ -294,7 +305,7 @@ export async function runInstrument(project: string, pkgDir: string, win: Refusa
     trialReading: trial ? trial.trim() : null,
     report,
     cache: { at: ranAt, ageMs: 0, refreshing: false, ttlMs: CACHE_TTL_MS },
-    calls: { file: "", exists: false, status: "none", lines: 0, unreadableLines: 0, readAt: ranAt },
+    calls: { file: "", exists: false, status: "none", lines: 0, unreadableLines: 0, unverified: 0, ofProject: 0, notListed: 0, readAt: ranAt },
   };
 }
 
@@ -311,6 +322,18 @@ const inflight = new Map<string, { started: string; job: Promise<Entry> }>();
 
 export function clearRefusalsCache() { cache.clear(); }
 
+/**
+ * Every measured answer this server holds (every project, package and window asked so far),
+ * without starting a run. The call route looks a key up across them (#178, #179): a tool_use id
+ * names one blocked edit, so the answer listing it is the refusal's whatever project the agent ran
+ * in. An empty list means "nothing to check against", never "no refusals".
+ */
+export function measuredAll(): RefusalsMeasured[] {
+  const out: RefusalsMeasured[] = [];
+  for (const e of cache.values()) if (e.value.status === "measured") out.push(e.value);
+  return out;
+}
+
 export interface ReadOptions extends RunOptions {
   since?: string | null;
   until?: string | null;
@@ -324,6 +347,8 @@ export interface ReadOptions extends RunOptions {
   now?: () => number;
   /** Read calls from this folder (the tests). */
   callsDir?: string;
+  /** How one run is made (the tests inject it, as other reader tests inject `run`); default runInstrument. */
+  run?: (project: string, pkgDir: string, win: RefusalWindow, opts: RunOptions) => Promise<RefusalsResponse>;
 }
 
 /** Your call on one refusal, from what readCalls could read: "none" only when nothing could hide one. */
@@ -340,7 +365,14 @@ function withCalls(r: RefusalsResponse, opts: ReadOptions): RefusalsResponse {
   if (r.status !== "measured") return r;
   const read = readCalls({ dir: opts.callsDir });
   const { calls: _c, byKey: _b, ...meta } = read;
-  return { ...r, calls: meta, refusals: r.refusals.map((x) => ({ ...x, call: callStateOf(read, x.key) })) };
+  // Calls on this project whose refusal this answer does not list (outside its window, or a key no
+  // refusal has): counted, so a screen can say so rather than hide them (#178).
+  const listed = new Set(r.refusals.map((x) => x.key));
+  const mine = Object.values(read.byKey).filter((s) => s.latest.project === r.project);
+  const notListed = mine.filter((s) => !listed.has(s.latest.key)).length;
+  // `unverified` beside them counts this project's calls too, not the whole file's.
+  const unverified = read.calls.filter((c) => c.project === r.project && typeof c.unverified === "string").length;
+  return { ...r, calls: { ...meta, unverified, ofProject: mine.length, notListed }, refusals: r.refusals.map((x) => ({ ...x, call: callStateOf(read, x.key) })) };
 }
 
 function withCache(e: Entry, now: number, refreshing: boolean): RefusalsResponse {
@@ -377,7 +409,7 @@ export async function readRefusals(project: string, opts: ReadOptions = {}): Pro
     let f = inflight.get(key);
     if (!f) {
       const started = new Date(now()).toISOString();
-      const job = runInstrument(project, pick.dir, win, opts).then((value) => {
+      const job = (opts.run ?? runInstrument)(project, pick.dir, win, opts).then((value) => {
         const e = settle(cache.get(key), value, now(), started);
         cache.set(key, e);
         return e;

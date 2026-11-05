@@ -153,6 +153,32 @@ describe("turns and edits from transcripts", () => {
     expect(r.sessions).toEqual([{ id: "s2", first: "2026-10-22T08:00:00Z", last: "2026-10-23T23:59:59Z", turns: 1, edits: 1, cwd: "/proj" }]);
   });
 
+  test("a forked or resumed session's repeats of earlier records count once, kept by the session that started first; the lanes say how many were dropped, 0 included (#211)", async () => {
+    const d = dir();
+    const prompt = line({ isSidechain: false, type: "user", message: { role: "user", content: "fix the grid" }, uuid: "u-orig", timestamp: "2026-10-22T08:00:00Z" });
+    const edit = line({ isSidechain: false, message: { role: "assistant", content: [editTool("toolu_shared", "/proj/src/a.ts")] }, type: "assistant", uuid: "a-orig", timestamp: "2026-10-22T08:01:00Z" });
+    const orig = transcript(d, "orig.jsonl", [prompt, edit]);
+    // The fork repeats both records under its own session, then adds one of each.
+    const fork = transcript(d, "fork.jsonl", [prompt, edit,
+      line({ isSidechain: false, type: "user", message: { role: "user", content: "and the rows" }, uuid: "u-new", timestamp: "2026-10-22T09:00:00Z" }),
+      line({ isSidechain: false, message: { role: "assistant", content: [editTool("toolu_new", "/proj/src/b.ts")] }, type: "assistant", uuid: "a-new", timestamp: "2026-10-22T09:01:00Z" })]);
+    const r = await readTranscriptLanes(sessions(d, [
+      { id: "fork", path: fork, first: "2026-10-22T08:00:00Z", last: "2026-10-22T09:01:00Z" },
+      { id: "orig", path: orig, first: "2026-10-22T07:59:00Z", last: "2026-10-22T08:01:00Z" },
+    ]), W, "/proj", EVENT_CAP);
+    expect(r.turn.lane.total).toBe(2);
+    expect(r.edit.lane.total).toBe(2);
+    expect(r.edit.events.map((e) => [e.id, (e as { session: string }).session])).toEqual([["toolu_shared", "orig"], ["toolu_new", "fork"]]);
+    expect(r.turn.events.map((e) => (e as { session: string }).session)).toEqual(["orig", "fork"]);
+    expect(r.turn.lane.source).toContain("1 turn repeated by a forked or resumed session dropped");
+    expect(r.edit.lane.source).toContain("1 edit repeated by a forked or resumed session dropped");
+    expect(r.sessions.map((s) => [s.id, s.turns, s.edits])).toEqual([["orig", 1, 1], ["fork", 1, 1]]);
+    // No repeats: said, as 0.
+    const one = await readTranscriptLanes(sessions(d, [{ id: "orig", path: orig, first: "2026-10-22T07:59:00Z", last: "2026-10-22T08:01:00Z" }]), W, "/proj", EVENT_CAP);
+    expect(one.edit.lane.source).toContain("0 edits repeated");
+    expect(one.turn.lane.source).toContain("0 turns repeated");
+  });
+
   test("a transcript that cannot be read makes the lanes partial or unreadable, never none", async () => {
     const d = dir();
     const r = await readTranscriptLanes(sessions(d, [{ id: "x", path: join(d, "missing.jsonl"), first: W.since, last: W.until }]), W, "/proj", EVENT_CAP);
@@ -248,6 +274,22 @@ describe("rulings (your calls)", () => {
     const r = readRulingLane("p", W, 10, d);
     expect(r.events.map((e) => [(e as { call: string }).call, (e as { superseded: boolean }).superseded])).toEqual([["wrong", true], ["right", false]]);
     expect(r.lane.status).toBe("ok");
+    // How many were recorded without a measured refusal to check against: said every time, 0 included (#178).
+    // These two lines carry no projectFrom: written before keys were checked, so never counted as checked.
+    expect(r.lane.detail).toContain("0 of 2 calls on this project were recorded without a measured refusal");
+    expect(r.lane.detail).toContain("and 2 were recorded before keys were checked at all");
+  });
+
+  test("calls recorded since keys are checked: an unverified one and a checked one are told apart from one written before", () => {
+    const d = dir();
+    writeFileSync(join(d, "calls.jsonl"), [
+      line({ at: "2026-10-22T10:00:00Z", key: "k1", project: "p", call: "wrong" }),
+      line({ at: "2026-10-22T11:00:00Z", key: "k2", project: "p", call: "right", projectFrom: "the page", unverified: "no measured answer" }),
+      line({ at: "2026-10-22T12:00:00Z", key: "k3", project: "p", call: "right", projectFrom: "the page" }),
+    ].join("\n") + "\n");
+    const r = readRulingLane("p", W, 10, d);
+    expect(r.lane.detail).toContain("1 of 3 calls on this project were recorded without a measured refusal");
+    expect(r.lane.detail).toContain("and 1 were recorded before keys were checked at all");
   });
 
   test("no file is none (and says nothing was recorded); a file that cannot be read is unreadable", () => {
