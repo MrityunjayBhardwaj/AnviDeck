@@ -6,7 +6,12 @@
  *   - GitHub: open, not a draft, mergeable (no conflicts), no review asking for changes or
  *     still required, and every check finished and passed (a PR with no checks says so);
  *   - the PR body's Evidence and Self-review sections (shared/pr-evidence.ts): at least one
- *     test run, every run exited 0, at least one thing observed, and a recorded self-review.
+ *     test run, every run exited 0, at least one thing observed, and a recorded self-review
+ *     with no high-severity gap and no medium gap left without an issue.
+ *
+ * The body is the PR author's own account (often an agent's), not something GitHub ran. So a
+ * verdict says which parts are claims: `claims` carries what the body says, and Home words the
+ * row as "the PR body says…", and says so plainly when GitHub ran no checks at all.
  *
  * Anything not met is a reason, in plain words, so a "Review" row can say why it is not a
  * "Merge" row. Merge itself is never done from Home: the row links to the PR on Work.
@@ -35,6 +40,16 @@ export interface ReadyVerdict {
   checks: string;
   /** The head the verdict is about: Merge on Work must merge this head and no other. */
   headRefOid: string;
+  /** No check ran on GitHub: tests and observation rest only on what the body claims. */
+  noChecks: boolean;
+  /** What the PR body claims (not verified by AnviDeck); null when a section could not be read. */
+  claims: {
+    testRuns: number;
+    observed: number;
+    /** Self-review gaps by severity; medium ones listed with their issue, since they do not block. */
+    gaps: { high: number; medium: number; low: number };
+    mediumGaps: string[];
+  } | null;
 }
 
 export type ReadyAnswer =
@@ -83,8 +98,36 @@ export function judgeReady(v: PrReadyView): ReadyVerdict {
   }
   if (s.selfReview.status === "not recorded") reasons.push("the PR body has no Self-review section");
   else if (s.selfReview.status === "malformed") reasons.push(`its Self-review section is written wrong (${s.selfReview.reason})`);
+  else {
+    // A self-review is a list of what is still wrong. A high gap blocks; a medium one blocks
+    // until it has an issue, and is then shown on the row; a low one only counts.
+    const g = s.selfReview.value.gaps;
+    const high = g.filter((x) => x.severity === "high");
+    const untracked = g.filter((x) => x.severity === "medium" && !x.issue);
+    if (high.length) {
+      const said = high.map((x) => x.gap).join(" / ");
+      const short = said.length > 160 ? `${said.slice(0, 160).replace(/\s+\S*$/, "")}…` : said;
+      reasons.push(`its self-review lists ${high.length} high-severity gap${high.length === 1 ? "" : "s"}: ${short}`);
+    }
+    if (untracked.length) reasons.push(`its self-review lists ${untracked.length} medium gap${untracked.length === 1 ? "" : "s"} with no issue filed`);
+  }
 
-  return { ready: reasons.length === 0, reasons, checks, headRefOid: v.headRefOid };
+  const claims =
+    s.evidence.status === "recorded" && s.selfReview.status === "recorded"
+      ? {
+          testRuns: s.evidence.value.tests.length,
+          observed: s.evidence.value.observed.length,
+          gaps: {
+            high: s.selfReview.value.gaps.filter((x) => x.severity === "high").length,
+            medium: s.selfReview.value.gaps.filter((x) => x.severity === "medium").length,
+            low: s.selfReview.value.gaps.filter((x) => x.severity === "low").length,
+          },
+          mediumGaps: s.selfReview.value.gaps
+            .filter((x) => x.severity === "medium")
+            .map((x) => `${x.gap}${x.issue ? ` (${x.issue.repo ?? ""}#${x.issue.number})` : ""}`),
+        }
+      : null;
+  return { ready: reasons.length === 0, reasons, checks, headRefOid: v.headRefOid, noChecks: outcomes.length === 0, claims };
 }
 
 const KEY_RE = /^([\w.-]+\/[\w.-]+)#(\d+)$/;

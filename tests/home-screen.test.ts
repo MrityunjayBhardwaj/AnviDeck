@@ -9,6 +9,9 @@ import type { AgentsRead, StripAgent } from "../ui/shell/activity";
 import type { HomeMetric, HomeResponse, QueueItem } from "../shared/home-types";
 import type { ProjectSummary } from "../shared/types";
 import home from "../server/routes/home";
+import { newestDate, notesMetric, structureMetrics } from "../server/readers/home";
+import { keyedReuse, reconcile, type ParentLike } from "../ui/components/keyed-rows";
+import { readFileSync } from "node:fs";
 
 const EVIDENCE = `Summary.
 
@@ -55,7 +58,22 @@ describe("ready to merge: every condition must hold", () => {
     expect(v.headRefOid).toBe("abcdef1234567");
   });
   test("no checks at all is said, not hidden", () => {
-    expect(judgeReady(view({ statusCheckRollup: [] }))).toMatchObject({ ready: true, checks: "no checks" });
+    expect(judgeReady(view({ statusCheckRollup: [] }))).toMatchObject({ ready: true, checks: "no checks", noChecks: true });
+    expect(judgeReady(view()).noChecks).toBe(false);
+  });
+  const withGaps = (rows: string) => EVIDENCE.replace("| low | A gap. | none |", rows);
+  test("a high-severity self-review gap blocks, tracked or not", () => {
+    const v = judgeReady(view({ body: withGaps("| high | Merge can lose data. | #9 |") }));
+    expect(v.ready).toBe(false);
+    expect(v.reasons.join(" ")).toContain("1 high-severity gap: Merge can lose data.");
+  });
+  test("a medium gap blocks until it has an issue, then is listed", () => {
+    const untracked = judgeReady(view({ body: withGaps("| medium | Focus is lost. | none |") }));
+    expect(untracked.ready).toBe(false);
+    expect(untracked.reasons.join(" ")).toContain("1 medium gap with no issue filed");
+    const tracked = judgeReady(view({ body: withGaps("| medium | Focus is lost. | #142 |\n| low | Small. | none |") }));
+    expect(tracked.ready).toBe(true);
+    expect(tracked.claims).toEqual({ testRuns: 1, observed: 1, gaps: { high: 0, medium: 1, low: 1 }, mediumGaps: ["Focus is lost. (#142)"] });
   });
   const cases: [string, Partial<PrReadyView>, RegExp][] = [
     ["closed", { state: "CLOSED" }, /closed/],
@@ -97,21 +115,37 @@ describe("the readiness reader: could not read is never 'not ready'", () => {
     const ok = readyFromGh("o/n#1", { ok: true, out: JSON.stringify(view()), err: "" });
     expect(ok).toMatchObject({ status: "ok", ready: true, repo: "o/n", number: 1 });
   });
-  test("an answer is cached; a failure is not", async () => {
+  test("a not-ready answer is cached; a failure is not", async () => {
     let calls = 0;
     let fail = true;
     const run = async (cmd: string[]) => {
       calls++;
       expect(cmd.slice(0, 3)).toEqual(["gh", "pr", "view"]);
-      return fail ? { ok: false, out: "", err: "offline" } : { ok: true, out: JSON.stringify(view()), err: "" };
+      return fail ? { ok: false, out: "", err: "offline" } : { ok: true, out: JSON.stringify(view({ isDraft: true })), err: "" };
     };
     const a = await readReady(["o/n#1"], run);
     expect(a[0]!.status).toBe("could-not-read");
     fail = false;
     const b = await readReady(["o/n#1"], run);
-    expect(b[0]).toMatchObject({ status: "ok", ready: true });
+    expect(b[0]).toMatchObject({ status: "ok", ready: false });
     await readReady(["o/n#1"], run);
     expect(calls).toBe(2);
+  });
+  test("a ready answer is never cached: a push after it is seen at the next ask", async () => {
+    // The cache is keyed by PR, not head. Ready at head A, then a push of head B that fails.
+    let head = "aaaaaaa1111";
+    let calls = 0;
+    const run = async () => {
+      calls++;
+      const v = head === "aaaaaaa1111" ? view({ headRefOid: head }) : view({ headRefOid: head, statusCheckRollup: [{ status: "COMPLETED", conclusion: "FAILURE" }] });
+      return { ok: true, out: JSON.stringify(v), err: "" };
+    };
+    const first = await readReady(["o/n#1"], run);
+    expect(first[0]).toMatchObject({ status: "ok", ready: true, headRefOid: "aaaaaaa1111" });
+    head = "bbbbbbb2222";
+    const second = await readReady(["o/n#1"], run);
+    expect(calls).toBe(2);
+    expect(second[0]).toMatchObject({ status: "ok", ready: false, headRefOid: "bbbbbbb2222" });
   });
   test("answers come back in the order asked; a bad key is could-not-read without asking", async () => {
     let calls = 0;
@@ -210,15 +244,27 @@ describe("the queue's rows are the count's things, one each", () => {
 describe("a PR row: Review, or Merge when it is ready", () => {
   const h = homeOf([item("pr-review", "pr:o/name#5")]);
   const answer = (over: Partial<Extract<ReadyAnswer, { status: "ok" }>> = {}): ReadyAnswer => ({
-    status: "ok", key: "o/name#5", number: 5, repo: "o/name", checkedAt: "2026-11-05T10:00:00Z", ready: true, reasons: [], checks: "3 checks passed", headRefOid: "1234567abc", ...over,
+    status: "ok", key: "o/name#5", number: 5, repo: "o/name", checkedAt: "2026-11-05T10:00:00Z", ready: true, reasons: [], checks: "3 checks passed", headRefOid: "1234567abc",
+    noChecks: false, claims: { testRuns: 2, observed: 1, gaps: { high: 0, medium: 1, low: 1 }, mediumGaps: ["A medium gap. (#142)"] }, ...over,
   });
   const rowWith = (r: ReadyRead) => queueRows(h, { state: "ok", agents: [] }, r).rows[0]!;
   test("ready: a Merge row that goes to the PR's row on Work", () => {
     const r = rowWith({ state: "ok", answers: new Map([["o/name#5", answer()]]) });
     expect(r.kind).toBe("merge");
     expect(r.title).toBe("name PR #5 is ready to merge");
-    expect(r.action).toEqual({ type: "hash", label: "Merge…", hash: "#work?pr=5&repo=o%2Fname" });
+    // The hash names the head the verdict is about, so Work can refuse any other head.
+    expect(r.action).toEqual({ type: "hash", label: "Merge…", hash: "#work?pr=5&repo=o%2Fname&head=1234567abc" });
     expect(r.note).toContain("head 1234567");
+    // What the body says is worded as a claim, and an open medium gap is shown.
+    expect(r.why).toContain("The PR body says 2 test runs exited 0 and 1 thing was seen working; its self-review lists 2 gaps (1 medium, 1 low).");
+    expect(r.why).toContain("Open medium gaps: A medium gap. (#142).");
+    expect(r.why).not.toMatch(/^[^.]*\. Tests pass/);
+    expect(r.note).toContain("3 checks passed");
+  });
+  test("ready with no checks on GitHub says the tests rest on the PR body", () => {
+    const r = rowWith({ state: "ok", answers: new Map([["o/name#5", answer({ noChecks: true, checks: "no checks" })]]) });
+    expect(r.kind).toBe("merge");
+    expect(r.note).toContain("no checks ran on GitHub, so tests rest only on the PR body");
   });
   test("not ready: Review on GitHub, saying why", () => {
     const r = rowWith({ state: "ok", answers: new Map([["o/name#5", answer({ ready: false, reasons: ["it is a draft"] })]]) });
@@ -331,5 +377,93 @@ describe("the agents list", () => {
     expect(a.heading).toBe("Agents · 0 + ?");
     expect(a.unread.join(" ")).toMatch(/Could not read the agents AnviDeck started: 502/);
     expect(a.unread.join(" ")).toMatch(/Could not read the terminal sessions: EACCES/);
+  });
+});
+
+// ── the dated figures, from the reader (#81) ─────────────────────────────────────────────
+
+describe("the reader dates each health figure", () => {
+  const src = { status: "ok" as const, label: "structure guard, 2 of 2 project(s) with a design measured", detail: "a: 0 new" };
+  test("rule breaks carry the newest commit date measured", () => {
+    expect(newestDate([null, "2026-11-01T10:00:00Z", undefined, "2026-11-05T13:19:36+05:30", "not a date", "2026-11-03"])).toBe("2026-11-05T13:19:36+05:30");
+    expect(newestDate([null, undefined])).toBeNull();
+    const ms = structureMetrics({ source: src, reading: false, newBreaks: 0, allowed: 17, measured: 2, measuredOf: "2026-11-05T13:19:36+05:30" });
+    expect(ms.map((m) => [m.id, m.asOf])).toEqual([["new-breaks", "2026-11-05T13:19:36+05:30"], ["allowed-breaks", "2026-11-05T13:19:36+05:30"]]);
+    expect(ms[1]!.source).toBe(`${src.label}: ${src.detail}`);
+    const none = structureMetrics({ source: { status: "reading", label: "structure guard" }, reading: true, newBreaks: 0, allowed: 0, measured: 0, measuredOf: null });
+    expect(none.map((m) => m.asOf)).toEqual([null, null]);
+  });
+  test("out-of-date notes carry the snapshot's date; no snapshot, no date", () => {
+    const n = { file: "/h/health-2026-10-02.json", date: "2026-10-02", examined: 7248, red: 6, yellow: 2900, projects: 9, unmeasured: [] };
+    const m = notesMetric({ value: n, source: { status: "ok", label: n.file } }, Date.parse("2026-11-05T00:00:00Z"));
+    expect(m).toMatchObject({ id: "notes", value: "2,906 of 7,248", asOf: "2026-10-02" });
+    expect(notesMetric({ value: null, source: { status: "none", label: "/h", detail: "no snapshot" } }, 0).asOf).toBeNull();
+  });
+  test("readHome builds its metrics through these, with the measured date", () => {
+    const src = readFileSync("server/readers/home.ts", "utf8");
+    expect(src).toContain("measuredOf = newestDate([measuredOf, r.measuredAt.date]);");
+    expect(src).toContain("...structureMetrics({ source: structureSource, reading: structureReading, newBreaks, allowed, measured, measuredOf }),");
+    expect(src).toContain("notesMetric(notes, now),");
+  });
+});
+
+// ── repaints keep unchanged rows in place (an open card keeps focus) ─────────────────────
+
+/** A parent that records every time a node already in it is taken out (which blurs it in a page). */
+class FakeParent implements ParentLike<string> {
+  nodes: string[];
+  detached: string[] = [];
+  constructor(nodes: string[]) {
+    this.nodes = [...nodes];
+  }
+  get childNodes() {
+    return this.nodes;
+  }
+  insertBefore(n: string, ref: string | null) {
+    const at = this.nodes.indexOf(n);
+    if (at !== -1) {
+      this.detached.push(n);
+      this.nodes.splice(at, 1);
+    }
+    const i = ref === null ? this.nodes.length : this.nodes.indexOf(ref);
+    this.nodes.splice(i, 0, n);
+  }
+  removeChild(n: string) {
+    this.detached.push(n);
+    this.nodes.splice(this.nodes.indexOf(n), 1);
+  }
+}
+
+describe("Home's queue is patched, not rebuilt", () => {
+  test("a kept row is never taken out when rows around it come and go", () => {
+    const p = new FakeParent(["note", "answer", "pr1", "pr2", "more"]);
+    reconcile(p, ["answer", "pr1-ready", "pr2", "unread", "more"]);
+    expect(p.nodes).toEqual(["answer", "pr1-ready", "pr2", "unread", "more"]);
+    expect(p.detached.sort()).toEqual(["note", "pr1"]);
+    expect(p.detached).not.toContain("answer");
+  });
+  test("a row is the same element while its model is the same", () => {
+    const cache = new Map<string, { sig: string; el: { built: number } }>();
+    let n = 0;
+    const build = () => ({ built: ++n });
+    const rows = (sig2: string) => [{ k: "ask:1", s: "a" }, { k: "pr:o/n#2", s: sig2 }];
+    const first = keyedReuse(cache, rows("checking"), (r) => r.k, (r) => r.s, build);
+    const second = keyedReuse(cache, rows("ready"), (r) => r.k, (r) => r.s, build);
+    expect(second[0]).toBe(first[0]!);
+    expect(second[1]).not.toBe(first[1]!);
+    keyedReuse(cache, [{ k: "pr:o/n#2", s: "ready" }], (r) => r.k, (r) => r.s, build);
+    expect([...cache.keys()]).toEqual(["pr:o/n#2"]);
+  });
+  test("HomeScreen repaints through these and the app patches Home in place", () => {
+    const screen = readFileSync("ui/components/HomeScreen.ts", "utf8");
+    expect(screen).toContain("reconcile(box, out);");
+    const paintQueue = screen.slice(screen.indexOf("function paintQueue("), screen.indexOf("/** Open PRs you authored"));
+    expect(paintQueue).toContain("reconcile(box, out);");
+    expect(paintQueue).not.toContain("replaceChildren");
+    expect(screen).toContain("keyedReuse(rowCache,");
+    const app = readFileSync("ui/app.ts", "utf8");
+    // The count change, the minute refresh and the switcher patch Home; none rebuilds it while shown.
+    expect(app.match(/route\.screen === "home"[^\n]*renderMain\(\)/g) ?? []).toEqual([]);
+    expect(app.match(/repaintHome\(\)/g)?.length).toBeGreaterThanOrEqual(3);
   });
 });

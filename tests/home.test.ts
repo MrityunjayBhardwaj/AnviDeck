@@ -112,7 +112,9 @@ describe("one count drives the headline, the badge and the live strip", () => {
     expect(app).toContain("badgeText(count)");
     expect(app).toContain("stripText(count)");
     // Home is HomeScreen (#81): it is handed the one count and its headline reads it.
-    expect(app).toContain("HomeScreen({ home, count,");
+    expect(app).toContain("return { home, count, failed: count.state === \"failed\", host: hostAgents, project, projectsReadAt };");
+    expect(app).toContain("HomeScreen(homeInput())");
+    expect(app).toContain("updateHomeScreen(homeInput())");
     expect(readFileSync("ui/components/HomeScreen.ts", "utf8")).toContain("headlineText(input.count)");
     // And the check can fail: a second derivation is caught.
     expect(QUEUE_COUNT.test("const n = home.queue.filter(x => x).length")).toBe(true);

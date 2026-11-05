@@ -1,5 +1,5 @@
 import { api } from "./api";
-import { HomeScreen, refreshHomeAgents } from "./components/HomeScreen";
+import { HomeScreen, refreshHomeAgents, updateHomeScreen, type HomeInput } from "./components/HomeScreen";
 import { ProjectView } from "./components/ProjectView";
 import { Timeline, type TimelineState } from "./components/Timeline";
 import { DiffViewer } from "./components/DiffViewer";
@@ -180,10 +180,11 @@ function setProject(name: string) {
   localStorage.setItem(PROJECT_KEY, name);
   renderTop();
   renderRail();
+  if (route.screen === "home") return repaintHome(); // Home's grounding row is the picked project's (#81).
   // Screens that show one project follow the switcher.
   const s = route.screen;
   if (s === "project" || s === "brain" || s === "github-trace" || s === "agents") go(screenHash(s, name));
-  else if (screen(s).group === "project" || s === "older" || s === "home") renderMain();
+  else if (screen(s).group === "project" || s === "older") renderMain();
 }
 
 function renderMain() {
@@ -205,8 +206,7 @@ function renderMain() {
   if (def.buildsIn) {
     mainEl.appendChild(placeholder(id, currentProjectName));
   } else if (id === "home") {
-    const project = projects.find((p) => p.name === currentProjectName) ?? null;
-    mainEl.appendChild(HomeScreen({ home, count, failed: count.state === "failed", host: hostAgents, project, projectsReadAt }));
+    mainEl.appendChild(HomeScreen(homeInput()));
   } else if (id === "older") {
     mainEl.appendChild(olderViews(currentProjectName));
   } else if (id === "project") {
@@ -444,7 +444,18 @@ function recountAsks() {
   const changed = next.n !== count.n || next.state !== count.state || next.unread !== count.unread;
   count = next;
   renderRail();
-  if (changed && route.screen === "home" && !loading) renderMain();
+  if (changed && route.screen === "home" && !loading) repaintHome();
+}
+
+/** What Home is drawn from (#81). */
+function homeInput(): HomeInput {
+  const project = projects.find((p) => p.name === currentProjectName) ?? null;
+  return { home, count, failed: count.state === "failed", host: hostAgents, project, projectsReadAt };
+}
+
+/** Patch Home in place (an open permission card keeps focus); build it if it is not on the page. */
+function repaintHome() {
+  if (loading || !updateHomeScreen(homeInput())) renderMain();
 }
 
 async function loadAgents() {
@@ -461,7 +472,7 @@ function setHome(next: HomeResponse | null, failed = false) {
   count = needsCount(home, failed, hostAsks());
   renderRail();
   renderStrip();
-  if (route.screen === "home" && !loading) renderMain();
+  if (route.screen === "home" && !loading) repaintHome();
 }
 
 /** A load that came back with sources still reading asks again soon, not in a minute (#61). */

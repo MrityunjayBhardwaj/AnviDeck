@@ -95,16 +95,25 @@ function prRow(item: QueueItem, ready: ReadyRead): HomeRow {
   const source = `${item.why} Source: ${item.source}`;
   const answer = ready.state === "ok" ? ready.answers.get(key) : undefined;
   if (answer?.status === "ok" && answer.ready) {
+    const c = answer.claims;
+    const gaps = c ? c.gaps.high + c.gaps.medium + c.gaps.low : 0;
+    const said = c
+      ? `The PR body says ${c.testRuns} test run${c.testRuns === 1 ? "" : "s"} exited 0 and ${c.observed} thing${c.observed === 1 ? " was" : "s were"} seen working; its self-review lists ${gaps === 0 ? "no gaps" : `${gaps} gap${gaps === 1 ? "" : "s"} (${c.gaps.medium} medium, ${c.gaps.low} low)`}.`
+      : "The PR body records Evidence and a Self-review.";
+    const medium = c?.mediumGaps.length ? ` Open medium gaps: ${c.mediumGaps.join("; ")}.` : "";
     return {
       key: item.id,
       kind: "merge",
       title: `${base(repo)} PR #${num} is ready to merge`,
-      why: `${title || "(no title)"}. Tests pass, the change was seen working, self-review is done.`,
-      note: `GitHub: mergeable, ${answer.checks}, head ${answer.headRefOid.slice(0, 7)} · PR body: Evidence and Self-review recorded · checked ${hhmm(answer.checkedAt)}`,
+      why: `${title || "(no title)"}. ${said}${medium}`,
+      note:
+        `GitHub: mergeable, ${answer.noChecks ? "no checks ran on GitHub, so tests rest only on the PR body" : answer.checks}, head ${answer.headRefOid.slice(0, 7)}` +
+        ` · checked ${hhmm(answer.checkedAt)}`,
       when,
       tone: "info",
-      // Merge is a button only you press, on the PR's row on Work, which merges the head shown there.
-      action: { type: "hash", label: "Merge…", hash: `#work?pr=${num}&repo=${encodeURIComponent(repo)}` },
+      // Merge is a button only you press, on the PR's row on Work. The hash carries the head this
+      // verdict is about, so Work can refuse to merge any other head.
+      action: { type: "hash", label: "Merge…", hash: `#work?pr=${num}&repo=${encodeURIComponent(repo)}&head=${answer.headRefOid}` },
       source,
       dueBy: item.dueBy,
     };

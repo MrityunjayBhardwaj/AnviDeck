@@ -40,9 +40,11 @@ AnviDeck started as an observability dashboard that only read the framework's fi
 
 Builds and runs (`bun run dev`; port 4000 unless `PORT` is set). Tests: `bun test`. Types: `bunx tsc --noEmit -p .`.
 
-Sidebar views today (`ui/app.ts`): **Home** (`HomeScreen.ts`, #81: one queue, soonest first, where a permission request is answered in place, a PR links to GitHub with why it is or is not ready to merge, and a ready PR goes to its row on Work; the health line with guards, rule breaks, out-of-date notes and notes backed by source, each dated; the agents), **Live Sessions**, **Agents** (one project's terminal-started sessions replayed from their transcripts; it can't act on them), **Map** (projects, design blocks, files and imports from anvi's structure guard, with agents replayed on them), **Live Trace**, **Brain**, **System Lens**, **Cross-Project**, **Routing**. Reached from links: **Project** (catalogues, memory, grounding; with the timeline strip, also on Home) and **GitHub Trace**.
+Sidebar views today (`ui/app.ts`): **Home** (`CommandCenter.ts`: one queue of PRs and agents, a one-line status, the project list; each row's action is a link), **Live Sessions**, **Agents** (one project's terminal-started sessions replayed from their transcripts; it can't act on them), **Map** (projects, design blocks, files and imports from anvi's structure guard, with agents replayed on them), **Live Trace**, **Brain**, **System Lens**, **Cross-Project**, **Routing**. Reached from links: **Project** (catalogues, memory, grounding; with the timeline strip, also on Home) and **GitHub Trace**.
 
 What the workspace adds is in `BUILD.md` under "The workspace". Six of today's views (Live Sessions, Live Trace, Brain, System Lens, Cross-Project, Routing) are to be retired once Notes, History and Agents carry what's useful from them (#92).
+
+Home is now `HomeScreen.ts` (#81), in place of the `CommandCenter.ts` named above: one queue, soonest first, where a permission request is answered in place, a PR links to GitHub with why it is or is not ready to merge (what its body claims is worded as a claim), and a ready PR goes to its row on Work with the head it was judged at; the health line with guards, rule breaks, out-of-date notes and notes backed by source, each dated; the agents.
 
 ### Architecture decisions that still hold
 

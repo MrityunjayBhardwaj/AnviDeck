@@ -3,8 +3,10 @@ import { judgeReady, parsePrKey, type PrReadyView, type ReadyAnswer } from "../.
 
 /**
  * Which of Home's PRs are ready to merge (#81). Read only: one `gh pr view` per PR, judged by
- * shared/pr-ready.ts. An answer is kept for READY_TTL_MS; a failure is never kept, and comes
- * back as `could-not-read` with GitHub's words, never as "not ready".
+ * shared/pr-ready.ts. A "not ready" answer is kept for READY_TTL_MS. A "ready" answer is never
+ * kept: the cache is keyed by PR, not head, so a kept "ready" could outlive a push that breaks
+ * it. A failure is never kept either, and comes back as `could-not-read` with GitHub's words,
+ * never as "not ready".
  */
 
 export const READY_FIELDS = "number,url,title,state,isDraft,mergeable,reviewDecision,statusCheckRollup,headRefOid,body";
@@ -53,7 +55,7 @@ async function askOne(key: string, run: Runner): Promise<ReadyAnswer> {
   const k = parsePrKey(key)!;
   const r = await run(["gh", "pr", "view", String(k.number), "--repo", k.repo, "--json", READY_FIELDS], 20_000);
   const answer = readyFromGh(key, r);
-  if (answer.status === "ok") cache.set(key, { at: Date.now(), answer });
+  if (answer.status === "ok" && !answer.ready) cache.set(key, { at: Date.now(), answer });
   return answer;
 }
 

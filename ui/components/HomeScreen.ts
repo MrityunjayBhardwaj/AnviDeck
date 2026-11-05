@@ -6,10 +6,13 @@
  *   Answer   opens the agent's permission card in the row (./PermissionRequests.ts): Allow / Deny
  *            go through write(), with the token, into the action log
  *   Review   the PR on GitHub, with why it is not ready to merge yet
- *   Merge…   the PR's row on Work (#work?pr=N), where Merge is a button only you press
+ *   Merge…   the PR's row on Work (#work?pr=N&repo=…&head=SHA, the head judged ready), where Merge is a button only you press
  *
  * The headline reads `count` (needsCount in app.ts), never the queue itself. Readiness is asked
  * of GET /api/home/ready after the queue is drawn, and each PR row is redrawn when it answers.
+ *
+ * Repaints patch the page in place (updateHomeScreen, ./keyed-rows.ts): a queue row whose model
+ * did not change stays the same element, so an open permission card keeps focus while you type.
  */
 import type { HomeResponse } from "../../shared/home-types";
 import type { ProjectSummary } from "../../shared/types";
@@ -18,6 +21,7 @@ import { permissionQueue, type AskingAgent } from "../../shared/permission-reque
 import type { AgentsRead } from "../shell/activity";
 import { headlineText, type NeedsCount } from "../home-count";
 import { requestCard } from "./PermissionRequests";
+import { keyedReuse, reconcile } from "./keyed-rows";
 import {
   agentRows,
   healthModel,
@@ -84,40 +88,55 @@ const READY_REFRESH_MS = 60_000;
 let last: HomeInput | null = null;
 let queueEl: HTMLElement | null = null;
 let agentsEl: HTMLElement | null = null;
+let rootEl: HTMLElement | null = null;
+let headEl: HTMLElement | null = null;
+let healthSlot: HTMLElement | null = null;
+let footEl: HTMLElement | null = null;
+/** Queue rows by key, kept while their model is unchanged (see keyed-rows.ts). */
+const rowCache = new Map<string, { sig: string; el: HTMLElement }>();
 
 export function HomeScreen(input: HomeInput): HTMLElement {
-  last = input;
-  const root = el("div", "hm");
+  rootEl = el("div", "hm");
+  headEl = el("div", "hm-head");
+  queueEl = el("div", "hm-queue");
+  healthSlot = el("div");
+  agentsEl = el("div", "hm-agents");
+  footEl = el("div", "hm-foot");
+  rootEl.append(headEl, queueEl, healthSlot, agentsEl, footEl);
+  paintAll(input);
+  return rootEl;
+}
 
-  const head = el("div", "hm-head");
-  head.append(el("h1", "hm-h1", headlineText(input.count)));
+/**
+ * Repaint Home in place when it is on the page; false when it is not (the caller builds it).
+ * The queue keeps unchanged rows, so a focused input in an open card is never taken out.
+ */
+export function updateHomeScreen(input: HomeInput): boolean {
+  if (!rootEl?.isConnected) return false;
+  paintAll(input);
+  return true;
+}
+
+function paintAll(input: HomeInput): void {
+  last = input;
+  headEl!.replaceChildren(el("h1", "hm-h1", headlineText(input.count)));
   const today = new Date().toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
   const checked = input.home ? ` · checked ${new Date(input.home.generatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "";
-  head.append(el("span", "hm-sub", `all projects · ${today} · soonest first${checked}`));
-  root.append(head);
+  headEl!.append(el("span", "hm-sub", `all projects · ${today} · soonest first${checked}`));
 
-  queueEl = el("div", "hm-queue");
-  paintQueue(queueEl, input);
-  root.append(queueEl);
+  paintQueue(queueEl!, input);
+  healthSlot!.replaceChildren(healthEl(input));
+  paintAgents(agentsEl!, agentRows(input.host, input.home, input.failed));
 
-  root.append(healthEl(input));
-
-  agentsEl = el("div", "hm-agents");
-  paintAgents(agentsEl, agentRows(input.host, input.home, input.failed));
-  root.append(agentsEl);
-
-  const foot = el("div", "hm-foot");
   const m = (id: string) => input.home?.metrics.find((x) => x.id === id);
   const structureOf = m("new-breaks")?.asOf?.slice(0, 10);
   const notesOf = m("notes")?.asOf?.slice(0, 10);
-  foot.textContent =
+  footEl!.textContent =
     "Nothing on this page is an example: all of it is read when the page loads, and again every minute." +
     (structureOf ? ` Rule breaks are measured at the commit of ${structureOf}.` : "") +
     (notesOf ? ` Out-of-date notes come from the snapshot of ${notesOf}.` : "");
-  root.append(foot);
 
   askReadiness(input.home);
-  return root;
 }
 
 /** Redraw the agents list in place, when the agent host reports a change (no full rebuild). */
@@ -125,37 +144,42 @@ export function refreshHomeAgents(host: AgentsRead): void {
   if (!last || !agentsEl?.isConnected) return;
   last = { ...last, host };
   paintAgents(agentsEl, agentRows(host, last.home, last.failed));
+  // Answer rows come from the host too: one answered elsewhere and another parked in the same
+  // read leave the count unchanged, so the queue is patched here, not only on a count change.
+  if (queueEl?.isConnected) paintQueue(queueEl, last);
 }
 
 // ── the queue ────────────────────────────────────────────────────────────────────────────
 
 function paintQueue(box: HTMLElement, input: HomeInput): void {
-  box.replaceChildren();
+  const out: HTMLElement[] = [];
   if (!input.home && input.failed) {
-    box.append(unreadRowEl({ key: "home", what: "Could not read the queue", source: "/api/home did not answer. This is not “nothing to decide”; retrying every minute.", reading: false }));
+    out.push(unreadRowEl({ key: "home", what: "Could not read the queue", source: "/api/home did not answer. This is not “nothing to decide”; retrying every minute.", reading: false }));
   }
   const { rows, unread } = queueRows(input.home, input.host, ready);
-  if (!input.home && !input.failed) box.append(noteEl("Loading: live sessions, their PRs on GitHub, the structure guard, the notes snapshot…", "muted"));
+  if (!input.home && !input.failed) out.push(noteEl("Loading: live sessions, their PRs on GitHub, the structure guard, the notes snapshot…", "muted"));
   if (input.home && rows.length === 0) {
-    box.append(
+    out.push(
       input.count.state === "ok"
         ? noteEl(`Nothing to decide. Checked: ${Object.values(input.home.sources).map((s) => s.label).join(" · ")}.`, "ok")
         : noteEl("Nothing to decide among what could be read. Some sources did not answer; they are listed below.", "muted"),
     );
   }
-  const els = rows.map((r, i) => rowEl(r, i === 0, input.host));
-  els.slice(0, expanded ? els.length : SHOWN).forEach((e) => box.append(e));
-  if (els.length > SHOWN) {
-    const more = el("button", "hm-more", expanded ? "Show fewer" : `Show ${els.length - SHOWN} more`);
+  // A row is the same element while its model and place (first or not) are the same.
+  const shown = rows.slice(0, expanded ? rows.length : SHOWN).map((r, i) => ({ r, primary: i === 0 }));
+  out.push(...keyedReuse(rowCache, shown, (x) => x.r.key, (x) => JSON.stringify([x.r, x.primary]), (x) => rowEl(x.r, x.primary)));
+  if (rows.length > SHOWN) {
+    const more = el("button", "hm-more", expanded ? "Show fewer" : `Show ${rows.length - SHOWN} more`);
     more.type = "button";
     more.addEventListener("click", () => {
       expanded = !expanded;
       if (last) paintQueue(box, last);
     });
-    box.append(more);
+    out.push(more);
   }
-  for (const u of unread) box.append(unreadRowEl(u));
-  if (input.home?.olderPrs.length) box.append(olderPrsEl(input.home.olderPrs));
+  for (const u of unread) out.push(unreadRowEl(u));
+  if (input.home?.olderPrs.length) out.push(olderPrsEl(input.home.olderPrs));
+  reconcile(box, out);
 }
 
 /** Open PRs you authored that have been quiet for 30 days: named once, never counted (#45). */
@@ -198,7 +222,7 @@ function unreadRowEl(u: UnreadRow): HTMLElement {
   return r;
 }
 
-function rowEl(row: HomeRow, primary: boolean, host: AgentsRead): HTMLElement {
+function rowEl(row: HomeRow, primary: boolean): HTMLElement {
   const wrap = el("div", "hm-q");
   wrap.dataset.kind = row.kind;
   wrap.dataset.key = row.key;
@@ -244,7 +268,9 @@ function rowEl(row: HomeRow, primary: boolean, host: AgentsRead): HTMLElement {
     const fill = () => {
       slot.replaceChildren();
       if (!openAsks.has(a.requestId)) return;
-      const found = host.state === "ok" ? permissionQueue(host.agents as unknown as AskingAgent[]).requests.find((r) => r.request.requestId === a.requestId) : undefined;
+      // The host as read now, not when the row was built: a kept row outlives many reads.
+      const host = last?.host;
+      const found = host?.state === "ok" ? permissionQueue(host.agents as unknown as AskingAgent[]).requests.find((r) => r.request.requestId === a.requestId) : undefined;
       slot.append(found ? requestCard(found.agent, found.request) : el("div", "hm-src err", "This request is no longer parked: it was answered or withdrawn."));
     };
     b.addEventListener("click", () => {
