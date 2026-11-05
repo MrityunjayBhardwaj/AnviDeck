@@ -6,6 +6,7 @@ import type { Options, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { AgentHost, HostError, type QueryFn } from "../server/agents/host";
 import { AgentRegistry, type AgentOwner, type AgentRecord } from "../server/agents/registry";
 import { loginOnlyEnv, type ClaudeBinary } from "../server/agents/login";
+import { agentRoutes } from "../server/routes/agents";
 
 /**
  * #104: several AnviDeck servers share one agent registry. Each agent names the server that
@@ -164,6 +165,22 @@ describe("two servers sharing one agent registry (#104)", () => {
     const B = server(dir, 4136);
     expect(onDisk(dir)[0]!.status).toBe("stopped");
     expect(B.host.get("old1").reason).toContain("names no server");
+  });
+});
+
+describe("a registry that becomes unreadable while a server runs", () => {
+  test("GET /api/agents says it could not read the file and lists only this server's agents, never as all there are", async () => {
+    const dir = scratch();
+    const A = server(dir, 4135);
+    const a = A.host.start({ cwd: scratch(), prompt: "long" });
+    await until(() => A.host.get(a.id).status === "working");
+    writeFileSync(join(dir, "agents.json"), "{ torn");
+    const app = agentRoutes(A.host, async () => ({ ok: true, loggedIn: true }) as never);
+    const j = (await (await app.request("/")).json()) as { registryUnread?: string; agents: { id: string }[]; server: { port: number } };
+    expect(j.registryUnread).toContain("could not be read");
+    expect(j.agents.map((x) => x.id)).toEqual([a.id]);
+    expect(j.server.port).toBe(4135);
+    A.host.stopAll("test over");
   });
 });
 
