@@ -1,7 +1,8 @@
 /**
  * The Changes screen's reader (#84). Read only: it reads files and asks git, gh and grep.
  *
- * For one PR it gathers: the PR (gh pr view), its diff (gh pr diff), the files each commit
+ * For one PR it gathers: the PR (gh pr view), its diff (gh pr diff), every file it changes (gh pr
+ * view lists at most 100; past that GitHub's files API is paged, then the diff fills any gap), the files each commit
  * touched (git show, or gh api when the commit is not in the local repository), the layers its
  * files sit in (the structure reader's layer map), the project's dharana boundaries, and the
  * agent sessions that made it, with what anvi's catalogue-context injector gave each of them for
@@ -23,7 +24,8 @@ import { readStructure } from "./structure";
 import { readCataloguesReport } from "./catalogue";
 import { candidates, resolveDir } from "../../shared/anvi-paths";
 import { errText, isAbsent } from "./read-status";
-import { dharanaBoundaries, layersFor, logFileMatches, sessionOfTranscript } from "../../shared/changes";
+import { completeFiles, dharanaBoundaries, layersFor, logFileMatches, sessionOfTranscript } from "../../shared/changes";
+import { parseDiff } from "../../shared/diff";
 import type {
   ChangesPrList,
   ChangesResponse,
@@ -31,6 +33,7 @@ import type {
   DharanaRead,
   DiffRead,
   HookLogRead,
+  PrFile,
   LayersRead,
   PrCommit,
   PrMeta,
@@ -141,6 +144,24 @@ async function readDiff(repo: string, n: number): Promise<DiffRead> {
   const r = await runAsync(["gh", "pr", "diff", String(n), "--repo", repo], 60000);
   if (!r.ok) return { status: "unreadable", reason: `gh pr diff ${n} --repo ${repo}: ${r.err || "gh failed"}` };
   return { status: "ok", text: r.out };
+}
+
+/** Every file of the PR from GitHub's files API, paged (gh pr view stops at 100). */
+async function pagedFiles(repo: string, n: number): Promise<{ ok: true; files: PrFile[] } | { ok: false; reason: string }> {
+  const r = await runAsync(["gh", "api", "--paginate", `repos/${repo}/pulls/${n}/files`, "--jq", ".[] | [.filename, .additions, .deletions] | @json"], 60000);
+  if (!r.ok) return { ok: false, reason: r.err || "gh api failed" };
+  try {
+    const files = r.out
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => {
+        const [path, additions, deletions] = JSON.parse(l);
+        return { path, additions, deletions };
+      });
+    return { ok: true, files };
+  } catch {
+    return { ok: false, reason: "gh api returned non-JSON output" };
+  }
 }
 
 async function commitFiles(projectPath: string, repo: string, oid: string): Promise<Pick<PrCommit, "files" | "filesError" | "filesFrom">> {
@@ -329,6 +350,7 @@ export async function findPrSessions(projectPath: string, repo: string, pr: PrMe
   return {
     status: errors.length ? "partial" : "ok",
     searched: dirs,
+    filesSearched: files,
     errors,
     sessions: [...sessions.values()],
     registry: { path: registry.path, status: registry.status, reason: registry.reason },
@@ -354,9 +376,16 @@ async function readTitles(projectPath: string, sessions: SessionsRead): Promise<
 
 export async function readChanges(project: string, projectPath: string, n: number): Promise<ChangesResponse> {
   const repo = await projectRepo(projectPath);
-  const { meta, commits: commitList } = await readPr(repo, n);
-  const [diff, commits, layers, sessions] = await Promise.all([
+  const { meta: listedMeta, commits: commitList } = await readPr(repo, n);
+  // The full file list comes before the hook logs are searched: a file left off it would read as
+  // "the injector logged nothing" when it was never looked for.
+  const [diff, paged] = await Promise.all([
     readDiff(repo, n),
+    listedMeta.files.length < listedMeta.changedFiles ? pagedFiles(repo, n) : Promise.resolve(null),
+  ]);
+  const all = completeFiles(listedMeta.files, listedMeta.changedFiles, paged, diff.status === "ok" ? parseDiff(diff.text) : null);
+  const meta: PrMeta = { ...listedMeta, files: all.files };
+  const [commits, layers, sessions] = await Promise.all([
     readCommits(projectPath, repo, commitList),
     readLayers(project, projectPath, meta.files),
     findPrSessions(projectPath, repo, meta),
@@ -368,6 +397,7 @@ export async function readChanges(project: string, projectPath: string, n: numbe
     repo,
     readAt: new Date().toISOString(),
     pr: meta,
+    filesRead: all.read,
     diff,
     commits,
     layers,

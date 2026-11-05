@@ -1,6 +1,7 @@
 /**
  * The Changes screen (#84): one PR's files, the layers and boundaries it touches, its diff with
- * the anvi context the agent received at each hunk, line comments that go to the PR's running
+ * the anvi context the agent received for each file (shown once per file: the injector's log names
+ * the file, not the lines, so a per-hunk join is not yet possible, #153), line comments that go to the PR's running
  * agent, the evidence and self-review from the PR body, and a guided tour in commit order.
  *
  * Reads GET /api/changes/*, GET /api/agents and GET /api/agents/:id; writes only through
@@ -20,6 +21,7 @@ import {
   openByDefault,
   parseDiff,
   pickPr,
+  sessionsSummary,
   type AgentsList,
   type CommentTarget,
   type DiffFile,
@@ -164,7 +166,9 @@ function render(root: HTMLElement, project: string, r: ChangesResponse, list: Ch
     filesList.append(row);
   }
   filesCard.append(filesList);
-  if (pr.files.length < pr.changedFiles) filesCard.append(el("div", "sh-dim chg-note", `gh listed ${pr.files.length} of ${pr.changedFiles} changed files.`));
+  if (r.filesRead.status === "partial") filesCard.append(el("div", "chg-note chg-bad", `Partial file list: ${esc(r.filesRead.reason)}.`));
+  else if (r.filesRead.from !== "gh pr view")
+    filesCard.append(el("div", "sh-dim chg-note", `All ${pr.files.length} files, from ${esc(r.filesRead.from)} (gh pr view lists at most 100).`));
   left.append(filesCard);
 
   const layersCard = el("div", "sh-card chg-card", "<h3>Layers touched</h3>");
@@ -190,6 +194,12 @@ function render(root: HTMLElement, project: string, r: ChangesResponse, list: Ch
     bCard.append(el("div", "chg-stack", b.items.map((i) => `<span class="sh-chip chg-bchip" title="${esc(i.files.join("\n"))}">${esc(i.name)}</span>`).join("")));
   bCard.append(el("div", `chg-note ${b.state === "unreadable" ? "chg-bad" : "sh-dim"}`, esc(b.note)));
   left.append(bCard);
+
+  const ss = sessionsSummary(r.sessions);
+  const sCard = el("div", "sh-card chg-card", "<h3>Agent sessions</h3>");
+  for (const p of ss.problems) sCard.append(el("div", "chg-note chg-bad", esc(p)));
+  for (const l of ss.lines) sCard.append(el("div", "chg-note sh-dim", esc(l)));
+  left.append(sCard);
 
   // ── middle: tour banner, comment status, diff ──
   const banner = el("div", "sh-card chg-banner");
@@ -244,12 +254,20 @@ function render(root: HTMLElement, project: string, r: ChangesResponse, list: Ch
       sec.append(more);
       return;
     }
-    if (f.hunks.length === 0) sec.append(el("div", "chg-annot", "No text hunks (a mode change, an empty file or a rename only)."));
+    // Once per file: the injector's log names the file an edit touched, not its lines, so the same
+    // context under every hunk would claim a per-hunk join this screen does not have (#153).
     const ctx = contextFor(f.path, r.sessions);
     const ctxText = contextLine(ctx, r.titles, r.dharana);
+    sec.append(
+      el(
+        "div",
+        `chg-annot chg-fctx ${ctx.kind === "fired" ? "" : ctx.kind === "could-not-look" || ctx.kind === "not-searched" ? "chg-bad-annot" : "chg-quiet"}`,
+        `<b>Context the agent received for this file</b> <span class="sh-dim">(per file: the hook log does not say which lines)</span>. ${esc(ctxText)}`,
+      ),
+    );
+    if (f.hunks.length === 0) sec.append(el("div", "chg-annot", "No text hunks (a mode change, an empty file or a rename only)."));
     for (const h of f.hunks) {
       sec.append(el("div", "chg-hunk mono", esc(`@@ ${f.path}  −${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@${h.header.replace(/^@@[^@]*@@/, "")}`)));
-      sec.append(el("div", `chg-annot ${ctx.kind === "fired" ? "" : ctx.kind === "could-not-look" ? "chg-bad-annot" : "chg-quiet"}`, `<b>Context the agent received here.</b> ${esc(ctxText)}`));
       for (const ln of h.lines) sec.append(lineEl(f, ln));
     }
   }

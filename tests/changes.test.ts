@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { boundaryId, dharanaBoundaries, layersFor, logFileMatches, sessionOfTranscript } from "../shared/changes";
+import { boundaryId, completeFiles, dharanaBoundaries, layersFor, logFileMatches, sessionOfTranscript } from "../shared/changes";
 import {
   boundariesTouched,
   commentTarget,
@@ -13,6 +13,7 @@ import {
   openByDefault,
   parseDiff,
   pickPr,
+  sessionsSummary,
 } from "../ui/components/changes-model";
 import { findPrSessions, readHookLog } from "../server/readers/changes";
 import { encodeCwd } from "../server/readers/replay";
@@ -32,9 +33,11 @@ const entry = (file: string, ts: string, boundaries: string[] = ["B4"], patterns
   invariants,
 });
 const session = (over: Partial<PrSession> = {}): PrSession => ({ sessionId: "s1", how: ["pr-link"], transcripts: ["/t/s1.jsonl"], log: null, ...over });
-const sessions = (list: PrSession[], errors: string[] = []): SessionsRead => ({
+const SEARCHED = ["a.ts", "b.ts", "c.ts", "src/a.ts"];
+const sessions = (list: PrSession[], errors: string[] = [], filesSearched = SEARCHED): SessionsRead => ({
   status: errors.length ? "partial" : "ok",
   searched: ["/p"],
+  filesSearched,
   errors,
   sessions: list,
   registry: { path: "/r/agents.json", status: "read" },
@@ -211,7 +214,8 @@ describe("context the agent received at a file", () => {
 
   test("a read log with no firing for this file is 'not fired', with the other files' count", () => {
     const c = contextFor("a.ts", sessions([session({ log: readLog([entry("b.ts", "2026-11-01T00:00:00Z")]) })]));
-    expect(c).toMatchObject({ kind: "not-fired", otherEntries: 1, unreadLogs: 0 });
+    expect(c).toMatchObject({ kind: "not-fired", otherEntries: 1, gaps: { unreadLogs: 0, noSessionId: 0, searchErrors: [] } });
+    expect(contextLine(c, {}, dharana)).not.toContain("incomplete");
   });
 
   test("firings for the file are joined across sessions, oldest first, and an unread log is counted", () => {
@@ -227,11 +231,53 @@ describe("context the agent received at a file", () => {
     expect(c.fires.map((f) => f.sessionId)).toEqual(["s2", "s1"]);
     expect(c.boundaries).toEqual(["B9: hook process", "B4"]);
     expect(c.patterns).toEqual(["H2", "H1"]);
-    expect(c.unreadLogs).toBe(1);
+    expect(c.gaps.unreadLogs).toBe(1);
     const line = contextLine(c, { H1: "a count printed without its population" }, dharana);
     expect(line).toContain("B9 hook process, B4 store write");
     expect(line).toContain('H1 "a count printed without its population"');
     expect(line).toContain("may be incomplete");
+  });
+});
+
+describe("a file the hook logs were not searched for", () => {
+  test("is 'not searched', never 'the injector logged nothing'", () => {
+    // gh pr view lists 100 files; file 101 was never looked for in the log.
+    const s = sessions([session({ log: readLog([entry("a.ts", "2026-11-01T00:00:00Z")]) })], [], ["a.ts"]);
+    const c = contextFor("file-101.ts", s);
+    expect(c.kind).toBe("not-searched");
+    expect(contextLine(c, {}, dharana)).toContain("Not searched");
+    expect(contextLine(c, {}, dharana)).not.toContain("logged nothing");
+  });
+});
+
+describe("a partial session search, with sessions found", () => {
+  const partial = (list: PrSession[]) => {
+    const s = sessions(list, ["agent registry: /r/agents.json: JSON Parse error"]);
+    if (s.status === "unreadable") throw new Error("x");
+    return { ...s, registry: { path: "/r/agents.json", status: "unreadable" as const, reason: "JSON Parse error" } };
+  };
+  test("the comment box says the registry could not be read, not 'a terminal session'", () => {
+    const t = commentTarget(partial([session()]), { state: "ok", agents: [] });
+    expect(t).toEqual({ enabled: false, why: expect.stringContaining("agent registry could not be read") });
+    if (t.enabled) throw new Error("on");
+    expect(t.why).not.toContain("not started by AnviDeck");
+  });
+  test("a failed grep with the registry read: 'may have been missed', not 'a terminal session'", () => {
+    const t = commentTarget(sessions([session()], ["grep for x: EIO"]), { state: "ok", agents: [] });
+    expect(t).toEqual({ enabled: false, why: expect.stringContaining("may have been missed") });
+  });
+  test("a file's 'nothing logged' carries the search errors", () => {
+    const c = contextFor("a.ts", partial([session({ log: readLog([entry("b.ts", "2026-11-01T00:00:00Z")]) })]));
+    if (c.kind !== "not-fired") throw new Error(c.kind);
+    expect(c.gaps.searchErrors).toEqual(["agent registry: /r/agents.json: JSON Parse error"]);
+    expect(contextLine(c, {}, dharana)).toContain("search for the PR's sessions was partial");
+  });
+  test("the screen's session summary shows the errors and the registry's state", () => {
+    const v = sessionsSummary(partial([session()]));
+    expect(v.problems).toEqual(["Partial search: agent registry: /r/agents.json: JSON Parse error"]);
+    expect(v.lines.join("\n")).toContain("agent registry could not be read");
+    expect(v.lines[0]).toContain("whether AnviDeck started it is not known");
+    expect(v.lines[0]).not.toContain("not started by AnviDeck");
   });
 });
 
@@ -252,6 +298,40 @@ describe("boundaries the PR touches", () => {
     const v = boundariesTouched({ dharana, sessions: sessions([]) }, files("a.ts"));
     expect(v.state).toBe("unknown");
     expect(v.note).toContain("no agent session found");
+  });
+
+  test("one log read with nothing for the files, another absent: not known, never 'logged nothing'", () => {
+    const two = sessions([
+      session({ sessionId: "s1", how: ["branch"], log: readLog([]) }),
+      session({ sessionId: "s2", agentId: "a1", log: { status: "absent", path: "/tmp/anvi-hook-s2.log" } }),
+    ]);
+    const v = boundariesTouched({ dharana, sessions: two }, files("a.ts"));
+    expect(v.state).toBe("unknown");
+    expect(v.note).not.toContain("logged nothing");
+    expect(v.note).toContain("absent or could not be read");
+  });
+
+  test("an agent with no session id yet is said as such, not as a log that could not be read", () => {
+    const s = sessions([session({ sessionId: "s1", log: readLog([]) }), session({ sessionId: null, agentId: "a1", how: ["agent-issue"], log: null })]);
+    const c = contextFor("a.ts", s);
+    if (c.kind !== "not-fired") throw new Error(c.kind);
+    expect(c.gaps).toEqual({ unreadLogs: 0, noSessionId: 1, searchErrors: [] });
+    const line = contextLine(c, {}, dharana);
+    expect(line).toContain("no session id yet");
+    expect(line).not.toContain("could not be read");
+    expect(boundariesTouched({ dharana, sessions: s }, files("a.ts")).state).toBe("unknown");
+  });
+
+  test("boundaries found while another log was not read are listed, marked incomplete", () => {
+    const s = sessions([
+      session({ sessionId: "s1", log: readLog([entry("a.ts", "2026-11-01T00:00:00Z", ["B4"])]) }),
+      session({ sessionId: "s2", log: { status: "unreadable", path: "/tmp/x", reason: "EACCES" } }),
+    ]);
+    const v = boundariesTouched({ dharana, sessions: s }, files("a.ts"));
+    if (v.state !== "listed") throw new Error(v.state);
+    expect(v.items.map((i) => i.id)).toEqual(["B4"]);
+    expect(v.incomplete).toBe(true);
+    expect(v.note).toContain("May be incomplete");
   });
 
   test("listed from the injector's firings for the PR's files, titled from dharana", () => {
@@ -366,6 +446,34 @@ test("which PR: the URL's, else the newest open one, else the picker", () => {
   expect(pickPr("abc", [])).toBeNull();
 });
 
+describe("every file the PR changes, past gh pr view's 100", () => {
+  const listed = files(...Array.from({ length: 100 }, (_, i) => `f${i}.ts`));
+  const all = files(...Array.from({ length: 153 }, (_, i) => `f${i}.ts`));
+  const diffOf = (paths: string[]) => paths.map((path) => ({ path, oldPath: null, status: "modified" as const, binary: false, hunks: [], additions: 2, deletions: 1 }));
+  test("all listed by gh pr view: taken as they are", () => {
+    expect(completeFiles(listed, 100, null, null)).toEqual({ files: listed, read: { status: "complete", from: "gh pr view" } });
+  });
+  test("100 of 153: the paged files API gives all 153", () => {
+    const r = completeFiles(listed, 153, { ok: true, files: all }, null);
+    expect(r.files.length).toBe(153);
+    expect(r.read).toEqual({ status: "complete", from: "gh api" });
+  });
+  test("paging failed: the diff fills the gap, with its counts", () => {
+    const r = completeFiles(listed, 153, { ok: false, reason: "HTTP 502" }, diffOf(all.map((f) => f.path)));
+    expect(r.files.length).toBe(153);
+    expect(r.files[152]).toEqual({ path: "f152.ts", additions: 2, deletions: 1 });
+    expect(r.read).toEqual({ status: "complete", from: "gh pr view + diff" });
+  });
+  test("paging failed and no diff: partial, saying how many were not looked for", () => {
+    const r = completeFiles(listed, 153, { ok: false, reason: "HTTP 502" }, null);
+    expect(r.files.length).toBe(100);
+    if (r.read.status !== "partial") throw new Error(r.read.status);
+    expect(r.read.reason).toContain("listed 100 of 153");
+    expect(r.read.reason).toContain("HTTP 502");
+    expect(r.read.reason).toContain("53 file(s) are not shown and were not looked for");
+  });
+});
+
 describe("the injector's log for a session", () => {
   const sid = `changes-test-${process.pid}`;
   const path = `/tmp/anvi-hook-${sid}.log`;
@@ -434,6 +542,7 @@ describe("finding the PR's sessions across the repository's checkouts", () => {
     const r = await findPrSessions(main, "o/r", pr, projects);
     if (r.status === "unreadable") throw new Error(r.reason);
     expect(r.errors).toEqual([]);
+    expect(r.filesSearched).toEqual(["a.ts"]);
     const got = r.sessions.map((s) => [s.sessionId, s.how.sort().join("+"), s.agentId ?? null]).sort((a, b) => String(a[0] ?? "").localeCompare(String(b[0] ?? "")));
     expect(got).toEqual([
       [null, "agent-issue", "a2"],
@@ -442,6 +551,23 @@ describe("finding the PR's sessions across the repository's checkouts", () => {
       [sid("S3"), "pr-link", null],
     ]);
     expect(r.sessions.find((s) => s.sessionId === sid("S1"))!.log).toEqual({ status: "absent", path: `/tmp/anvi-hook-${sid("S1")}.log` });
+  });
+
+  test("a corrupt agent registry: partial, and the PR's terminal-looking session is not called 'not started by AnviDeck'", async () => {
+    const bad = join(tmp, "bad-reg");
+    mkdirSync(bad, { recursive: true });
+    writeFileSync(join(bad, "agents.json"), "{not json");
+    process.env.ANVIDECK_AGENT_DIR = bad;
+    const pr = { number: 7, headRefName: "feat/9-x", closingIssues: [9], files: [{ path: "a.ts", additions: 1, deletions: 0 }], mergedAt: null, closedAt: null } as any;
+    const r = await findPrSessions(main, "o/r", pr, projects);
+    if (r.status === "unreadable") throw new Error(r.reason);
+    expect(r.status).toBe("partial");
+    expect(r.registry.status).toBe("unreadable");
+    expect(r.sessions.length).toBeGreaterThan(0);
+    const t = commentTarget(r, { state: "ok", agents: [] });
+    if (t.enabled) throw new Error("on");
+    expect(t.why).toContain("agent registry could not be read");
+    expect(sessionsSummary(r).problems[0]).toContain("agent registry");
   });
 
   test("a transcripts folder that cannot be read is 'unreadable', not 'no session'", async () => {

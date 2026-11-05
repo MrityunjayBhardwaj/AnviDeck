@@ -53,6 +53,14 @@ export interface PrMeta {
   closedAt: string | null;
 }
 
+/**
+ * Whether the PR's file list is every file it changes. gh pr view lists at most 100 files; past that
+ * the reader pages GitHub's files API, and adds any file the diff has that is still missing.
+ */
+export type FilesRead =
+  | { status: "complete"; from: "gh pr view" | "gh api" | "gh pr view + diff" | "gh api + diff" }
+  | { status: "partial"; reason: string };
+
 export type DiffRead = { status: "ok"; text: string } | { status: "unreadable"; reason: string };
 
 export interface PrCommit {
@@ -117,6 +125,8 @@ export type SessionsRead =
       status: "ok" | "partial";
       /** Transcript folders searched (absolute). */
       searched: string[];
+      /** The PR files each session's hook log was searched for. A file not here was not looked for. */
+      filesSearched: string[];
       errors: string[];
       sessions: PrSession[];
       /** The agent registry read for AnviDeck-started agents. */
@@ -135,6 +145,8 @@ export interface ChangesResponse {
   repo: string;
   readAt: string;
   pr: PrMeta;
+  /** Whether pr.files is every file the PR changes. */
+  filesRead: FilesRead;
   diff: DiffRead;
   commits: CommitsRead;
   layers: LayersRead;

@@ -2,7 +2,8 @@
  * Pure joins for the Changes screen (#84): no I/O, so tests drive them directly.
  * The reader (server/readers/changes.ts) gathers the inputs; these decide what they mean.
  */
-import type { FileLayer, LayersRead, PrFile } from "./changes-types";
+import type { FileLayer, FilesRead, LayersRead, PrFile } from "./changes-types";
+import type { DiffFile } from "./diff";
 import type { StructureProjectResponse } from "./structure-types";
 
 /**
@@ -90,4 +91,33 @@ export function layersFor(files: PrFile[], s: StructureProjectResponse, packageP
     files: out,
     layers: [...counts].map(([name, n]) => ({ name, files: n })).sort((a, b) => b.files - a.files || a.name.localeCompare(b.name)),
   };
+}
+
+/**
+ * Every file the PR changes. `listed` is gh pr view's list (at most 100 files); `paged` is GitHub's
+ * files API, read only when `listed` falls short of `changedFiles`; `diffFiles` are the files the
+ * diff has. A file only the diff names is added with the diff's counts. When the files still fall
+ * short of `changedFiles`, the read is "partial" with the reason, never a silently shorter list.
+ */
+export function completeFiles(
+  listed: PrFile[],
+  changedFiles: number,
+  paged: { ok: true; files: PrFile[] } | { ok: false; reason: string } | null,
+  diffFiles: DiffFile[] | null,
+): { files: PrFile[]; read: FilesRead } {
+  if (listed.length >= changedFiles) return { files: listed, read: { status: "complete", from: "gh pr view" } };
+  const base = paged?.ok ? paged.files : listed;
+  if (base.length >= changedFiles) return { files: base, read: { status: "complete", from: "gh api" } };
+  const have = new Set(base.map((f) => f.path));
+  const fromDiff = (diffFiles ?? []).filter((d) => !have.has(d.path)).map((d) => ({ path: d.path, additions: d.additions, deletions: d.deletions }));
+  const files = [...base, ...fromDiff];
+  const src = paged?.ok ? "gh api" : "gh pr view";
+  if (files.length >= changedFiles) return { files, read: { status: "complete", from: `${src} + diff` } };
+  const why = [
+    `${src} listed ${base.length} of ${changedFiles} changed files`,
+    paged && !paged.ok ? `paging GitHub's files API failed (${paged.reason})` : null,
+    diffFiles ? `the diff added ${fromDiff.length}` : "the diff could not be read",
+    `${changedFiles - files.length} file(s) are not shown and were not looked for in the hook logs`,
+  ];
+  return { files, read: { status: "partial", reason: why.filter(Boolean).join("; ") } };
 }
