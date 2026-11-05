@@ -66,7 +66,7 @@ The prototype's frame replaces today's sidebar:
 
 - Starts an agent with a folder, a prompt and your normal settings: user, project and local settings load, so anvi's hooks and CLAUDE.md apply.
 - Streams every SDK message to the page over the existing WebSocket and keeps it per agent.
-- Keeps a registry of AnviDeck-started agents on disk (id, session id, folder, issue, status, and the server that runs it: pid and port). Several servers may share it (#104): each write changes only its own records, under a lock file, and a server lists every agent but acts only on its own; another live server's agent shows where it runs and is refused (409) here. An agent whose server is gone (its pid is not alive) shows as stopped, with its transcript, and can be resumed by any server.
+- Keeps a registry of AnviDeck-started agents on disk (id, session id, folder, issue, status, and the server that runs it: pid and port). Several servers may share it (#104): each write changes only its own records, under a lock file, and a server lists every agent but acts only on its own; another live server's agent shows where it runs and is refused (409) here. An agent whose server is gone (its pid is not alive, or now belongs to a process that started after that server, #224) shows as stopped, with its transcript, and can be resumed by any server.
 - Stops an agent, and caps how many run at once.
 - Statuses: starting, working, waiting on you, done, failed, stopped. "Could not start" never shows as "done".
 - Feeds each agent through a stream of user messages, so a message or a diff comment (file, line, the line's text) arrives on its next turn, with delivery shown (#79, on main: `POST /api/agents/:id/message`; a stopped agent answers 409 with `resumable`).
