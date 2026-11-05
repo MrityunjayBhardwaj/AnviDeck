@@ -8,6 +8,7 @@
  */
 import { SCREENS, hashFor, type ScreenId } from "./routes";
 import type { StripAgent } from "./activity";
+import { FLOWS } from "./tour-model";
 
 export type PaletteGroup = "Screens" | "Projects" | "Agents" | "Issues" | "Commands";
 
@@ -26,6 +27,8 @@ export interface PaletteEntry {
   command?: PaletteCommand;
   /** Not wired yet: shown, never run. */
   pending?: string;
+  /** Plays one of Help's guided flows (#91), by its index in FLOWS. */
+  flow?: number;
 }
 
 /** Commands an entry can run in this page. */
@@ -97,6 +100,9 @@ export function paletteEntries(inp: PaletteInput): PaletteEntry[] {
     { group: "Commands", label: "/anvi:debug · systematic diagnosis in a new agent", pending: "#130" },
     { group: "Commands", label: "/anvi:currency · re-check drifted notes in a new agent", pending: "#130" },
     { group: "Commands", label: "Open the agent host page", hint: "temporary page from #75: start, watch, stop agents", href: "/agent-host" },
+  );
+  FLOWS.forEach((f, i) =>
+    out.push({ group: "Commands", label: `Play flow ${f.name}`, hint: `Help · opens the real screens and highlights; presses nothing${inp.currentProject ? ` · ${inp.currentProject}` : ""}`, flow: i }),
   );
   return out;
 }
