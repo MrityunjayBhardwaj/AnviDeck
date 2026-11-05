@@ -89,8 +89,10 @@ export function prSteps(pr: PrFacts): Step[] {
   const issue = pr.closing[0];
   const ref = (i: { number: number; repo: string }) => (i.repo.toLowerCase() === repoOf(pr.url).toLowerCase() ? `#${i.number}` : `${i.repo}#${i.number}`);
 
+  const part = pr.partOf[0];
   // Friction: the problem the work came from, as the linked issue records it.
-  if (!issue) steps.push({ key: "friction", label: "Friction", state: "missing", detail: "no linked issue, so no recorded friction" });
+  if (!issue && part !== undefined) steps.push({ key: "friction", label: "Friction", state: "missing", detail: `#${part} is linked only as "Part of"; its body is not read here` });
+  else if (!issue) steps.push({ key: "friction", label: "Friction", state: "missing", detail: "no linked issue, so no recorded friction" });
   else {
     const s = statesProblem(issue.body);
     steps.push(
@@ -103,7 +105,9 @@ export function prSteps(pr: PrFacts): Step[] {
   steps.push(
     issue
       ? { key: "issue", label: `Issue ${ref(issue)}`, state: "done", detail: `closing reference GitHub parsed: ${pr.closing.map(ref).join(", ")}` }
-      : { key: "issue", label: "Issue", state: "missing", detail: "GitHub parsed no closing reference (Closes #N) in the PR" },
+      : part !== undefined
+        ? { key: "issue", label: `Issue #${part}`, state: "done", detail: `linked as "Part of ${pr.partOf.map((n) => `#${n}`).join(", ")}" in the body: the issue exists, but merging does not close it` }
+        : { key: "issue", label: "Issue", state: "missing", detail: "GitHub parsed no closing reference (Closes #N) in the PR" },
   );
 
   steps.push(

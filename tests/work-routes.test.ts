@@ -7,7 +7,7 @@ import { installGuard } from "../server/guard";
 import { ActionLog, type ActionRecord } from "../server/action-log";
 import { workRoutes } from "../server/routes/work";
 import { spawnRun, type Run, type RunResult } from "../server/agents/worktree";
-import { boardItem, readBoard } from "../server/work/github";
+import { boardItem, partOfRefs, readBoard } from "../server/work/github";
 import { conflictsOf, pairFrom } from "../server/work/conflicts";
 import { createIssue, mergePr } from "../server/work/act";
 import type { BoardResponse, PrsResponse } from "../shared/work-types";
@@ -318,6 +318,12 @@ describe("conflicts with other open PRs (git merge-tree, real git)", () => {
 });
 
 describe("GET /api/work/prs", () => {
+  test('"Part of #N" links are read from the body, each once; other repos\' and look-alikes are not', () => {
+    expect(partOfRefs("Part of #81. What remains: …\npart of #81 and Part of #93")).toEqual([81, 93]);
+    expect(partOfRefs("Part of acme/other#5, apart of #6, Part of #7x")).toEqual([]);
+    expect(partOfRefs(null)).toEqual([]);
+  });
+
   test("open PRs come back with parsed sections, CI and conflicts per PR", async () => {
     const node = {
       number: 4, title: "T", url: "https://github.com/acme/widget/pull/4", isDraft: false, headRefName: "feat/4", headRefOid: HEAD, baseRefName: "main", baseRefOid: MOVED, mergeable: "MERGEABLE", updatedAt: "t", author: { login: "me" },

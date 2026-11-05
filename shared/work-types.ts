@@ -105,6 +105,8 @@ export interface PrFacts {
   commits: number;
   /** GitHub's parsed closing references (closingIssuesReferences). */
   closing: ClosingIssue[];
+  /** Issues of this repo the body links without closing them ("Part of #N"); GitHub does not parse these. */
+  partOf: number[];
   ci: CiRead;
   /** The PR body's Evidence and Self-review sections, parsed with shared/pr-evidence.ts. */
   sections: PrSections;

@@ -37,6 +37,7 @@ function pr(over: Partial<PrFacts> = {}): PrFacts {
     mergeable: "MERGEABLE",
     commits: 3,
     closing: [{ number: 85, title: "Work", url: "https://github.com/acme/widget/issues/85", repo: "acme/widget", body: "## Problem\nNone of it exists.\n" }],
+    partOf: [],
     ci: { rollup: "SUCCESS", contexts: [{ name: "test", state: "SUCCESS" }], total: 1 },
     sections: parsePrSections(PR_SECTIONS_EXAMPLE),
     reviews: [],
@@ -120,6 +121,16 @@ describe("your workflow", () => {
     const p = pr({ closing: [] });
     expect(states(p)).toMatchObject({ friction: "missing", issue: "missing" });
     expect(now(p)).toBe("friction");
+  });
+
+  test('"Part of #N" without a closing reference: the Issue step is done, the closing check still is not', () => {
+    const p = pr({ closing: [], partOf: [81] });
+    const issue = prSteps(p)[1]!;
+    expect([issue.label, issue.state]).toEqual(["Issue #81", "done"]);
+    expect(issue.detail).toContain("merging does not close it");
+    expect(prSteps(p)[0]).toMatchObject({ state: "missing" });
+    expect(prSteps(p)[0]!.detail).toContain('"Part of"');
+    expect(closingCheck(p).state).toBe("bad");
   });
 
   test("an issue with an empty body records no friction; one with text does", () => {

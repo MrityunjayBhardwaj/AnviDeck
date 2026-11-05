@@ -203,6 +203,16 @@ export function ciOf(raw: RawPr["last"]): CiRead {
   return { rollup: roll.state ?? null, contexts, total: roll.contexts?.totalCount ?? contexts.length };
 }
 
+/** "Part of #81" links in a PR body (this repo's issues only), in order, each once. */
+export function partOfRefs(body: string | null): number[] {
+  const out: number[] = [];
+  for (const m of (body ?? "").matchAll(/\bpart of #(\d+)\b/gi)) {
+    const n = Number(m[1]);
+    if (!out.includes(n)) out.push(n);
+  }
+  return out;
+}
+
 export function prFacts(p: RawPr): PrFacts {
   return {
     number: p.number,
@@ -218,6 +228,7 @@ export function prFacts(p: RawPr): PrFacts {
     mergeable: p.mergeable,
     commits: p.commits?.totalCount ?? 0,
     closing: (p.closingIssuesReferences?.nodes ?? []).map((i) => ({ number: i.number, title: i.title, url: i.url, repo: i.repository.nameWithOwner, body: i.body ?? "" })),
+    partOf: partOfRefs(p.body),
     ci: ciOf(p.last),
     sections: parsePrSections(p.body),
     reviews: (p.reviews?.nodes ?? []).map((r) => ({ state: r.state, author: r.author?.login ?? null, commit: r.commit?.oid ?? null, at: r.submittedAt })),
