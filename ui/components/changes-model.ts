@@ -216,7 +216,7 @@ export function contextLine(ctx: FileContext, titles: Record<string, string>, dh
         )
         .join("; ")}.`;
     case "not-fired":
-      return `The injector logged nothing for this file in session ${ctx.sessions.map(short).join(", ")} (${ctx.otherEntries} firings for the PR's other files)${ctx.unreadLogs ? `; ${ctx.unreadLogs} other session log(s) could not be read` : ""}. The file may have been written by a shell command, which the injector does not see.`;
+      return `The injector logged nothing for this file in session ${ctx.sessions.map(short).join(", ")} (${ctx.otherEntries} firings for the PR's other files)${ctx.unreadLogs ? `; ${ctx.unreadLogs} other session log(s) could not be read` : ""}. The file may have been written by a shell command (the injector sees only Edit and Write) or in a session not tied to this PR.`;
     case "fired": {
       const names = ctx.boundaries.map((b) => boundaryName(b, dharana));
       const ex = ctx.patterns.find((p) => titles[p]);
