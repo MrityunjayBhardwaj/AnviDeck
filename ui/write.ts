@@ -30,6 +30,14 @@ export class WriteError extends Error {
  * server's status, body and own reason when it answers an error (a refusal included).
  */
 export async function write<T = unknown>(method: WriteMethod, url: string, body?: unknown): Promise<T> {
+  // Desktop app (#239): writes travel only over the app's private channel, never HTTP.
+  if (inDesktop()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const r = await invoke<{ status: number; body: unknown }>("write", { method, path: url, body: body ?? null });
+    const obj = r.body && typeof r.body === "object" ? (r.body as Record<string, unknown>) : {};
+    if (r.status < 200 || r.status >= 300) throw new WriteError(r.status, obj);
+    return r.body as T;
+  }
   const headers: Record<string, string> = {};
   const token = writeToken();
   // Sent without a token when the page has none: the server then refuses with its reason and logs it.
@@ -40,4 +48,9 @@ export async function write<T = unknown>(method: WriteMethod, url: string, body?
   const obj = j && typeof j === "object" ? (j as Record<string, unknown>) : {};
   if (!res.ok) throw new WriteError(res.status, obj);
   return j as T;
+}
+
+/** True inside the Tauri desktop window. */
+export function inDesktop(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }

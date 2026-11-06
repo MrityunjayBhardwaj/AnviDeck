@@ -8,6 +8,8 @@ import { watchHookLogs } from "./watchers/hook-logger";
 import { bindHost, isLoopback } from "./access";
 import { installGuard, serverWriteToken, withWriteToken } from "./guard";
 import { ActionLog, actionRoutes } from "./action-log";
+import { DESKTOP, DESKTOP_ORIGINS, emit, isPipe, serveWritePipe } from "./desktop";
+import { TOKEN_HEADER } from "./guard";
 
 const app = new Hono();
 
@@ -16,7 +18,12 @@ const app = new Hono();
 // accepted or refused, is recorded in the action log (#76). Installed before any route.
 const hostname = bindHost();
 const actionLog = new ActionLog();
-installGuard(app, { bind: hostname, token: serverWriteToken(), log: actionLog });
+installGuard(app, {
+  bind: hostname,
+  token: serverWriteToken(),
+  log: actionLog,
+  ...(DESKTOP ? { desktop: { origins: DESKTOP_ORIGINS, isPipe } } : {}),
+});
 app.route("/api/actions", actionRoutes(actionLog));
 
 // Mount API routes
@@ -68,7 +75,9 @@ app.get("/app.js", async (c) => {
 app.get("/*", async (c) => {
   if (c.req.path.startsWith("/api")) return c.text("Not found", 404);
   const path = join(UI_DIR, "index.html");
-  const html = withWriteToken(await Bun.file(path).text());
+  const raw = await Bun.file(path).text();
+  // In the desktop app the token never leaves this process: writes come only over the app's pipe.
+  const html = DESKTOP ? raw : withWriteToken(raw);
   // The token changes at every server start: a cached page would carry a stale one.
   return new Response(html, {
     headers: { "content-type": "text/html", "cache-control": "no-store" },
@@ -96,13 +105,13 @@ process.on("SIGINT", () => {
   process.exit(0);
 });
 
-const port = parseInt(process.env.PORT ?? "4000", 10);
+const port = parseInt(process.env.PORT ?? (DESKTOP ? "0" : "4000"), 10);
 const shown = hostname.includes(":") ? `[${hostname}]` : hostname;
-console.log(isLoopback(hostname)
+if (!DESKTOP) console.log(isLoopback(hostname)
   ? `AnviDeck server running at http://${shown}:${port} (this machine only; set HOST to listen elsewhere)`
   : `AnviDeck server running at http://${shown}:${port} (HOST=${hostname}: other machines on the network can reach it)`);
 
-export default {
+const serveOptions = {
   port,
   hostname,
   // Bun.serve closes a request that sends nothing for 10 s by default, and the
@@ -113,3 +122,24 @@ export default {
   fetch: app.fetch,
   websocket,
 };
+
+if (DESKTOP) {
+  // Desktop app (#239): started by the app as a sidecar. Pick a free port, tell the app which,
+  // and take writes only from the app's pipe on stdin. When the app closes stdin, stop.
+  const server = Bun.serve(serveOptions);
+  const bound = server.port ?? 0;
+  emit("READY", { port: bound });
+  void serveWritePipe(app, {
+    port: bound,
+    token: serverWriteToken(),
+    tokenHeader: TOKEN_HEADER,
+    onClose: () => {
+      stopWatching();
+      stopHookLogs();
+      agents.stopAll("AnviDeck app closed");
+      process.exit(0);
+    },
+  });
+}
+
+export default DESKTOP ? undefined : serveOptions;

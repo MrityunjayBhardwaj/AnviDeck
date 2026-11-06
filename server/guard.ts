@@ -166,8 +166,22 @@ export function logWrites(log: ActionLog, now: () => Date = () => new Date()): M
  * refusal), then localOnly (this machine only), then the write guard on /api. Every router
  * mounted afterwards under /api is guarded and logged without any code of its own.
  */
-export function installGuard(app: Hono, opts: { bind: string; token: string; log: ActionLog }): void {
+export function installGuard(
+  app: Hono,
+  opts: { bind: string; token: string; log: ActionLog; desktop?: { origins: readonly string[]; isPipe: (env: unknown) => boolean } },
+): void {
   app.use("/api/*", logWrites(opts.log));
-  app.use("/*", localOnly(opts.bind));
+  if (opts.desktop) {
+    // Desktop app (#239): no write is served over HTTP at all. Writes arrive only through the
+    // app's private pipe to this process, which calls app.fetch in-process with its own env.
+    const isPipe = opts.desktop.isPipe;
+    app.use("/*", async (c, next) => {
+      if (isWrite(c.req.method) && !isPipe(c.env)) {
+        return c.json({ error: "AnviDeck takes actions only from its own app window, never over HTTP" }, 403);
+      }
+      return next();
+    });
+  }
+  app.use("/*", localOnly(opts.bind, opts.desktop?.origins ?? []));
   app.use("/api/*", writeGuard(opts.token));
 }

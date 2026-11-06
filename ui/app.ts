@@ -1,3 +1,4 @@
+import "./desktop"; // must run first: points reads at the sidecar inside the desktop app (#239)
 import { api } from "./api";
 import { HomeScreen, refreshHomeAgents, updateHomeScreen, type HomeInput } from "./components/HomeScreen";
 import { ProjectView } from "./components/ProjectView";
