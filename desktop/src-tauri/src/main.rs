@@ -211,14 +211,23 @@ fn main() {
             if port != 0 {
                 init.push_str(&format!("window.__ANVIDECK_ORIGIN__ = 'http://127.0.0.1:{port}';"));
             }
-            // Already gone before the window opened: say so as soon as the page has loaded.
-            if let Some(msg) = gone.lock().unwrap().clone() {
-                init.push_str(&format!("window.addEventListener('DOMContentLoaded', function(){{{}}});", banner_js(&msg)));
-            }
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("AnviDeck")
                 .inner_size(1440.0, 900.0)
                 .initialization_script(&init)
+                // Every time a page finishes loading (the first load, a reload, the agent host
+                // page), say so again if the server is gone: a banner put in by eval does not
+                // survive a reload, and the server may have stopped before the window existed.
+                .on_page_load({
+                    let gone = gone.clone();
+                    move |w, p| {
+                        if matches!(p.event(), tauri::webview::PageLoadEvent::Finished) {
+                            if let Some(msg) = gone.lock().unwrap().clone() {
+                                let _ = w.eval(&banner_js(&msg));
+                            }
+                        }
+                    }
+                })
                 .on_navigation(|url| {
                     if is_own_page(url) {
                         return true;
