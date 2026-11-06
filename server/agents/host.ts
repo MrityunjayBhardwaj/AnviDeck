@@ -247,6 +247,15 @@ export class AgentHost {
    * is a predecessor (a process runs one host), so it is gone; any other pid is asked of the OS,
    * with its start time, so a pid the OS has handed to another process does not count (#224).
    */
+  /**
+   * The port this server actually listens on, once it is listening. PORT is only a request: the
+   * desktop app asks for any free port (0), so the owner record would otherwise name a port
+   * nobody serves (#240). Set before any agent can start, since starting one needs a request.
+   */
+  listeningOn(port: number): void {
+    if (Number.isInteger(port) && port > 0) this.owner.port = port;
+  }
+
   private ownerAliveDefault(o: AgentOwner): boolean {
     if (o.instance === this.owner.instance) return true;
     if (o.pid === process.pid) return false;

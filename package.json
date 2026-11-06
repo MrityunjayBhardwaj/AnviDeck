@@ -1,12 +1,15 @@
 {
   "name": "anvi-deck",
   "version": "0.1.0",
-  "description": "Cognitive framework observability deck for Ānvīkṣikī",
+  "description": "Cognitive framework observability deck for \u0100nv\u012bk\u1e63ik\u012b",
   "type": "module",
   "scripts": {
     "build": "bun run build.ts",
     "dev": "bun run build.ts && bun run server/index.ts",
-    "start": "bun run build.ts && bun run server/index.ts"
+    "start": "bun run build.ts && bun run server/index.ts",
+    "desktop:prepare": "bun desktop/build-frontend.ts && bun desktop/build-sidecar.ts",
+    "desktop:dev": "bun run desktop:prepare && cd desktop/src-tauri && cargo run",
+    "desktop:build": "bun run desktop:prepare && cd desktop/src-tauri && tauri build"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.318",

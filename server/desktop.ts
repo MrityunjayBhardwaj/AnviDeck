@@ -1,7 +1,7 @@
 import type { Hono } from "hono";
 
 /**
- * The desktop app's side of the sidecar (#239, spike).
+ * The desktop app's side of the sidecar (#239, #240).
  *
  * When ANVIDECK_DESKTOP=1 this server is started by the Tauri app as a sidecar. Reads stay on
  * HTTP on loopback; writes never arrive over HTTP (the guard refuses them). They arrive as one

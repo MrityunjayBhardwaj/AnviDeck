@@ -128,6 +128,7 @@ if (DESKTOP) {
   // and take writes only from the app's pipe on stdin. When the app closes stdin, stop.
   const server = Bun.serve(serveOptions);
   const bound = server.port ?? 0;
+  agents.listeningOn(bound);
   emit("READY", { port: bound });
   void serveWritePipe(app, {
     port: bound,
@@ -141,5 +142,8 @@ if (DESKTOP) {
     },
   });
 }
+
+// In the browser build Bun serves the default export; the port it binds is the one asked for.
+if (!DESKTOP) agents.listeningOn(port);
 
 export default DESKTOP ? undefined : serveOptions;

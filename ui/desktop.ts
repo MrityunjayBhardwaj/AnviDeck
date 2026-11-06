@@ -1,11 +1,14 @@
 /**
- * Desktop app reads (#239, spike). The window's pages are bundled in the app (tauri://localhost),
+ * Desktop app reads (#240). The window's pages are bundled in the app (tauri://localhost),
  * while reads are served by the sidecar on loopback. The app tells the page which port with
  * window.__ANVIDECK_ORIGIN__ before any script runs. This shim sends every same-origin read
  * ("/api/…", "/ws") there. Writes never come through here: ui/write.ts uses the app's channel.
  *
- * Spike shortcut: a global patch of fetch and WebSocket. The real migration (#240) should give
- * the UI one apiUrl() helper instead.
+ * Why one patch here and not an apiUrl() helper at each call: the UI reads in about 20 places
+ * (18 fetches, 2 WebSockets) across the screens. A helper would have to be remembered at every
+ * new one, and a read that forgot it would fail only in the app. Patched once, before any
+ * screen loads (this is the first import of app.ts and agent-host.ts), every read goes to the
+ * server and nothing else in the UI knows it runs in the app.
  */
 declare global {
   interface Window { __ANVIDECK_ORIGIN__?: string }
