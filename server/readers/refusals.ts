@@ -20,6 +20,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs"
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
+import { driverArgs, feedDriver, type DriverName } from "./node-drivers";
 import { listStructure, TMP_ROOT } from "./structure";
 import { readCalls } from "./calls";
 import type {
@@ -37,7 +38,6 @@ import type {
 
 const HOME = process.env.HOME ?? homedir();
 export const REFUSALS_SCRIPT = process.env.ANVIDECK_REFUSALS_SCRIPT ?? join(HOME, ".claude", "anvi", "scripts", "structure-refusals.js");
-const DRIVER = join(import.meta.dir, "refusals-driver.cjs");
 /** The instrument reads every transcript on the machine: 3 min 17 s on 4,404 transcripts (2026-11-05). */
 const RUN_TIMEOUT_MS = 10 * 60_000;
 export const CACHE_TTL_MS = 15 * 60_000;
@@ -118,7 +118,7 @@ function scratchTmp(): { dir: string; done: () => void } {
   return { dir, done: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
-function spawnNode(args: string[], withFd3: boolean, timeoutMs: number): Promise<Spawned> {
+function spawnNode(args: string[], withFd3: boolean, timeoutMs: number, driver?: DriverName): Promise<Spawned> {
   const tmp = scratchTmp();
   const t0 = Date.now();
   return new Promise<Spawned>((resolve) => {
@@ -128,8 +128,9 @@ function spawnNode(args: string[], withFd3: boolean, timeoutMs: number): Promise
     try {
       child = spawn("node", args, {
         env: { ...process.env, TMPDIR: tmp.dir },
-        stdio: withFd3 ? ["ignore", "pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"],
+        stdio: withFd3 ? [driver ? "pipe" : "ignore", "pipe", "pipe", "pipe"] : [driver ? "pipe" : "ignore", "pipe", "pipe"],
       });
+      if (driver) feedDriver(child.stdin, driver);
       child.stdout!.on("data", (d) => (stdout += d));
       child.stderr!.on("data", (d) => (stderr += d));
       if (withFd3) {
@@ -255,7 +256,7 @@ export async function runInstrument(project: string, pkgDir: string, win: Refusa
   let reasons: Record<string, { reason: string | null }> = {};
   let reasonErrors: Record<string, string> = {};
   if (wanted.length) {
-    const d = await spawnNode([DRIVER, script, JSON.stringify({ pkgDir: json.package ?? pkgDir, since: json.since ?? win.since, until: json.until ?? win.until, wanted })], false, 120_000);
+    const d = await spawnNode(driverArgs([script, JSON.stringify({ pkgDir: json.package ?? pkgDir, since: json.since ?? win.since, until: json.until ?? win.until, wanted })]), false, 120_000, "refusals");
     let r: any = null;
     try { r = JSON.parse(d.stdout); } catch { /* below */ }
     if (r && r.ok) {

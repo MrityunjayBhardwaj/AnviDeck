@@ -106,7 +106,7 @@ export function createAgentHost(
     const page = new Hono();
     page.get("/agent-host", (c) => c.text(reason, 503));
     page.get("/agent-host.js", (c) => c.text(reason, 503));
-    return { host: null, api, page, stopAll: (_why: string) => {} };
+    return { host: null, api, page, stopAll: (_why: string) => {}, listeningOn: (_port: number) => {} };
   }
   // `claude auth status` takes ~1s; read it once a minute at most.
   let cached: { at: number; value: Promise<LoginStatus> } | null = null;
@@ -132,5 +132,5 @@ export function createAgentHost(
     return new Response(f, { headers: { "content-type": "application/javascript" } });
   });
 
-  return { host, api: agentRoutes(host, login), page, stopAll: (why: string) => host.stopAll(why) };
+  return { host, api: agentRoutes(host, login), page, stopAll: (why: string) => host.stopAll(why), listeningOn: (port: number) => host.listeningOn(port) };
 }

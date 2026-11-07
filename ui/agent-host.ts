@@ -3,6 +3,7 @@
  * plain; the Agents screen (#82) and the shell (#80) replace it. Served at /agent-host.
  * All text from agents is set with textContent, never as HTML.
  */
+import "./desktop"; // in the desktop app, reads go to the bundled server (#240)
 import { write, type WriteMethod } from "./write";
 
 import { messagesIn, parseMessageRequest, renderForAgent } from "../shared/agent-messages";

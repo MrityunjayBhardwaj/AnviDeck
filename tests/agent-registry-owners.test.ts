@@ -434,3 +434,21 @@ describe("a registry lock held at start-up or at a status write (review of #226)
     expect(onDisk(dir).find((r) => r.id === a.id)!.processAlive).toBeUndefined();
   });
 });
+
+describe("the owner names the port the server listens on (#240)", () => {
+  test("a server asked for any free port records the port it got, not PORT's default", async () => {
+    const dir = scratch();
+    const host = new AgentHost({
+      registry: new AgentRegistry(dir),
+      query: quickJob,
+      resolveClaude: () => CLAUDE,
+      env: () => loginOnlyEnv({ PATH: "/usr/bin" }),
+      ownerAlive: () => true,
+    });
+    host.listeningOn(0); // not a port: ignored
+    host.listeningOn(51234);
+    const a = host.start({ cwd: scratch(), prompt: "job" });
+    await until(() => host.get(a.id).status === "done");
+    expect(onDisk(dir).find((r) => r.id === a.id)!.owner!.port).toBe(51234);
+  });
+});

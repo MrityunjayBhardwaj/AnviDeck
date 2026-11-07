@@ -5,3 +5,6 @@ dist/
 
 # Ānvīkṣikī — catalogues live in ~/.anvideck (anvi_artifacts); .anvi here is a symlink
 .anvi
+
+# bun build --compile leaves these behind
+*.bun-build
