@@ -51,8 +51,8 @@ The prototype's frame replaces today's sidebar:
  browser (this       │                                                                              │
  machine only) ──────┤  GET  /api/...  ──► READERS (server/readers/*)      read-only: files, git, gh │
                      │                                                                              │
-                     │  write endpoints ─► origin + token check ─► AGENT HOST ─► Claude Agent SDK    │
-                     │  (#76, on main)          │                  (planned, #75)  query() ──► installed
+                     │  writes: app window ─► stdin ─► guard ─► AGENT HOST ─► Claude Agent SDK      │
+                     │  (#241; none on HTTP)    │                  (planned, #75)  query() ──► installed
                      │                          └─► action log (AnviDeck's own store folder)  `claude`
                      │  WebSocket /ws  ◄── hook-log watcher (exists); agent message stream (planned)│
                      └──────────────────────────────────────────────────────────────────────────────┘
@@ -92,13 +92,13 @@ Agents AnviDeck starts write two PR-body sections with a fixed shape: **Evidence
 | Guard | Status |
 |---|---|
 | Listens on `127.0.0.1` unless `HOST` is set; refuses a request whose Host is not a loopback name or whose Origin is another page (`server/access.ts`, tested in `tests/access.test.ts`) | **Exists** (#66) |
-| Every write endpoint requires the same origin and a per-server token placed in the page | Planned (#76) |
+| Nothing sent over HTTP can act: writes come only from the desktop app's window, over its private channel; no token in the page | On `main` (#241; replaced #76's token check) |
 | Every action (what, target, result, time) appended to an action log in AnviDeck's own store folder and shown in History | Logged (#76); History shows the lines that name a project (#90) |
 | Readers can't act: a test fails if a reader imports the agent host or writes a file | Planned (#76) |
 | Agents on the Claude Code login only (see Agent host) | Planned (#75) |
 | Your permission rules apply as in the terminal; only uncovered calls reach AnviDeck; no timeout allows a call | **Exists** (#77) |
 | Merge only the reviewed head, into the base the page showed; refused (409 with the current head or base) if either changed | **Exists** (#85) |
-| Merge only by you: no agent can cause a merge | **Partial**: the write token is in the page, so any process on this machine (an agent's shell included) can read it and call Merge; today this rests on agents not trying and on your permission rules (#147) |
+| Merge only by you: no agent can cause a merge | **Partial**: AnviDeck's Merge exists only behind the desktop app's channel (#241), so no other process can call it. An agent's shell still runs on your `gh` login and can merge on GitHub directly; that needs the agent sandbox and a separate GitHub account (#147) |
 | Code-screen edits only to files no running agent is touching, each through the action log | Planned (#88) |
 
 ### Stack
@@ -224,7 +224,7 @@ ref/                      ANVI_THESIS.md, DATA_EXAMPLES.md
 
 **Information density over visual flair.** An engineering instrument: Grafana, Bloomberg, a cockpit. Not Notion or Linear.
 
-**Readers read; one module acts.** Every action goes through the agent host or the action log, behind the origin and token check, and is recorded.
+**Readers read; one module acts.** Every action goes through the agent host or the action log, reaches AnviDeck only through the desktop app's private channel (never HTTP), and is recorded.
 
 **You decide; agents do.** Agents propose and change; you answer permission requests, review and merge. Agents never merge.
 
@@ -249,7 +249,7 @@ ref/                      ANVI_THESIS.md, DATA_EXAMPLES.md
 ## Success Criteria (the workspace)
 
 1. An agent started from AnviDeck runs on the Claude Code login (`apiKeySource: none` shown), streams to the page, survives a page reload, and is listed as stopped after a server restart and resumes (#75).
-2. A write from another origin, or without the token, is refused; every action appears in the log with its result (#76).
+2. Any write sent over HTTP is refused, whatever it carries; actions come only from the desktop app's window; every action appears in the log with its result (#76, #241).
 3. A permission request appears on Home and the agent's card within a second; Allow lets the call run; Deny stops it with the message (#77).
 4. Starting from a real issue creates the worktree with both links resolving, and the agent's first edit shows the anvi context it was given (#78).
 5. Every prototype screen is reachable from the rail, by URL and from ⌘K (#80), and each shows real figures with their source and date.

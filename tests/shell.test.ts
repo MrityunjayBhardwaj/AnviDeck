@@ -128,7 +128,7 @@ describe("guards indicator", () => {
   test("says Guards on only when every listed guard is on", () => {
     expect(guardsLabel(GUARDS).text).toBe("Guards on");
     expect(guardsLabel(GUARDS).state).toBe("on");
-    expect(guardsLabel(GUARDS.map((g, i) => ({ ...g, on: i !== 0 })))).toEqual({ text: "Guards: 3 of 4 on", state: "partial" });
+    expect(guardsLabel(GUARDS.map((g, i) => ({ ...g, on: i !== 0 })))).toEqual({ text: `Guards: ${GUARDS.length - 1} of ${GUARDS.length} on`, state: "partial" });
     expect(guardsLabel(GUARDS.map((g) => ({ ...g, on: true })))).toEqual({ text: "Guards on", state: "on" });
   });
 

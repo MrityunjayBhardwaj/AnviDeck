@@ -21,16 +21,10 @@ export const GUARDS: readonly Guard[] = [
     code: { file: "server/access.ts", has: "export function localOnly" },
   },
   {
-    what: "Writes only from AnviDeck's own pages: a write must carry this server's Origin",
+    what: "Nothing sent over HTTP can act: every write is refused there; actions come only from the desktop app's window, over its private channel",
     on: true,
-    where: "writeGuard in server/guard.ts (#75, #76)",
-    code: { file: "server/guard.ts", has: "export function writeGuard" },
-  },
-  {
-    what: "A per-server token on every write, placed in AnviDeck's own pages",
-    on: true,
-    where: "writeGuard and withWriteToken in server/guard.ts (#76)",
-    code: { file: "server/guard.ts", has: "export function withWriteToken" },
+    where: "writesOnlyFromApp in server/guard.ts, dispatch in server/desktop.ts (#241)",
+    code: { file: "server/guard.ts", has: "export function writesOnlyFromApp" },
   },
   {
     what: "Every write written to an action log, refused ones included",
