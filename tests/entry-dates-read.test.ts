@@ -160,10 +160,12 @@ exec "${realGit}" "$@"
     const prev = setDatesGitTimeoutMs(400);
     try {
       const t0 = performance.now();
-      const r = await withFakeGit("hang", () => peekEntryDatesForFile(join(repo, "krama.md"), 4000));
+      // Patient enough for the worst case, 0.4 s plus the 3 s wait when a child's output never ends (#253), so a slow
+      // answer is never read as "pending".
+      const r = await withFakeGit("hang", () => peekEntryDatesForFile(join(repo, "krama.md"), 9000));
       expect(r.state).toBe("failed");
       if (r.state === "failed") expect(r.err).toContain("did not finish within 0.4 s");
-      // Stopped, not waited out: the stand-in would hang for 30 s. (The wait after the exit can take a few seconds: #253.)
+      // Stopped, not waited out: the stand-in would hang for 30 s.
       expect(performance.now() - t0).toBeLessThan(10_000);
     } finally {
       setDatesGitTimeoutMs(prev);

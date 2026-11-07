@@ -76,16 +76,17 @@ function collect(stream: ReadableStream<Uint8Array>, onData: () => void) {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let text = "";
+  // True only when the stream reached its end. One that failed may have been cut short, so it has not ended.
   const finished = (async () => {
     try {
       for (;;) {
         const { value, done } = await reader.read();
-        if (done) return;
+        if (done) return true;
         text += decoder.decode(value, { stream: true });
         onData();
       }
     } catch {
-      // Stopped by stop() below, or the stream failed: what arrived is what there is.
+      return false;
     }
   })();
   return { finished, text: () => text, stop: () => void reader.cancel().catch(() => {}) };
@@ -104,9 +105,9 @@ export async function readProcess(
   const code = await proc.exited;
   const ended = await new Promise<boolean>((resolve) => {
     const cancel = whenQuiet(() => last, quietMs, () => resolve(false));
-    void Promise.all([out.finished, err.finished]).then(() => {
+    void Promise.all([out.finished, err.finished]).then(([outEnded, errEnded]) => {
       cancel();
-      resolve(true);
+      resolve(outEnded && errEnded);
     });
   });
   if (!ended) {

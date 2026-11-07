@@ -108,6 +108,20 @@ describe("plain text that never ended is not taken as the answer", () => {
   }, 15_000);
 });
 
+test("Bun.spawn output whose stream fails has not ended, so it is never taken as whole", async () => {
+  const bytes = new TextEncoder().encode("part of a log");
+  let pulls = 0;
+  const failing = new ReadableStream<Uint8Array>({
+    pull(c) {
+      if (pulls++ === 0) c.enqueue(bytes);
+      else c.error(new Error("the stream broke"));
+    },
+  });
+  const empty = new ReadableStream<Uint8Array>({ start: (c) => c.close() });
+  const r = await readProcess({ stdout: failing, stderr: empty, exited: Promise.resolve(0) }, "test child", QUIET);
+  expect(r).toMatchObject({ code: 0, ended: false, stdout: "part of a log" });
+});
+
 test("a caller's reason says why the output was not used", () => {
   expect(outputNeverEnded("git log")).toBe("git log exited, but its output never ended, so it may be cut short and was not used");
 });
