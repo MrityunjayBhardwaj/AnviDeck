@@ -10,7 +10,8 @@ import { AgentHost, type QueryFn } from "../server/agents/host";
 import { AgentRegistry } from "../server/agents/registry";
 import { loginOnlyEnv } from "../server/agents/login";
 import { agentRoutes } from "../server/routes/agents";
-import { installGuard, TOKEN_HEADER } from "../server/guard";
+import { installGuard } from "../server/guard";
+import { dispatch, isFromApp } from "../server/desktop";
 import { ActionLog, type ActionRecord } from "../server/action-log";
 import {
   askSummary,
@@ -177,7 +178,6 @@ describe("answering on the host", () => {
 });
 
 describe("the route", () => {
-  const TOKEN = "test-token-0123456789abcdef";
   const HOST = "localhost:4475";
   const ORIGIN = `http://${HOST}`;
 
@@ -185,13 +185,18 @@ describe("the route", () => {
     const h = asking();
     const log = new ActionLog(scratch());
     const app = new Hono();
-    installGuard(app, { bind: "127.0.0.1", token: TOKEN, log });
+    installGuard(app, { bind: "127.0.0.1", log, isFromApp });
     app.route("/api/agents", agentRoutes(h.host, async () => ({ ok: true })));
     const send = (path: string, headers: Record<string, string>, body: unknown) =>
       app.request(`http://${HOST}${path}`, { method: "POST", headers: { host: HOST, "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
+    /** An answer from the app's window, over its private channel (#241). */
+    const viaApp = async (path: string, body: unknown) => {
+      const r = await dispatch(app, { method: "POST", path, body }, HOST);
+      return { status: r.status, json: async () => r.body };
+    };
     const get = (path: string) => app.request(`http://${HOST}${path}`, { headers: { host: HOST } });
     const lines = (): ActionRecord[] => readFileSync(log.file, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
-    return { h, send, get, lines };
+    return { h, send, viaApp, get, lines };
   }
 
   test("a parked request is in GET /api/agents (a reloaded page finds it); an answer is a guarded, logged write", async () => {
@@ -201,18 +206,19 @@ describe("the route", () => {
     expect(listed.agents.find((a) => a.id === id)?.pendingPermissions).toMatchObject([{ requestId, toolName: "Write", input: { file_path: "/tmp/x.txt" } }]);
 
     const path = `/api/agents/${id}/permissions/${requestId}`;
-    const noToken = await s.send(path, { origin: ORIGIN }, { decision: "allow" });
-    expect(noToken.status).toBe(403);
+    // Over HTTP, even from AnviDeck's own Origin: refused (#241).
+    const overHttp = await s.send(path, { origin: ORIGIN }, { decision: "allow" });
+    expect(overHttp.status).toBe(403);
     expect(s.h.host.get(id).pendingPermissions.length).toBe(1);
 
-    const bad = await s.send(path, { origin: ORIGIN, [TOKEN_HEADER]: TOKEN }, { decision: "perhaps" });
+    const bad = await s.viaApp(path, { decision: "perhaps" });
     expect(bad.status).toBe(400);
 
-    const ok = await s.send(path, { origin: ORIGIN, [TOKEN_HEADER]: TOKEN }, { decision: "deny", message: "not now" });
+    const ok = await s.viaApp(path, { decision: "deny", message: "not now" });
     expect(ok.status).toBe(200);
     expect(((await ok.json()) as { pendingPermissions: unknown[] }).pendingPermissions).toEqual([]);
 
-    const again = await s.send(path, { origin: ORIGIN, [TOKEN_HEADER]: TOKEN }, { decision: "allow" });
+    const again = await s.viaApp(path, { decision: "allow" });
     expect(again.status).toBe(409);
     expect(((await again.json()) as { error: string }).error).toContain("no longer waiting");
 

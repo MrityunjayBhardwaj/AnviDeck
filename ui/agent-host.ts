@@ -3,10 +3,12 @@
  * plain; the Agents screen (#82) and the shell (#80) replace it. Served at /agent-host.
  * All text from agents is set with textContent, never as HTML.
  */
+import "./desktop"; // in the desktop app, reads go to the bundled server (#240)
 import { write, type WriteMethod } from "./write";
 
 import { messagesIn, parseMessageRequest, renderForAgent } from "../shared/agent-messages";
 import type { PendingPermission } from "../shared/permission-requests";
+import { elsewhereText, type RunsElsewhere } from "../shared/agent-elsewhere";
 import { agentRequests, keepCardsOf, onAnswerSent } from "./components/PermissionRequests";
 
 interface Agent {
@@ -29,6 +31,7 @@ interface Agent {
   runs: number;
   messageCount: number;
   running: boolean;
+  runsElsewhere?: RunsElsewhere;
   pendingPermissions: PendingPermission[];
 }
 interface Line { seq: number; at: string; from: "sdk" | "host"; message: Record<string, unknown> }
@@ -60,10 +63,10 @@ class ApiError extends Error {
   }
 }
 
-/** Every request this page makes goes through here, so the write token (#76) is one line. */
+/** Every request this page makes goes through here: reads over HTTP, writes through the one write helper. */
 async function call(method: string, path: string, body?: unknown): Promise<unknown> {
   const url = `/api/agents${path === "/" ? "" : path}`;
-  // Every write goes through the one write helper (token + reason on refusal), then the
+  // Every write goes through the one write helper (the app's channel, #241; the reason on refusal), then the
   // action list is re-read so the write shows up there, refused or not.
   if (method !== "GET") return write(method as WriteMethod, url, body).finally(() => void renderActions());
   const res = await fetch(url, {
@@ -225,7 +228,9 @@ function renderList(): void {
   for (const a of rows) {
     const live = a.running;
     const actions = el("td", {});
-    if (live) {
+    if (a.runsElsewhere) {
+      actions.append(el("span", { class: "k", "data-elsewhere": String(a.runsElsewhere.port ?? "") }, `${elsewhereText(a.runsElsewhere)}; act on it there`));
+    } else if (live) {
       const b = el("button", { "data-act": "stop" }, "Stop");
       b.onclick = (ev) => { ev.stopPropagation(); void act(() => call("POST", `/${a.id}/stop`)); };
       actions.append(b);

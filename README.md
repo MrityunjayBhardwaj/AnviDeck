@@ -43,6 +43,21 @@ bun run dev          # builds the UI, then starts the server
 
 AnviDeck serves your session transcripts, memory and catalogues, so it answers only this machine's own browser: it listens on `127.0.0.1`, and it refuses requests from other web pages (including their WebSockets) and requests naming any host other than this machine. Set `HOST=0.0.0.0` only if you really want other machines on your network to reach it; other web pages are still refused.
 
+### 🖥️ Desktop app (in progress, milestone "Desktop app (Tauri)")
+
+AnviDeck is moving to a desktop app built with [Tauri](https://tauri.app) (#240). The window shows the same screens. The server runs inside the app as a sidecar: reads come from it on a loopback port, and every action goes over the app's private channel to it, never over HTTP. Nothing sent over HTTP can make AnviDeck act (#241), so the browser build (`bun run dev`) is read-only: you can look, and you act in the app. Requires Bun and a Rust toolchain (`rustc`, `cargo`; on macOS the Xcode command-line tools).
+
+```bash
+bun install
+bun run desktop:dev     # builds the UI and the server binary, then opens the app (debug build)
+bun run desktop:build   # the same, then a release AnviDeck.app under desktop/src-tauri/target/release/bundle/
+```
+
+- The UI is bundled into the app (`desktop/frontend`, made by `desktop/build-frontend.ts`); the server is compiled with `bun build --compile` into `desktop/src-tauri/binaries/` (`desktop/build-sidecar.ts`). Both are build output and not committed.
+- The window shows only AnviDeck's own pages; a link to GitHub opens in your browser.
+- If the server cannot start, or stops, the window says so in a red bar at the top.
+- Release builds have no developer tools. `cargo build --features e2e` adds a WebDriver port for end-to-end checks (#242); it can press any button, so it is never part of a normal build.
+
 ## 🔭 The six views
 
 | View | What it shows |

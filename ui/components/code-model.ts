@@ -278,6 +278,14 @@ export function savedAs(base: WorkingFile, content: string, r: EditResult): Work
   return { ...base, text: content, hash: r.after, bytes: r.bytes, readAt: r.writtenAt };
 }
 
+/**
+ * The working copy as this page may treat it. Only the desktop app's window can write (#241), so
+ * in a browser a file nobody is touching is still read-only, and says why before anything is typed.
+ */
+export function workingHere(w: WorkingFile, canWrite: boolean, why: string): WorkingFile {
+  return w.editable && !canWrite ? { ...w, editable: false, reason: why } : w;
+}
+
 /** The head's state words. */
 export function editState(enabled: boolean, w: { state: "loading" } | { state: "error"; error: string } | { state: "ok"; value: WorkingFile } | null): string {
   if (!enabled) return "read-only while agents work";

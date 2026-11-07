@@ -1,48 +1,36 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Hono, MiddlewareHandler } from "hono";
 import { localOnly } from "./access";
 import type { ActionLog, ActionRecord } from "./action-log";
 
 /**
- * Who may make AnviDeck act, and the record of every time something asked (#76).
+ * Who may make AnviDeck act, and the record of every time something asked (#76, #241).
  *
- * Reads stay open to this machine's own browser (localOnly). A write (any method other than
- * GET or HEAD under /api) is accepted only when
- *   - its Origin is present and names this server (a page on this server asked), and
- *   - it carries this server's write token in the X-AnviDeck-Token header.
- * The token is random per server start, never written to disk or a log, and reaches pages only
- * inside the HTML this server serves (a meta tag). Another page in the same browser can send a
- * request to localhost, but it cannot read our HTML, so it cannot learn the token.
+ * Nothing that reaches AnviDeck over HTTP can make it act. Reads (GET, HEAD) are served on
+ * loopback to this machine (localOnly); every other request over HTTP is refused, whatever it
+ * carries. A write runs only when it arrives through the desktop app's private channel: the
+ * window's `invoke` → the app's Rust command → this process's stdin, handed to the app
+ * in-process with the channel's own env (server/desktop.ts). No port, token or header can
+ * forge that env, so no other process on the machine (an agent's shell included) can act.
+ *
+ * Before #241 a write over HTTP was accepted with this server's token, which was placed in the
+ * page; any local process could read the page, so the token stopped other web pages but not
+ * local programs (#147). The token is gone.
  *
  * Every write, accepted or refused, is appended to the action log with its final status.
  */
 
-export const TOKEN_HEADER = "x-anvideck-token";
-export const TOKEN_META = "anvideck-write-token";
+export const isWrite = (method: string) => method !== "GET" && method !== "HEAD";
 
-const isWrite = (method: string) => method !== "GET" && method !== "HEAD";
+/** The answer to any write that reached AnviDeck over HTTP. */
+export const HTTP_WRITE_REFUSAL =
+  "AnviDeck takes actions only from its desktop app's window, over the app's private channel; nothing sent over HTTP can act, so this page and this port are read-only";
 
-let processToken: string | null = null;
-/** This server's write token: made once per process start, kept only in memory. */
-export function serverWriteToken(): string {
-  if (!processToken) processToken = randomBytes(32).toString("base64url");
-  return processToken;
-}
-
-/** Constant-time comparison: both sides are hashed first, so lengths never leak or throw. */
-export function tokenMatches(given: string | undefined, expected: string): boolean {
-  if (given === undefined || expected === "") return false;
-  const a = createHash("sha256").update(given).digest();
-  const b = createHash("sha256").update(expected).digest();
-  return timingSafeEqual(a, b);
-}
-
-/** Put the token into a page this server serves, as <meta name="anvideck-write-token">. */
-export function withWriteToken(html: string, token: string = serverWriteToken()): string {
-  const i = html.indexOf("</head>");
-  if (i < 0) throw new Error("page has no </head>; cannot place the write token");
-  // base64url never needs HTML escaping.
-  return `${html.slice(0, i)}<meta name="${TOKEN_META}" content="${token}">\n${html.slice(i)}`;
+/** Refuse every write that did not come through the app's channel (#241). */
+export function writesOnlyFromApp(isFromApp: (env: unknown) => boolean): MiddlewareHandler {
+  return async (c, next) => {
+    if (isWrite(c.req.method) && !isFromApp(c.env)) return c.json({ error: HTTP_WRITE_REFUSAL }, 403);
+    return next();
+  };
 }
 
 /** Why a write's Origin is refused, or null when it names this server. */
@@ -59,8 +47,8 @@ function originRefusal(origin: string | undefined, host: string): string | null 
 /**
  * Writes must come from one of AnviDeck's own pages: the Origin header must be present and name
  * this server. localOnly already refuses a foreign Origin; this also refuses a write that carries
- * none (a bare curl, or a client that strips it). Kept on its own for routers mounted without
- * the full guard (e.g. in tests); writeGuard adds the token.
+ * none (a bare curl, or a client that strips it). A second check inside the write routers, for
+ * routers mounted without the full guard (tests); the app's channel sends this server's Origin.
  */
 export const sameOriginWrites: MiddlewareHandler = async (c, next) => {
   if (!isWrite(c.req.method)) return next();
@@ -68,23 +56,6 @@ export const sameOriginWrites: MiddlewareHandler = async (c, next) => {
   if (why) return c.json({ error: why }, 403);
   return next();
 };
-
-/** Same origin AND this server's token on every write. */
-export function writeGuard(token: string): MiddlewareHandler {
-  return async (c, next) => {
-    if (!isWrite(c.req.method)) return next();
-    const why = originRefusal(c.req.header("origin"), c.req.header("host") ?? "");
-    if (why) return c.json({ error: why }, 403);
-    const given = c.req.header(TOKEN_HEADER);
-    if (given === undefined || given === "") {
-      return c.json({ error: "this write carries no AnviDeck token; only pages this server served can act (reload the page)" }, 403);
-    }
-    if (!tokenMatches(given, token)) {
-      return c.json({ error: "this write's AnviDeck token is not this server's (the server may have restarted: reload the page)" }, 403);
-    }
-    return next();
-  };
-}
 
 const PREVIEW = 80;
 const MAX_BODY_READ = 64 * 1024;
@@ -130,8 +101,8 @@ function areaAndTarget(path: string): { area: string; target?: string } {
 
 /**
  * Append one line per write to the action log, after the request has been answered, with the
- * status it got. Installed before every other middleware, so refusals by localOnly and the write
- * guard are recorded too: refused writes are the interesting ones.
+ * status it got. Installed before every other middleware, so refusals by writesOnlyFromApp and
+ * localOnly are recorded too: refused writes are the interesting ones.
  */
 export function logWrites(log: ActionLog, now: () => Date = () => new Date()): MiddlewareHandler {
   return async (c, next) => {
@@ -168,7 +139,7 @@ export function logWrites(log: ActionLog, now: () => Date = () => new Date()): M
       area,
       target: fromPath ?? id,
       status,
-      // Nothing but the guard and localOnly answers 403 under /api; a failed write is the route's own answer.
+      // Nothing but the guard, localOnly and the routers' Origin check answer 403 under /api; a failed write is the route's own answer.
       result: status === 403 ? "refused" : status < 400 ? "accepted" : "failed",
       reason,
       body,
@@ -179,11 +150,15 @@ export function logWrites(log: ActionLog, now: () => Date = () => new Date()): M
 
 /**
  * Install the whole guard on an app, in the one order that works: log first (so it sees every
- * refusal), then localOnly (this machine only), then the write guard on /api. Every router
- * mounted afterwards under /api is guarded and logged without any code of its own.
+ * refusal), then refuse every write that did not come through the app's channel, then localOnly
+ * (this machine only). Every router mounted afterwards is guarded and logged without any code of
+ * its own. `isFromApp` says whether a request came through the channel (desktop.ts isFromApp).
  */
-export function installGuard(app: Hono, opts: { bind: string; token: string; log: ActionLog }): void {
+export function installGuard(
+  app: Hono,
+  opts: { bind: string; log: ActionLog; isFromApp: (env: unknown) => boolean; origins?: readonly string[] },
+): void {
   app.use("/api/*", logWrites(opts.log));
-  app.use("/*", localOnly(opts.bind));
-  app.use("/api/*", writeGuard(opts.token));
+  app.use("/*", writesOnlyFromApp(opts.isFromApp));
+  app.use("/*", localOnly(opts.bind, opts.origins ?? []));
 }

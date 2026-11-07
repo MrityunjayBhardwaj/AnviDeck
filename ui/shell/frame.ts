@@ -52,7 +52,7 @@ export function paintTopBar(el: HTMLElement, inp: TopBarInput): void {
       <div class="sh-pop-wrap">
         <button class="sh-btn sh-help" type="button" aria-haspopup="true" aria-expanded="false">? Help</button>
         <div class="sh-pop sh-help-pop">
-          <a href="#flows">Walk the example flows <span class="sh-dim">(#91)</span></a>
+          <a href="#flows">Walk the example flows</a>
           <button type="button" class="sh-help-palette">Search and commands (⌘K)</button>
         </div>
       </div>

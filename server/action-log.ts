@@ -10,7 +10,7 @@ import { DEFAULT_AGENT_DIR } from "./agents/registry";
  *
  * A line holds what was asked (method, path, area, target), how it ended (status, result,
  * the short reason AnviDeck answered) and a preview of the body (strings cut short). Never a
- * header, so never the write token. History (#90) will read it through GET /api/actions.
+ * header. History (#90) reads it through GET /api/actions.
  */
 
 export interface ActionRecord {

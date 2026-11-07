@@ -11,7 +11,7 @@ import { spawnSync } from "node:child_process";
 import { citesIn, cleanRelPath, parseBlame, placeCites, readCodeTree } from "../server/readers/code";
 import { onlyFile } from "../server/routes/refusals";
 import { ALL_TIME, windowOf } from "../server/readers/refusals";
-import { breakingEdges, buildTree, countsLine, defaultFile, editState, importLines, lineMarks, marks, refusalsSource, resolveSpec, gutterOf } from "../ui/components/code-model";
+import { breakingEdges, buildTree, countsLine, defaultFile, editState, importLines, lineMarks, marks, refusalsSource, resolveSpec, gutterOf, workingHere } from "../ui/components/code-model";
 import type { CodeTreeOk, WorkingFile } from "../shared/code-types";
 import type { Refusal, RefusalsMeasured, RefusalsResponse } from "../shared/refusal-types";
 import type { StructureEdge, StructureMeasured, StructureNoDesign } from "../shared/structure-types";
@@ -309,5 +309,24 @@ describe("the head says why a file is read-only", () => {
     expect(editState(true, { state: "ok", value: w({ editable: false, touching: [{ id: "ag-1", status: "working", why: "edited this file", detail: "d" }] }) })).toBe("read-only: edited this file (ag-1)");
     expect(editState(true, { state: "ok", value: w({ editable: false, reason: "host off" }) })).toBe("read-only: host off");
     expect(editState(true, { state: "error", error: "404" })).toBe("read-only: 404");
+  });
+});
+
+describe("editing belongs to the desktop window (#241, #244)", () => {
+  const w = { project: "p", path: "src/a.ts", abs: "/r/src/a.ts", text: "x", hash: "h", bytes: 1, touching: [], editable: true, rule: "r", readAt: "t" } as unknown as WorkingFile;
+
+  test("in a browser a free file is read-only and says why, before anything is typed", () => {
+    const here = workingHere(w, false, "only the app acts");
+    expect(here.editable).toBe(false);
+    expect(editState(true, { state: "ok", value: here })).toBe("read-only: only the app acts");
+  });
+
+  test("in the window a free file stays editable", () => {
+    expect(workingHere(w, true, "only the app acts")).toBe(w);
+  });
+
+  test("a file an agent holds keeps its own reason, in the window and out of it", () => {
+    const held = { ...w, editable: false, reason: "an agent is working on it" };
+    expect(workingHere(held, false, "only the app acts").reason).toBe("an agent is working on it");
   });
 });

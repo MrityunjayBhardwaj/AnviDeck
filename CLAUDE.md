@@ -19,8 +19,8 @@ AnviDeck started as an observability dashboard that only read the framework's fi
 **What AnviDeck will write once the workspace lands** (none of this is on `main` yet):
 - Agent actions: start an agent (#75), in its own worktree and branch for an issue (#78, on main: `POST /api/agents/from-issue`); stop and resume it; answer its permission requests (#77); send it messages and diff comments (#79).
 - Merge a PR, only when you press **Merge**, and only the head you reviewed (#85).
-- Edit a file from the Code screen, only one no running agent is touching, and never a catalogue, a Ground Truth doc or Claude Code's configuration (#88; `server/code-edit.ts`, in its PR).
-- Its own records, in AnviDeck's own folder in the store: the action log (#76), your calls on blocked edits (#86: recorded from the Agents screen's refusal card into `calls.jsonl`; Design and History will show them), the agent registry (#75).
+- Edit a file from the Code screen, only one no running agent is touching, and never a catalogue, a Ground Truth doc or Claude Code's configuration (#88, #244; `server/code-edit.ts`, in its PR; only from the desktop app's window).
+- Its own records, in AnviDeck's own folder in the store: the action log (#76), your calls on blocked edits (#86: recorded from the Agents screen's refusal card, Design's trial record and History into `calls.jsonl`; Design (#87) and History's timeline (#90) show them), the agent registry (#75).
 
 **Changed only by agents, not by AnviDeck directly:** catalogues (`.anvi/`), memory and Ground Truth docs. A change to them (Re-check a batch, Promote) starts an agent with that task (#89); the agent makes the change, as in a terminal session.
 
@@ -29,11 +29,11 @@ AnviDeck started as an observability dashboard that only read the framework's fi
 | Guard | Status |
 |---|---|
 | This machine only: listens on `127.0.0.1` unless `HOST` is set; refuses a request whose Host is not a loopback name or whose Origin is another page (`server/access.ts`, `tests/access.test.ts`) | On `main` (#66) |
-| Every write endpoint requires the same origin **and** a per-server token placed in the page; anything else is refused (`server/guard.ts`, installed on the whole app before any route; pages write through `ui/write.ts`; `tests/write-guard.test.ts`) | On `main` (#76) |
-| Every action (what, target, result, time) is appended to the action log (`actions.jsonl` in the agent registry folder; `GET /api/actions`) and shown in History | Logged on `main` (#76); History planned (#90) |
+| Nothing sent over HTTP can act: every request other than GET is refused on every port. Actions come only from the desktop app's window, over its private channel (`invoke("write")` → the app's Rust command → the server's stdin → `dispatch` in `server/desktop.ts`). The page carries no token. In a browser AnviDeck is read-only (`server/guard.ts` `writesOnlyFromApp`; `ui/write.ts`; `tests/no-http-writes.test.ts` sends every non-GET route the real app has over a real port) | On `main` (#241); the write-token check it replaces was #76 |
+| Every action (what, target, result, time) is appended to the action log (`actions.jsonl` in the agent registry folder; `GET /api/actions`) and shown in History | Logged on `main` (#76); shown in History, the lines that name a project (#90) |
 | Agents run on the installed Claude Code and its claude.ai login, never an API key: API-key and provider variables are removed from each agent's environment, and an agent whose init message reports an `apiKeySource` other than `none` is stopped at once | Planned (#75) |
 | Your normal permission rules apply, as in the terminal; only calls they don't cover come to AnviDeck, on Home, the agent's card on Agents and its row of `/agent-host`, with Allow / Deny (`POST /api/agents/:id/permissions/:requestId`, `shared/permission-requests.ts`, `tests/permission-requests.test.ts`). A request nobody answers keeps waiting, and a timeout never allows it; if the agent stops it is withdrawn | On `main` (#77) |
-| Agents never merge; Merge is a button only you press | Partly. An agent started from an issue is told so in its prompt (#78, on main). Merge on Work squash-merges only the head and into the base the page showed, else 409 (#85). **Not enforced against agents:** any process on this machine, an agent's shell included, can fetch a page, read its write token and call `POST /api/prs/:n/merge`, or Code's `POST /api/code/:project/edit` (#88, in its PR); it rests on agents not trying and on your permission rules for their commands (#147, open) |
+| Agents never merge; Merge is a button only you press | Partly. An agent started from an issue is told so in its prompt (#78, on main). Merge on Work squash-merges only the head and into the base the page showed, else 409 (#85). AnviDeck's Merge can no longer be called by another process: it exists only behind the desktop app's channel (#241). **Still not enforced against agents:** an agent's shell runs on your `gh` login, so it can merge on GitHub without AnviDeck at all; that needs agents sandboxed and on a separate GitHub account (#147, open) |
 | Deleting the old views needs the owner's go on the PR | Planned (#92) |
 
 ### Current state (`main` at `dd71c3e`, 2026-11-05)
@@ -98,5 +98,5 @@ Home is now `HomeScreen.ts` (#81), in place of the `CommandCenter.ts` named abov
 - This machine only, by default (#66).
 - No cloud service of AnviDeck's own and no telemetry. Network use is GitHub through `gh`, and, once #75 lands, the agents' own Claude Code sessions on the user's login.
 - Fast startup: lazy file reads, immediate UI render.
-- Readers stay read-only; every action goes through the agent host or the action log, guarded by origin and token (#76).
+- Readers stay read-only; every action goes through the agent host or the action log, and reaches AnviDeck only through the desktop app's private channel, never HTTP (#241).
 - Bun as runtime. No external databases.

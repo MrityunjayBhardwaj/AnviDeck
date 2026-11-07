@@ -6,7 +6,7 @@
  * refuses while a running agent is touching the file. The rules live in code-model.ts (tested);
  * this file only builds the DOM. All file text is set as text, never as HTML.
  */
-import { write, WriteError } from "../write";
+import { BROWSER_READ_ONLY, inDesktop, write, WriteError } from "../write";
 import { projectTabs } from "../shell/frame";
 import { refusalCall } from "./RefusalCall";
 import type { CodeFileResponse, CodeTreeOk, CodeTreeResponse, EditResult, Touching, WorkingFile } from "../../shared/code-types";
@@ -29,6 +29,7 @@ import {
   type LineMark,
   type Marks,
   type TreeNode,
+  workingHere,
 } from "./code-model";
 
 type Kid = Node | string | null | undefined | false;
@@ -352,7 +353,7 @@ export function CodeScreen(project: string | null, params: URLSearchParams): HTM
     paintFile();
     const path = tree.packageRel ? `${tree.packageRel}/${selected}` : selected;
     const r = await getJson<WorkingFile & { error?: string }>(`/api/code/${enc(p)}/working?path=${enc(path)}`);
-    working = r.ok && !r.value.error ? { state: "ok", value: r.value } : { state: "error", error: r.ok ? String(r.value.error) : r.error };
+    working = r.ok && !r.value.error ? { state: "ok", value: workingHere(r.value, inDesktop(), BROWSER_READ_ONLY) } : { state: "error", error: r.ok ? String(r.value.error) : r.error };
     paintFile();
   }
 

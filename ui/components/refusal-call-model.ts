@@ -19,6 +19,8 @@ export interface CallLine {
   earlier: string[];
   /** Said beside the call when the file had lines that are not calls. */
   damaged?: string;
+  /** Said beside the call when its key was not checked against a measured refusal (#178). */
+  unverified?: string;
 }
 
 const verdict = (c: CallRecord) => `your call ${shortDay(c.at)}: ${c.call}`;
@@ -41,6 +43,7 @@ export function callLine(load: CallsLoad, key: string): CallLine {
     ...(s.latest.note ? { note: s.latest.note } : {}),
     earlier: s.earlier.map((c) => `${shortDay(c.at)} ${c.call}${c.note ? ` ("${c.note}")` : ""}`),
     ...(damaged ? { damaged } : {}),
+    ...(s.latest.unverified ? { unverified: `unverified: ${s.latest.unverified}` } : {}),
   };
 }
 

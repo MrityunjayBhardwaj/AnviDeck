@@ -17,7 +17,8 @@ import { loginOnlyEnv } from "../server/agents/login";
 import { applyEdit, CodeEditError, readWorking, resolveTarget, type EditDeps } from "../server/code-edit";
 import { agentFacts, agentsRead, editsIn, touching, type AgentFact } from "../server/code-touch";
 import { codeRoutes } from "../server/routes/code";
-import { installGuard, TOKEN_HEADER } from "../server/guard";
+import { HTTP_WRITE_REFUSAL, installGuard } from "../server/guard";
+import { dispatch, isFromApp } from "../server/desktop";
 import { ActionLog, type ActionRecord } from "../server/action-log";
 import { editBody, savedAs } from "../ui/components/code-model";
 
@@ -265,26 +266,29 @@ describe("an edit is refused while an AnviDeck agent works on that file (the age
 // ── the route, behind the whole guard ───────────────────────────────────────────────────
 
 describe("POST /api/code/:project/edit is guarded and logged", () => {
-  const TOKEN = "tok-code-edit";
-  const HOST = "localhost:4476";
+  const HOST = "127.0.0.1:4476";
   function app(top: string, agents: AgentFact[] = []) {
     const log = new ActionLog(scratch("code-log-"));
     const a = new Hono();
-    installGuard(a, { bind: "127.0.0.1", token: TOKEN, log });
+    installGuard(a, { bind: "127.0.0.1", log, isFromApp });
     const host = { registry: { dir: "/reg" }, list: () => agents.map((x) => ({ id: x.id, status: x.status, running: x.running, cwd: x.cwd, prompt: x.prompt })), transcript: () => ({ lines: [], unreadable: 0 }) };
     a.route("/api/code", codeRoutes({ host: () => host, edit: { top: () => ({ top }), sessions: NO_SESSIONS } }));
-    const send = (path: string, b: unknown, headers: Record<string, string> = { origin: `http://${HOST}`, [TOKEN_HEADER]: TOKEN }) =>
-      a.request(`http://${HOST}${path}`, { method: "POST", headers: { host: HOST, "content-type": "application/json", ...headers }, body: JSON.stringify(b) });
+    // As the window sends it: through the app's channel, the only way a write runs (#241, #244).
+    const send = (path: string, b: unknown) => fromWindow(a, HOST, path, b);
+    // As anything else on this machine would: its own Origin, over HTTP.
+    const overHttp = (path: string, b: unknown) =>
+      a.request(`http://${HOST}${path}`, { method: "POST", headers: { host: HOST, origin: `http://${HOST}`, "content-type": "application/json", "x-anvideck-token": "anything" }, body: JSON.stringify(b) });
     const lines = (): ActionRecord[] => readFileSync(log.file, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-    return { send, lines, get: (path: string) => a.request(`http://${HOST}${path}`, { headers: { host: HOST } }) };
+    return { send, overHttp, lines, get: (path: string) => a.request(`http://${HOST}${path}`, { headers: { host: HOST } }) };
   }
 
-  test("without the token it is refused (403) and logged; with it, written and logged", async () => {
+  test("over HTTP it is refused (403) and logged, file unchanged; through the app's channel, written and logged", async () => {
     const top = repo();
     const s = app(top);
     const b = body("src/a.ts", top, "export const a = 3;\n");
-    const r1 = await s.send("/api/code/scratch/edit", b, { origin: `http://${HOST}` });
+    const r1 = await s.overHttp("/api/code/scratch/edit", b);
     expect(r1.status).toBe(403);
+    expect(((await r1.json()) as { error: string }).error).toBe(HTTP_WRITE_REFUSAL);
     expect(readFileSync(join(top, "src", "a.ts"), "utf8")).toBe("export const a = 1;\n");
     const r2 = await s.send("/api/code/scratch/edit", b);
     expect(r2.status).toBe(200);
@@ -344,20 +348,20 @@ describe("the touching rule on paths", () => {
   });
 });
 
+/** One write as the window sends it, through the real dispatch, answered as a Response. */
+async function fromWindow(a: Hono, host: string, path: string, body: unknown): Promise<Response> {
+  const r = await dispatch(a, { method: "POST", path, body }, host);
+  return new Response(JSON.stringify(r.body), { status: r.status, headers: { "content-type": "application/json" } });
+}
+
 const NO_HOST = () => ({ registry: { dir: "/reg" }, list: () => [], transcript: () => ({ lines: [], unreadable: 0 }) });
-/** The code routes behind the whole guard, as server/index.ts mounts them, with token "t". */
+/** The code routes behind the whole guard, as server/app.ts mounts them, written to through the app's channel. */
 function guarded(top: string) {
   const log = new ActionLog(scratch("code-log-"));
   const a = new Hono();
-  installGuard(a, { bind: "127.0.0.1", token: "t", log });
+  installGuard(a, { bind: "127.0.0.1", log, isFromApp });
   a.route("/api/code", codeRoutes({ host: NO_HOST, edit: { top: () => ({ top }), sessions: NO_SESSIONS } }));
-  const post = (path: string, payload: string) =>
-    a.request(`http://localhost:4476${path}`, {
-      method: "POST",
-      // content-length as a browser sends it: logWrites decides from it whether to read the body.
-      headers: { host: "localhost:4476", origin: "http://localhost:4476", [TOKEN_HEADER]: "t", "content-type": "application/json", "content-length": String(Buffer.byteLength(payload)) },
-      body: payload,
-    });
+  const post = (path: string, payload: string) => fromWindow(a, "127.0.0.1:4476", path, JSON.parse(payload));
   const lines = (): ActionRecord[] => readFileSync(log.file, "utf8").trim().split("\n").map((l) => JSON.parse(l));
   return { post, lines };
 }
@@ -401,7 +405,7 @@ describe("Code never writes catalogues, Ground Truth docs or Claude Code's confi
     expect(applyEdit("p", body("src/ref", top, "x\n"), deps(top)).after).toBe(sha("x\n"));
   });
 
-  test("through POST /api/code/:project/edit with a valid token: 400, file unchanged, logged as failed with the path", async () => {
+  test("through POST /api/code/:project/edit from the app's channel: 400, file unchanged, logged as failed with the path", async () => {
     const top = keptRepo();
     const s = guarded(top);
     const r = await s.post("/api/code/p/edit", JSON.stringify({ path: ".claude/settings.local.json", baseHash: sha("keep\n"), content: ESCALATE }));
@@ -412,7 +416,7 @@ describe("Code never writes catalogues, Ground Truth docs or Claude Code's confi
 });
 
 describe("the action log names the file an edit wrote, whatever the body's size", () => {
-  test("a 70 000-character edit whose body is not previewed: path, abs and sha256 before and after are logged", async () => {
+  test("a 70 000-character edit whose preview leaves the path out: path, abs and sha256 before and after are logged", async () => {
     const top = repo();
     writeFileSync(join(top, "src", "big.ts"), "// big\n");
     const s = guarded(top);
@@ -422,7 +426,7 @@ describe("the action log names the file an edit wrote, whatever the body's size"
     const r = await s.post("/api/code/proj/edit", payload);
     expect(r.status).toBe(200);
     const [line] = s.lines();
-    expect(line.body).toBe(`not read (${Buffer.byteLength(payload)} bytes)`);
+    expect(line.body).toEqual({ k1: 1, k2: 2, k3: 3, k4: 4, k5: 5, k6: 6, k7: 7, k8: 8 });
     expect(line.detail).toEqual({ path: "src/big.ts", abs: join(top, "src", "big.ts"), before: sha("// big\n"), after: sha(content), bytes: 70_000 });
   });
 });

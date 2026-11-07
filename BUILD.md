@@ -19,7 +19,7 @@ The work that state serves is done by agents: Claude Code sessions that edit cod
 ### Shell (#80)
 
 The prototype's frame replaces today's sidebar:
-- **Rail:** Home (with its badge), Map, Agents, Changes, Notes, Project (tabs: Code, Design, History, Work), Help.
+- **Rail:** Home (with its badge), Map, Agents, Changes, Notes, Project (tabs: Code, Design, History, Work). Help is the **? Help** menu in the top bar (and ⌘K), not a rail item.
 - **Project switcher** and a **"Guards on"** indicator.
 - **Activity strip** at the bottom ("4 agents · 1 working · 3 waiting on you").
 - **⌘K palette:** screens, agents, issues, and commands such as starting `/anvi:debug` in a new agent.
@@ -35,10 +35,10 @@ The prototype's frame replaces today's sidebar:
 | **Changes** | A PR's files, the layers and boundaries it touches, the diff with the anvi context the agent received at each hunk, line comments that go back to the agent, the evidence, a guided tour, the self-review gaps. | `gh` diff, hook log joined per hunk, the evidence format | #84 (needs #79, #83). **Partly built** (PR #145, part of #84): `GET /api/changes/prs`, `GET /api/changes/pr/:n` (`server/readers/changes.ts`); every file of the PR (GitHub's files API paged past gh's 100); the agent's session is found by Claude Code's pr-link record, the PR's branch, or the registry agent for an issue it closes; the context is shown **per file, not per hunk** (the hook log names files, not lines; #153); comments go through `POST /api/agents/:id/message`. **Not yet**: the per-hunk join (#153); the agent's reply under a comment and the currency of delivered entries, as in the prototype; a tour of claims rather than files in commit order (#173); checked on a real AnviDeck-agent PR in a project with a dharana.md |
 | **Notes** | Catalogues by kind with search; which catalogue is used when, per activity; freshness (drifted entries, oldest drifted entries still in use, **Re-check a batch** by subsystem); grounding (Ground Truth docs, their age, the entries citing them); project memory with **Promote**. Re-check and Promote start an agent. | Catalogue, currency, memory, grounding readers | #89. **Built** (on main once its PR merges): `NotesScreen.ts`; `GET /api/notes/currency` runs anvi's `currency-report.js --json` in the background (counts shown as it prints them) with the `health-<date>.json` series; `GET /api/notes/grounding` runs anvi's `gt-citation-check.js --json`; `GET /api/notes/usage` counts the injector's deliveries per entry for the project's sessions (`server/readers/notes.ts`). Re-check (at most 25 entries per agent) and Promote show the full prompt, then `POST /api/agents` in the project's folder |
 | **Project · Code** | File tree coloured by layer, with markers for refused edits, imports that break the design, and files agents touched; a file view with blame and known-trap lines. Editing is off while agents work, behind an **Enable editing** switch. | Structure reader, refusal log, agents' edits, `git blame` | #88 (on main once its PR merges): `GET /api/code/:project` (files at the design reader's commit, catalogue citations placed), `/file` (one file with blame), `/working`, `POST /api/code/:project/edit` (`server/code-edit.ts`). Agent-touched is per file, not per line; known traps are `file:line` citations in the catalogues, placed only when exactly one file matches |
-| **Project · Design** | Five lenses: Armed (enforcement mode, allowed rule breaks, trial record), Placed (placement in review, "ask before writing"), Consolidated (where problems cluster, the cost curve of fixes, shown only where files per fix can be measured), Path to target (moves to the declared design, each linked to an issue), System flows. | Structure readers; your recorded calls | #87, #86 |
+| **Project · Design** | Five lenses: Armed (enforcement mode, allowed rule breaks, trial record), Placed (placement in review, "ask before writing"), Consolidated (where problems cluster, the cost curve of fixes, shown only where files per fix can be measured), Path to target (moves to the declared design, each linked to an issue), System flows. | Structure readers; your recorded calls | #87, #86. **Built** (on main once its PR merges): `DesignScreen.ts`. Armed from the registry and the guard's verdict at the measured commit, and the trial record from `GET /api/refusals` with Right / Wrong on each row; Placed says no source records a placement, and Ask before writing sends only a question you typed and shows the full prompt, then `POST /api/agents`; Consolidated lists the guard's held breaks by pair and the boundaries whose dharana.md heading says the fatality test tripped (the prototype's table of the three fatality signals is not shown, and the screen says so: #210), and draws files per fix from git history (`GET /api/design/cost`); Path to target says no source lists moves and shows the held breaks; System flows puts measured figures on a fixed description, with the edit hooks (started in parallel, not in sequence) read from your settings, the project's two settings files and the managed settings; plugin hooks are not read, so a guard hook not found reads "not found", never "not running" (`GET /api/design/hooks?project=`; `server/readers/design.ts`) |
 | **Project · History** | One timeline of agent turns, edits, refusals, rulings, commits and catalogue changes, each event naming its source; a moment's details; compare two points (code, design, knowledge); replay a session. | Timeline, hook log, replay reader, action log | #90 |
 | **Project · Work** | The board (Todo / In Progress / Done from the GitHub project's Status field; a list if the project has no board), **Start agent**, **New issue**; for each PR your workflow as steps (Friction → Issue → Branch → Fix → Test → Observe → PR → Self-review → Merge, by you) with merge checks (CI green, closing reference parsed, no conflict with other open PRs). **Merge** is a button only you press. | `gh`, `gh project`, `git merge-tree` | #85, on main: `GET /api/work/board`, `GET /api/work/prs`, `POST /api/issues`, `POST /api/prs/:n/merge { project, head, base }` (readers `server/readers/work.ts`, `work-conflicts.ts`, `boards.ts`, `repo.ts`; actions `server/work/act.ts`; routes `server/routes/work.ts` (GET) and `work-actions.ts` (POST)); conflicts are checked in a scratch bare clone under `ANVIDECK_WORK_TMP`, never in the project |
-| **Help** | Six guided flows played over the real screens: start a task, a blocked edit and your call, review a change, notes go out of date, place new code, fix a boundary. A step whose data isn't there is skipped, and the tour says so. | All screens | #91 |
+| **Help** | Six guided flows played over the real screens: start a task, a blocked edit and your call, review a change, notes go out of date, place new code, fix a boundary. A step whose data isn't there is skipped, and the tour says so. | All screens | #91. **Built** (on main once its PR merges): `HelpScreen.ts` (`#flows`, from Help in the top bar and ⌘K), the flows in `ui/shell/tour-model.ts`, the runner in `tour-runner.ts` and the card in `tour.ts`. Steps point at elements marked `data-tour` on each screen; a skip says which of four it is: no such data, the screen's own reason (could not read, no source records it), still reading at the limit, or not shown in time. The tour opens screens and highlights; it never presses a button. No step uses Code yet |
 
 ---
 
@@ -51,8 +51,8 @@ The prototype's frame replaces today's sidebar:
  browser (this       │                                                                              │
  machine only) ──────┤  GET  /api/...  ──► READERS (server/readers/*)      read-only: files, git, gh │
                      │                                                                              │
-                     │  write endpoints ─► origin + token check ─► AGENT HOST ─► Claude Agent SDK    │
-                     │  (#76, on main)          │                  (planned, #75)  query() ──► installed
+                     │  writes: app window ─► stdin ─► guard ─► AGENT HOST ─► Claude Agent SDK      │
+                     │  (#241; none on HTTP)    │                  (planned, #75)  query() ──► installed
                      │                          └─► action log (AnviDeck's own store folder)  `claude`
                      │  WebSocket /ws  ◄── hook-log watcher (exists); agent message stream (planned)│
                      └──────────────────────────────────────────────────────────────────────────────┘
@@ -66,7 +66,7 @@ The prototype's frame replaces today's sidebar:
 
 - Starts an agent with a folder, a prompt and your normal settings: user, project and local settings load, so anvi's hooks and CLAUDE.md apply.
 - Streams every SDK message to the page over the existing WebSocket and keeps it per agent.
-- Keeps a registry of AnviDeck-started agents on disk (id, session id, folder, issue, status). After a server restart each shows as stopped, with its transcript, and can be resumed.
+- Keeps a registry of AnviDeck-started agents on disk (id, session id, folder, issue, status, and the server that runs it: pid and port). Several servers may share it (#104): each write changes only its own records, under a lock file, and a server lists every agent but acts only on its own; another live server's agent shows where it runs and is refused (409) here. An agent whose server is gone (its pid is not alive, or now belongs to a process that started after that server, #224) shows as stopped, with its transcript, and can be resumed by any server.
 - Stops an agent, and caps how many run at once.
 - Statuses: starting, working, waiting on you, done, failed, stopped. "Could not start" never shows as "done".
 - Feeds each agent through a stream of user messages, so a message or a diff comment (file, line, the line's text) arrives on its next turn, with delivery shown (#79, on main: `POST /api/agents/:id/message`; a stopped agent answers 409 with `resumable`).
@@ -77,10 +77,10 @@ The prototype's frame replaces today's sidebar:
 ### Starting an agent from an issue (#78, on main)
 
 **Start agent** on an issue (⌘K "Start an agent on an issue", and a box on `/agent-host`; Work's Start agent on each Todo issue (#85); Home's button comes with #81): `POST /api/agents/from-issue { project | repo, issue, note? }`, previewed without writing by `GET /api/agents/from-issue/plan` (`server/agents/from-issue.ts`, `worktree.ts`, `issue-prompt.ts`, `board.ts`).
-- Creates the worktree `<main checkout>/.claude/worktrees/issue-<n>` (beside Claude Code's own) on a new branch `feat|fix|chore/<n>-<slug>` (fix for a `bug` label, chore for `chore` or `documentation`, else feat), from the local default branch.
+- Creates the worktree `<main checkout>/.claude/worktrees/issue-<n>` (beside Claude Code's own) on a new branch `feat|fix|chore/<n>-<slug>` (fix for a `bug` label, chore for `chore` or `documentation`, else feat), from the local default branch, or from origin's when the local one is only behind it as last fetched (no fetch is made); the plan, the dialog and the agent's prompt say "N commits behind origin/main as of the last fetch" (#136).
 - Links `.anvi` and `ref` into it, each to where the main checkout's resolves (what anvi's `worktreeLinkGap` says a linked worktree needs). A tracked `ref` stays the branch's own copy. A link the repo does not already ignore is added to its `info/exclude`. Each link is read back, and anvi's own `worktreeLinkGap` is asked what is still missing.
 - Starts the agent with a prompt built from the issue (repo, number, title, body) plus the workflow (issue → branch → fix → test and observe → PR → self-review; agents never merge) and `PR_SECTIONS_INSTRUCTIONS`. An optional note comes last and wins where it differs.
-- Refuses, saying why (409/404 with `refusal`): unknown project or repo, no GitHub origin, no such issue, issue closed, worktree or branch (local or origin's) already exists, or the main checkout is on the base branch with uncommitted changes to tracked files; and, before anything is made, the agent cap. If the agent cannot start, the fresh worktree and branch are removed.
+- Refuses, saying why (409/404 with `refusal`): unknown project or repo, no GitHub origin, no such issue, issue closed, worktree or branch (local or origin's) already exists, or the main checkout is on the base branch with uncommitted changes to tracked files, or the local base branch and origin's have diverged (`diverged`); and, before anything is made, the agent cap. If the agent cannot start, the fresh worktree and branch are removed.
 - Moves the issue to In Progress on the one board linked to the repository (ids derived each time). Says "no board" when none is linked, and does not guess between several.
 
 ### Evidence and self-review (#83, planned)
@@ -92,14 +92,14 @@ Agents AnviDeck starts write two PR-body sections with a fixed shape: **Evidence
 | Guard | Status |
 |---|---|
 | Listens on `127.0.0.1` unless `HOST` is set; refuses a request whose Host is not a loopback name or whose Origin is another page (`server/access.ts`, tested in `tests/access.test.ts`) | **Exists** (#66) |
-| Every write endpoint requires the same origin and a per-server token placed in the page | Planned (#76) |
-| Every action (what, target, result, time) appended to an action log in AnviDeck's own store folder and shown in History | Planned (#76, #90) |
+| Nothing sent over HTTP can act: writes come only from the desktop app's window, over its private channel; no token in the page | On `main` (#241; replaced #76's token check) |
+| Every action (what, target, result, time) appended to an action log in AnviDeck's own store folder and shown in History | Logged (#76); History shows the lines that name a project (#90) |
 | Readers can't act: a test fails if a reader imports the agent host or writes a file | Planned (#76) |
 | Agents on the Claude Code login only (see Agent host) | Planned (#75) |
 | Your permission rules apply as in the terminal; only uncovered calls reach AnviDeck; no timeout allows a call | **Exists** (#77) |
 | Merge only the reviewed head, into the base the page showed; refused (409 with the current head or base) if either changed | **Exists** (#85) |
-| Merge only by you: no agent can cause a merge | **Partial**: the write token is in the page, so any process on this machine (an agent's shell included) can read it and call Merge, and Code's file edits too (#88); today this rests on agents not trying and on your permission rules (#147) |
-| Code-screen edits only to files no running agent is touching, each through the action log | #88 (on main once its PR merges): 409 while a running AnviDeck agent works in the file's folder or edited the same file in any checkout, or a live terminal session works in its folder; 409 if the file changed since it was shown (sha256); no `..`, symlink or `.git`; never a catalogue (`.anvi/`), a Ground Truth doc (`ref/`) or Claude Code's configuration (`.claude/`, `.mcp.json`); each edit's action-log line names the file, its path on disk and the sha256 before and after (`detail`), whatever the body's size. **Not enforced against agents**, as for Merge: any process on this machine (an agent's shell included) can read the write token from the page and call `POST /api/code/:project/edit` on any other existing file of a known project's main checkout, past its own permission rules (#147) |
+| Merge only by you: no agent can cause a merge | **Partial**: AnviDeck's Merge exists only behind the desktop app's channel (#241), so no other process can call it. An agent's shell still runs on your `gh` login and can merge on GitHub directly; that needs the agent sandbox and a separate GitHub account (#147) |
+| Code-screen edits only to files no running agent is touching, each through the action log | #88 (on main once its PR merges): 409 while a running AnviDeck agent works in the file's folder or edited the same file in any checkout, or a live terminal session works in its folder; 409 if the file changed since it was shown (sha256); no `..`, symlink or `.git`; never a catalogue (`.anvi/`), a Ground Truth doc (`ref/`) or Claude Code's configuration (`.claude/`, `.mcp.json`); each edit's action-log line names the file, its path on disk and the sha256 before and after (`detail`), whatever the body's size. The edit runs only through the desktop app's channel (#241, #244): over HTTP it is refused like every other write, so no other process can call it. An agent's own tools can still change files as its permission rules allow; that needs the agent sandbox (#147) |
 
 ### Stack
 
@@ -131,7 +131,7 @@ Agents AnviDeck starts write two PR-body sections with a fixed shape: **Evidence
 | Notes currency | `~/.anvideck/projects/anvi/instances`; anvi's `currency-report.js --json` and `gt-citation-check.js --json` (Notes, #89) |
 | GitHub | `gh`: PR state, your open PRs, issues and PRs |
 
-AnviDeck's own store folder holds the agent registry, the action log and your calls on blocked edits (#75, #76, #86; calls are recorded from the Agents screen's refusal card, and Design and History will show them). The Work screen reads the board via `gh project` (#85).
+AnviDeck's own store folder holds the agent registry, the action log and your calls on blocked edits (#75, #76, #86; calls are recorded from the Agents screen's refusal card, Design's trial record and History, and Design and History show them). The Work screen reads the board via `gh project` (#85).
 
 ---
 
@@ -224,7 +224,7 @@ ref/                      ANVI_THESIS.md, DATA_EXAMPLES.md
 
 **Information density over visual flair.** An engineering instrument: Grafana, Bloomberg, a cockpit. Not Notion or Linear.
 
-**Readers read; one module acts.** Every action goes through the agent host or the action log, behind the origin and token check, and is recorded.
+**Readers read; one module acts.** Every action goes through the agent host or the action log, reaches AnviDeck only through the desktop app's private channel (never HTTP), and is recorded.
 
 **You decide; agents do.** Agents propose and change; you answer permission requests, review and merge. Agents never merge.
 
@@ -249,7 +249,7 @@ ref/                      ANVI_THESIS.md, DATA_EXAMPLES.md
 ## Success Criteria (the workspace)
 
 1. An agent started from AnviDeck runs on the Claude Code login (`apiKeySource: none` shown), streams to the page, survives a page reload, and is listed as stopped after a server restart and resumes (#75).
-2. A write from another origin, or without the token, is refused; every action appears in the log with its result (#76).
+2. Any write sent over HTTP is refused, whatever it carries; actions come only from the desktop app's window; every action appears in the log with its result (#76, #241).
 3. A permission request appears on Home and the agent's card within a second; Allow lets the call run; Deny stops it with the message (#77).
 4. Starting from a real issue creates the worktree with both links resolving, and the agent's first edit shows the anvi context it was given (#78).
 5. Every prototype screen is reachable from the rail, by URL and from ⌘K (#80), and each shows real figures with their source and date.

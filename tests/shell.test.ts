@@ -77,9 +77,9 @@ describe("routes", () => {
 
   test("screens not built yet name the issue that builds them", () => {
     const builds = Object.fromEntries(SCREENS.filter((s) => s.buildsIn).map((s) => [s.id, s.buildsIn]));
-    expect(builds).toEqual({ design: 87, history: 90, flows: 91 });
+    expect(builds).toEqual({});
     // Screens that exist today are not placeholders.
-    for (const id of ["home", "map", "agents", "changes", "notes", "work", "code", ...OLDER_VIEWS] as ScreenId[]) expect(screen(id).buildsIn).toBeUndefined();
+    for (const id of ["home", "map", "agents", "changes", "notes", "work", "code", "design", "history", ...OLDER_VIEWS] as ScreenId[]) expect(screen(id).buildsIn).toBeUndefined();
   });
 
   test("today's views all stay reachable until #92", () => {
@@ -101,11 +101,19 @@ describe("routes", () => {
 describe("activity strip", () => {
   test("counts by status; waiting on you is agents with a parked permission request", () => {
     const agents = [agent("a", "working"), agent("b", "starting"), agent("c", "waiting", 2), agent("d", "done"), agent("e", "stopped")];
-    expect(activityCounts(agents)).toEqual({ total: 5, working: 2, waiting: 1 });
+    expect(activityCounts(agents)).toEqual({ total: 5, working: 2, waiting: 1, elsewhere: 0 });
     expect(activityText({ state: "ok", agents })).toBe("5 agents · 2 working · 1 waiting on you");
     expect(activityText({ state: "ok", agents: [agent("a", "working")] })).toBe("1 agent · 1 working · 0 waiting on you");
     expect(activityTitle({ state: "ok", agents })).toContain("answer them on Home");
     expect(activityTitle({ state: "ok", agents })).not.toContain("arrives with");
+  });
+
+  test("an agent another AnviDeck server runs is not counted as working here (#104)", () => {
+    const there = { ...agent("x", "working"), runsElsewhere: { pid: 7, port: 4135 } };
+    const agents = [agent("a", "working"), there];
+    expect(activityCounts(agents)).toEqual({ total: 2, working: 1, waiting: 0, elsewhere: 1 });
+    expect(activityText({ state: "ok", agents })).toBe("2 agents · 1 working · 0 waiting on you · 1 in other servers");
+    expect(activityTitle({ state: "ok", agents })).toContain("1 run in other AnviDeck servers");
   });
 
   test("could not look never reads as no agents", () => {
@@ -120,7 +128,7 @@ describe("guards indicator", () => {
   test("says Guards on only when every listed guard is on", () => {
     expect(guardsLabel(GUARDS).text).toBe("Guards on");
     expect(guardsLabel(GUARDS).state).toBe("on");
-    expect(guardsLabel(GUARDS.map((g, i) => ({ ...g, on: i !== 0 })))).toEqual({ text: "Guards: 3 of 4 on", state: "partial" });
+    expect(guardsLabel(GUARDS.map((g, i) => ({ ...g, on: i !== 0 })))).toEqual({ text: `Guards: ${GUARDS.length - 1} of ${GUARDS.length} on`, state: "partial" });
     expect(guardsLabel(GUARDS.map((g) => ({ ...g, on: true })))).toEqual({ text: "Guards on", state: "on" });
   });
 

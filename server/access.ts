@@ -37,14 +37,22 @@ function hostnameOf(hostHeader: string): string {
  *    (or its WebSocket) is asking. Same-origin GETs and non-browser clients
  *    such as curl send no Origin and pass.
  */
-export function localOnly(bind: string = bindHost()): MiddlewareHandler {
+export function localOnly(bind: string = bindHost(), extraOrigins: readonly string[] = []): MiddlewareHandler {
   const anyHost = !isLoopback(bind);
+  const allowed = new Set(extraOrigins);
   return async (c, next) => {
     const host = c.req.header("host") ?? "";
     if (!anyHost && !isLoopback(hostnameOf(host))) {
       return c.json({ error: `AnviDeck answers only on this machine (Host "${host}" refused)` }, 403);
     }
     const origin = c.req.header("origin");
+    if (origin !== undefined && allowed.has(origin)) {
+      // The desktop app's own window (#239): it reads from here, so the browser needs CORS.
+      await next();
+      c.res.headers.set("access-control-allow-origin", origin);
+      c.res.headers.set("vary", "Origin");
+      return;
+    }
     if (origin !== undefined) {
       let ok = false;
       try { ok = new URL(origin).host === host; } catch { ok = false; }

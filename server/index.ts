@@ -1,79 +1,14 @@
-import { Hono } from "hono";
-import { websocket } from "hono/bun";
-import { join } from "node:path";
-import api from "./routes/api";
-import ws, { broadcast } from "./routes/ws";
 import { watchGlobal } from "./watchers/file-watcher";
 import { watchHookLogs } from "./watchers/hook-logger";
+import { broadcast } from "./routes/ws";
+import { websocket } from "hono/bun";
 import { bindHost, isLoopback } from "./access";
-import { installGuard, serverWriteToken, withWriteToken } from "./guard";
-import { ActionLog, actionRoutes } from "./action-log";
+import { DESKTOP, emit, serveWritePipe } from "./desktop";
+import { buildApp } from "./app";
 
-const app = new Hono();
-
-// Only this machine's own browser may read AnviDeck: no other host, no other web page.
-// A write also needs this server's token (placed in the pages it serves), and every write,
-// accepted or refused, is recorded in the action log (#76). Installed before any route.
 const hostname = bindHost();
-const actionLog = new ActionLog();
-installGuard(app, { bind: hostname, token: serverWriteToken(), log: actionLog });
-app.route("/api/actions", actionRoutes(actionLog));
-
-// Mount API routes
-app.route("/api/structure", (await import("./routes/structure")).default);
-app.route("/api/home", (await import("./routes/home")).default);
-app.route("/api", (await import("./routes/work")).workRoutes()); // Work screen (#85)
-app.route("/api", (await import("./routes/work-actions")).workActionRoutes()); // Work screen actions: New issue, Merge (#85)
-app.route("/api/changes", (await import("./routes/changes")).default);
-app.route("/api/notes", (await import("./routes/notes")).notesRoutes()); // Notes screen (#89)
-app.route("/api", api);
-app.route("/api/replay", (await import("./routes/replay")).default);
-app.route("/api/agents-screen", (await import("./routes/agents-screen")).default);
-app.route("/api", (await import("./routes/refusals")).refusalRoutes()); // refusals and your calls on them (#86)
-
-// Agent host (#75): the only code that runs agents.
-const agents = (await import("./routes/agents")).createAgentHost(broadcast);
-app.route("/api/agents", agents.api);
-app.route("/", agents.page);
-// Project · Code (#88): its edits ask the agent host which files a running agent is touching.
-app.route("/api/code", (await import("./routes/code")).codeRoutes({ host: () => agents.host, hostOff: () => "the agent host is off: its registry could not be read (GET /api/agents says why)" }));
-
-// Mount WebSocket route
-app.route("/", ws);
-
-// Serve UI static files
-const UI_DIR = join(import.meta.dir, "..", "ui");
-const DIST_DIR = join(import.meta.dir, "..", "dist");
-
-app.get("/styles/:file", async (c) => {
-  const file = c.req.param("file");
-  const path = join(UI_DIR, "styles", file);
-  const content = Bun.file(path);
-  if (!(await content.exists())) return c.text("Not found", 404);
-  return new Response(content, {
-    headers: { "content-type": "text/css" },
-  });
-});
-
-app.get("/app.js", async (c) => {
-  const path = join(DIST_DIR, "app.js");
-  const content = Bun.file(path);
-  if (!(await content.exists())) return c.text("Not found — run: bun run build", 404);
-  return new Response(content, {
-    headers: { "content-type": "application/javascript" },
-  });
-});
-
-// SPA: serve index.html for all non-API, non-static routes
-app.get("/*", async (c) => {
-  if (c.req.path.startsWith("/api")) return c.text("Not found", 404);
-  const path = join(UI_DIR, "index.html");
-  const html = withWriteToken(await Bun.file(path).text());
-  // The token changes at every server start: a cached page would carry a stale one.
-  return new Response(html, {
-    headers: { "content-type": "text/html", "cache-control": "no-store" },
-  });
-});
+// Every route, behind the guard: reads on loopback, writes only through the desktop app (#241).
+const { app, agents } = await buildApp({ bind: hostname, desktop: DESKTOP });
 
 // Start global file watcher
 const stopWatching = watchGlobal((event) => {
@@ -96,13 +31,13 @@ process.on("SIGINT", () => {
   process.exit(0);
 });
 
-const port = parseInt(process.env.PORT ?? "4000", 10);
+const port = parseInt(process.env.PORT ?? (DESKTOP ? "0" : "4000"), 10);
 const shown = hostname.includes(":") ? `[${hostname}]` : hostname;
-console.log(isLoopback(hostname)
-  ? `AnviDeck server running at http://${shown}:${port} (this machine only; set HOST to listen elsewhere)`
-  : `AnviDeck server running at http://${shown}:${port} (HOST=${hostname}: other machines on the network can reach it)`);
+if (!DESKTOP) console.log(isLoopback(hostname)
+  ? `AnviDeck server running at http://${shown}:${port} (this machine only; set HOST to listen elsewhere). Read-only: actions are taken only in the desktop app (bun run desktop:dev).`
+  : `AnviDeck server running at http://${shown}:${port} (HOST=${hostname}: other machines on the network can reach it). Read-only: actions are taken only in the desktop app.`);
 
-export default {
+const serveOptions = {
   port,
   hostname,
   // Bun.serve closes a request that sends nothing for 10 s by default, and the
@@ -113,3 +48,26 @@ export default {
   fetch: app.fetch,
   websocket,
 };
+
+if (DESKTOP) {
+  // Desktop app (#239): started by the app as a sidecar. Pick a free port, tell the app which,
+  // and take writes only from the app's pipe on stdin. When the app closes stdin, stop.
+  const server = Bun.serve(serveOptions);
+  const bound = server.port ?? 0;
+  agents.listeningOn(bound);
+  emit("READY", { port: bound });
+  void serveWritePipe(app, {
+    port: bound,
+    onClose: () => {
+      stopWatching();
+      stopHookLogs();
+      agents.stopAll("AnviDeck app closed");
+      process.exit(0);
+    },
+  });
+}
+
+// In the browser build Bun serves the default export; the port it binds is the one asked for.
+if (!DESKTOP) agents.listeningOn(port);
+
+export default DESKTOP ? undefined : serveOptions;

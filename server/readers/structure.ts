@@ -2,7 +2,7 @@
  * Structure map data — read from anvi's own structure guard, not a separate import walk.
  *
  * The graph and its verdicts come from the guard's exported functions, run under node by
- * structure-driver.cjs (beside this file). This reader only finds the packages, picks the commit,
+ * structure-driver.cjs (carried as text by node-drivers.ts). This reader only finds the packages, picks the commit,
  * caches, and shapes the answer.
  *
  * Read-only. It writes nothing into any measured project: the guard measures a ref through a
@@ -14,6 +14,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSyn
 import { homedir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { driverArgs, feedDriver } from "./node-drivers";
 import type {
   EdgeClass,
   GuardSource,
@@ -41,7 +42,6 @@ export const USER_REGISTRY = join(HOME, ".claude", "structure-guard.json");
  * the installed copy under ~/.claude/anvi/scripts.
  */
 export const GUARD_PATH = process.env.ANVIDECK_STRUCTURE_GUARD ?? join(HOME, ".claude", "anvi", "scripts", "structure-guard.js");
-const DRIVER = join(import.meta.dir, "structure-driver.cjs");
 /** Where the guard's temporary `git archive` goes (TMPDIR for the child). */
 export const TMP_ROOT = process.env.ANVIDECK_STRUCTURE_TMP ?? "/private/tmp/claude-501/anvideck-structure";
 const GUARD_TIMEOUT_MS = 120_000;
@@ -104,7 +104,7 @@ export function readRegistry(paths: { locked?: string; user?: string } = {}): Re
 
 // ── projects ────────────────────────────────────────────────────────────────────────────────
 
-interface Project { name: string; path: string }
+export interface Project { name: string; path: string }
 
 /**
  * Projects as AnviDeck already knows them (~/.claude/projects/<encoded path>), kept only when
@@ -138,7 +138,7 @@ export function discoverProjects(reg: Registry = readRegistry()): Project[] {
  * "deepest", a parent folder that is itself a known project (~/Documents/projects) would claim
  * every package below it and show a design it does not have.
  */
-function ownerOf(dir: string, projects: Project[]): Project | null {
+export function ownerOf(dir: string, projects: Project[]): Project | null {
   const d = realOr(dir);
   let best: Project | null = null;
   for (const p of projects) {
@@ -305,10 +305,11 @@ function spawnDriver(input: DriverInput, guardPath: string, signal?: AbortSignal
   mkdirSync(TMP_ROOT, { recursive: true });
   const t0 = Date.now();
   return new Promise((resolve) => {
-    const child = spawn("node", [DRIVER, guardPath, JSON.stringify(input)], {
+    const child = spawn("node", driverArgs([guardPath, JSON.stringify(input)]), {
       env: { ...process.env, TMPDIR: TMP_ROOT },
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
     });
+    feedDriver(child.stdin, "structure");
     let stdout = "", stderr = "";
     child.stdout.on("data", (d) => (stdout += d));
     child.stderr.on("data", (d) => (stderr += d));
@@ -641,4 +642,3 @@ function readFolders(project: Project, refAsked: string | null, t0: number): Str
 }
 
 /** For the tests: the path of the driver, so a control can run the guard CLI beside it. */
-export const STRUCTURE_DRIVER = DRIVER;

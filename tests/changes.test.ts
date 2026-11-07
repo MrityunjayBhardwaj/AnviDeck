@@ -367,6 +367,18 @@ describe("where a line comment goes", () => {
     const t = commentTarget(two, { state: "ok", agents: [{ id: "a1", status: "working" }, { id: "a2", status: "working" }] });
     expect(t).toEqual({ enabled: false, why: expect.stringContaining("does not guess") });
   });
+  test("an agent another AnviDeck server runs: off, saying where, never promising delivery (#104)", () => {
+    const at = { pid: 4242, port: 4135 };
+    const t = commentTarget(agentSession, { state: "ok", agents: [{ id: "a1", status: "working", runsElsewhere: at }] });
+    expect(t.enabled).toBe(false);
+    if (t.enabled) throw new Error("on");
+    expect(t.why).toContain("another AnviDeck server (port 4135, pid 4242)");
+    expect(t.why).not.toContain("Goes to agent");
+    expect(t.elsewhere).toEqual({ agentId: "a1", at });
+    // Its sibling here is still the one that takes the comment.
+    const two = sessions([session({ agentId: "a1" }), session({ sessionId: "s2", agentId: "a2" })]);
+    expect(commentTarget(two, { state: "ok", agents: [{ id: "a1", status: "working", runsElsewhere: at }, { id: "a2", status: "working" }] })).toMatchObject({ enabled: true, agentId: "a2" });
+  });
 });
 
 describe("guided tour", () => {

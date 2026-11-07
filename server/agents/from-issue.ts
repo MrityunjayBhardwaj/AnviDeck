@@ -10,6 +10,7 @@ import {
   anviLinkCheck,
   branchExists,
   branchFor,
+  compareWithOrigin,
   defaultBranch,
   dirtyOnBase,
   git,
@@ -21,6 +22,7 @@ import {
   type AnviLinkCheck,
   type LinkResult,
   type Run,
+  type UpstreamCompare,
 } from "./worktree";
 
 /**
@@ -41,6 +43,10 @@ import {
  *   branch-exists    the issue's branch already exists (locally or as origin's)
  *   dirty            the main checkout is on the base branch with uncommitted changes to tracked
  *                    files: the worktree would start without them
+ *   diverged         the local base branch and origin's (as last fetched) each have commits the
+ *                    other lacks: which to start from is not guessed (#136). A local base that is
+ *                    only behind is not refused: the worktree starts from origin's, and says so
+ *                    (see compareWithOrigin)
  *   cap / no-claude  the agent host could not start one now (checked before anything is made)
  */
 
@@ -69,8 +75,13 @@ export interface Plan {
   issue: IssueInfo;
   branch: string;
   worktree: string;
+  /** The PR's base branch (origin's default branch). */
   base: string;
+  /** The commit the worktree starts from, and the ref it was read from (`main` or `origin/main`, #136). */
   baseSha: string;
+  startFrom: string;
+  /** The local base against origin's as last fetched, with the sentence that says it. */
+  upstream: UpstreamCompare;
 }
 
 export interface Started extends Plan {
@@ -181,18 +192,21 @@ export class FromIssue {
     const existing = await branchExists(this.run, main, branch);
     if (existing) throw refuse(409, "branch-exists", `the branch ${branch} already exists (${existing}); work on #${n} may already have started`, { branch });
     const base = await defaultBranch(this.run, main);
-    let baseSha: string;
-    try {
-      baseSha = await git(this.run, main, ["rev-parse", "--verify", `refs/heads/${base}^{commit}`]);
-    } catch {
-      throw refuse(409, "no-repo", `${main} has no local branch ${base} to start the worktree from`);
+    // Local base against origin's as last fetched (#136): a stale local main is not started from.
+    const upstream = await compareWithOrigin(this.run, main, base);
+    if (upstream.state === "diverged") {
+      throw refuse(409, "diverged", `${upstream.summary}. Bring ${base} and origin/${base} together first (pull, or push your commits)`, { upstream });
     }
+    if (!upstream.startFrom || !upstream.startSha) {
+      throw refuse(409, "no-repo", `${upstream.summary}`, { upstream });
+    }
+    const baseSha = upstream.startSha;
     const dirty = await dirtyOnBase(this.run, main, base);
     if (dirty.changed.length) {
       const shown = dirty.changed.slice(0, 5).join(", ") + (dirty.changed.length > 5 ? `, and ${dirty.changed.length - 5} more` : "");
       throw refuse(409, "dirty", `${main} is on ${base} with ${dirty.changed.length} uncommitted change${dirty.changed.length === 1 ? "" : "s"} to tracked files (${shown}); the worktree starts from ${base}'s last commit and would not have them. Commit or stash them first`, { changed: dirty.changed });
     }
-    return { project, main, repo, issue, branch, worktree, base, baseSha };
+    return { project, main, repo, issue, branch, worktree, base, baseSha, startFrom: upstream.startFrom, upstream };
   }
 
   /** Plan, then make the worktree and links, start the agent there, and move the issue on the board. */
@@ -232,6 +246,8 @@ export class FromIssue {
         branch: p.branch,
         base: p.base,
         baseSha: p.baseSha,
+        startFrom: p.startFrom,
+        upstream: p.upstream.summary,
         worktree: p.worktree,
         links: links.map(describeLink),
         note,

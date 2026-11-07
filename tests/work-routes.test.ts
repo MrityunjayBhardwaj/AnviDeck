@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
 import { installGuard } from "../server/guard";
+import { dispatch, isFromApp } from "../server/desktop";
 import { ActionLog, type ActionRecord } from "../server/action-log";
 import { workRoutes } from "../server/routes/work";
 import { workActionRoutes } from "../server/routes/work-actions";
@@ -49,7 +50,6 @@ async function repoDir(): Promise<string> {
   return d;
 }
 
-const TOKEN = "work-test-token";
 const HOSTNAME = "localhost:4104";
 
 async function server(rules: [string, RunResult | ((args: string[]) => RunResult)][]) {
@@ -61,11 +61,17 @@ async function server(rules: [string, RunResult | ((args: string[]) => RunResult
     cmd === "git" ? (args.includes("fetch") ? fail("fetch is offline in tests", 128) : spawnRun(cmd, args, opts)) : f.run(cmd, args, opts);
   const log = new ActionLog(scratch("work-log-"));
   const app = new Hono();
-  installGuard(app, { bind: "127.0.0.1", token: TOKEN, log });
+  installGuard(app, { bind: "127.0.0.1", log, isFromApp });
   const deps = { run, projects: () => [{ name: "widget", path: main }], tmpRoot: scratch("work-tmp-") };
   app.route("/api", workRoutes(deps));
   app.route("/api", workActionRoutes(deps));
-  const send = (path: string, body: unknown, headers: Record<string, string> = { origin: `http://${HOSTNAME}`, "x-anvideck-token": TOKEN }) =>
+  /** From the desktop app's window, over its private channel (#241). */
+  const send = async (path: string, body: unknown) => {
+    const r = await dispatch(app, { method: "POST", path, body }, HOSTNAME);
+    return { status: r.status, json: async () => r.body };
+  };
+  /** Over HTTP, as any process on the machine can send it. */
+  const sendHttp = (path: string, body: unknown, headers: Record<string, string>) =>
     app.request(`http://${HOSTNAME}${path}`, { method: "POST", headers: { host: HOSTNAME, "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
   const get = (path: string) => app.request(`http://${HOSTNAME}${path}`, { headers: { host: HOSTNAME } });
   const lines = (): ActionRecord[] => {
@@ -75,7 +81,7 @@ async function server(rules: [string, RunResult | ((args: string[]) => RunResult
       return [];
     }
   };
-  return { send, get, lines, f };
+  return { send, sendHttp, get, lines, f };
 }
 
 const view = (state: string, head: string, isDraft = false, base = "main") => ok(JSON.stringify({ number: 7, state, isDraft, headRefOid: head, baseRefName: base }));
@@ -122,11 +128,11 @@ describe("merge refuses a head that moved", () => {
     expect(a.readBack).toEqual({ state: "unreadable", reason: "merged, but the read-back failed: timeout" });
   });
 
-  test("no token, or another origin: refused by the guard (403), never reaching gh, and logged as refused", async () => {
+  test("over HTTP, from its own Origin or another page: refused by the guard (403), never reaching gh, and logged as refused (#241)", async () => {
     const s = await server([["gh", ok()]]);
-    const noToken = await s.send("/api/prs/7/merge", { project: "widget", head: HEAD, base: "main" }, { origin: `http://${HOSTNAME}` });
-    const otherPage = await s.send("/api/prs/7/merge", { project: "widget", head: HEAD, base: "main" }, { origin: "http://evil.example", "x-anvideck-token": TOKEN });
-    expect([noToken.status, otherPage.status]).toEqual([403, 403]);
+    const ownOrigin = await s.sendHttp("/api/prs/7/merge", { project: "widget", head: HEAD, base: "main" }, { origin: `http://${HOSTNAME}` });
+    const otherPage = await s.sendHttp("/api/prs/7/merge", { project: "widget", head: HEAD, base: "main" }, { origin: "http://evil.example", "x-anvideck-token": "anything" });
+    expect([ownOrigin.status, otherPage.status]).toEqual([403, 403]);
     expect(s.f.calls.filter((c) => c[0] === "gh")).toEqual([]);
     expect(s.lines().map((l) => l.result)).toEqual(["refused", "refused"]);
   });

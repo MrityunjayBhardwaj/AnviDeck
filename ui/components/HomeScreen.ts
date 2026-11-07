@@ -101,6 +101,7 @@ export function HomeScreen(input: HomeInput): HTMLElement {
   queueEl = el("div", "hm-queue");
   healthSlot = el("div");
   agentsEl = el("div", "hm-agents");
+  agentsEl.dataset.tour = "home-agents";
   footEl = el("div", "hm-foot");
   rootEl.append(headEl, queueEl, healthSlot, agentsEl, footEl);
   paintAll(input);
@@ -331,6 +332,7 @@ function healthEl(input: HomeInput): HTMLElement {
   const h = healthModel({ home: input.home, failed: input.failed, project: input.project, projectsReadAt: input.projectsReadAt });
   const d = el("details", "hm-health");
   d.id = "status";
+  d.dataset.tour = "status";
   d.open = healthOpen;
   d.addEventListener("toggle", () => (healthOpen = d.open));
   const sum = el("summary");

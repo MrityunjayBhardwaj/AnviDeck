@@ -17,8 +17,8 @@ import { applyEdit, CodeEditError, readWorking, type EditDeps } from "../code-ed
  *   POST /api/code/:project/edit   { path, baseHash, content }   writes it (server/code-edit.ts), or
  *        refuses: 409 when an agent touches it or it changed since it was opened, 400 for a path
  *        outside the project, a symlink or .git, 503 when the agent host cannot be asked.
- *        A write: the guard installed on the whole app admits it only from AnviDeck's own pages
- *        with this server's token, and the action log records it either way.
+ *        A write: the guard installed on the whole app admits it only through the desktop app's
+ *        channel, never over HTTP (#241, #244), and the action log records it either way.
  *
  * Refusals are not here: the page reads GET /api/refusals, the same answer every screen reads.
  */

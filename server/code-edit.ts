@@ -1,8 +1,8 @@
 /**
  * Edit a file from the Code screen (#88): the one place AnviDeck writes a project file itself.
  *
- * It is reached only through POST /api/code/:project/edit, which the write guard admits only from
- * AnviDeck's own pages with this server's token, and which the action log records either way. It
+ * It is reached only through POST /api/code/:project/edit, which the write guard admits only through
+ * the desktop app's channel, never over HTTP (#241, #244), and which the action log records either way. It
  * writes a file only when every one of these holds, and refuses with the reason otherwise:
  *
  *   - the path is inside the project's own main checkout: repository-relative, no "..", no

@@ -25,7 +25,8 @@ export function isCall(r: unknown): r is CallRecord {
   const o = r as Record<string, unknown>;
   return !!o && typeof o === "object" && typeof o.at === "string" && typeof o.key === "string" && o.key !== "" &&
     typeof o.project === "string" && (o.call === "right" || o.call === "wrong") &&
-    (o.note === undefined || typeof o.note === "string");
+    (o.note === undefined || typeof o.note === "string") &&
+    (o.unverified === undefined || typeof o.unverified === "string") && (o.projectFrom === undefined || typeof o.projectFrom === "string");
 }
 
 /** Group calls (in the order recorded) by refusal key: the last one is the call, the rest its history. */
@@ -45,7 +46,7 @@ export function byKey(calls: CallRecord[]): Record<string, CallState> {
 export function readCalls(opts: { dir?: string; project?: string | null; key?: string | null } = {}): CallsRead {
   const file = callsPath(opts.dir ?? callsDir());
   const readAt = new Date().toISOString();
-  const empty = { file, lines: 0, unreadableLines: 0, calls: [], byKey: {}, readAt };
+  const empty = { file, lines: 0, unreadableLines: 0, unverified: 0, calls: [], byKey: {}, readAt };
   if (!existsSync(file)) return { ...empty, exists: false, status: "none" };
   let text: string;
   try {
@@ -73,6 +74,7 @@ export function readCalls(opts: { dir?: string; project?: string | null; key?: s
     ...(unreadable && !all.length ? { error: `none of the ${lines.length} lines in ${file} is a call` } : {}),
     lines: lines.length,
     unreadableLines: unreadable,
+    unverified: calls.filter((c) => typeof c.unverified === "string").length,
     calls,
     byKey: byKey(calls),
     readAt,

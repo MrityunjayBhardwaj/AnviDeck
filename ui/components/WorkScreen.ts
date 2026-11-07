@@ -135,7 +135,7 @@ function prCard(r: PrsResponse, pr: PrFacts & { conflicts: PrConflicts }): HTMLE
     el("span", { class: "wk-pr-title" }, el("a", { href: pr.url, target: "_blank", rel: "noopener" }, pr.title)),
     el("span", { class: "sh-dim wk-pr-by" }, ` ${pr.author ?? "?"} · ${pr.headRefName} · updated ${when(pr.updatedAt)}`)));
 
-  const pipe = el("div", { class: "wk-pipeline", role: "list" });
+  const pipe = el("div", { class: "wk-pipeline", role: "list", "data-tour": "pipeline" });
   for (const s of prSteps(pr)) {
     const mark = s.now && s.state !== "failed" ? "●" : MARK[s.state];
     pipe.append(el("span", { class: `wk-st ${s.state}${s.now ? " now" : ""}`, role: "listitem", title: s.detail, "data-step": s.key, "data-state": s.state }, `${mark ? `${mark} ` : ""}${s.label}`));
@@ -202,7 +202,7 @@ function mergeControl(project: string, pr: PrFacts, out: HTMLElement): HTMLEleme
 // ---------------------------------------------------------------------------
 
 function issueCard(it: BoardItem, repo: string, column: string, project: string, deps: WorkDeps): HTMLElement {
-  const card = el("div", { class: "wk-issue", "data-issue": String(it.number ?? "") });
+  const card = el("div", { class: "wk-issue", "data-issue": String(it.number ?? ""), "data-tour": "issue" });
   card.append(el("div", { class: "wk-issue-h" },
     el("span", { class: "wk-mono sh-dim" }, itemRef(it, repo)),
     ...it.labels.slice(0, 2).map((l) => el("span", { class: "sh-chip" }, l))));
@@ -213,7 +213,7 @@ function issueCard(it: BoardItem, repo: string, column: string, project: string,
       ...it.linkedPrs.flatMap((n) => [own ? el("a", { href: `#work?pr=${n}` }, `#${n}`) : `#${n}`, " "])));
   }
   if (canStartAgent(it, repo, column)) {
-    const b = el("button", { class: "sh-btn wk-start", type: "button", "data-start": String(it.number) }, "Start agent");
+    const b = el("button", { class: "sh-btn wk-start", type: "button", "data-start": String(it.number), "data-tour": "start-agent" }, "Start agent");
     b.onclick = () => deps.startAgent(project, it.number!);
     card.append(b);
   }

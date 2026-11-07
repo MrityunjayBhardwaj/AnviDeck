@@ -1,0 +1,57 @@
+/* Design (#87). Loaded by ui/components/DesignScreen.ts. The prototype's Design screen on the
+   shell's tokens (shell.css): colour only for state. */
+
+.dz { max-width: 1280px; }
+.dz .sh-head .dz-acts { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.dz h3 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+.dz-link { text-decoration: none; }
+.dz-mono { font: 12px var(--font-mono); }
+.dz-note { font-size: 12px; margin-top: 4px; }
+.dz-sub { font-size: 12px; color: var(--sh-ink-2); margin-top: 6px; }
+.dz-gap { color: var(--yellow); font-size: 12.5px; }
+.dz-ok { color: var(--green); }
+.dz-bad { color: var(--red); }
+.dz-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+.dz-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--sh-line); flex-wrap: wrap; }
+.dz-tabs button { background: none; border: 0; border-bottom: 2px solid transparent; padding: 6px 12px; color: var(--sh-ink-2); font: 13px var(--sh-font-ui); cursor: pointer; }
+.dz-tabs button.on { color: var(--sh-ink); border-bottom-color: var(--accent); }
+.dz-body { display: flex; flex-direction: column; gap: 10px; }
+.dz-grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: start; }
+@media (max-width: 1000px) { .dz-grid2 { grid-template-columns: 1fr; } }
+
+.dz-kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 12px; margin: 0; font-size: 12.5px; }
+.dz-kv dt { color: var(--sh-ink-3); }
+.dz-kv dd { margin: 0; }
+.dz-chip { display: inline-block; padding: 0 7px; border-radius: 9px; border: 1px solid var(--sh-line); font-size: 12px; }
+.dz-chip.ok { color: var(--green); border-color: rgba(74, 222, 128, .4); }
+.dz-chip.warn { color: var(--yellow); border-color: rgba(250, 204, 21, .4); }
+.dz-chip.bad { color: var(--red); border-color: rgba(248, 113, 113, .4); }
+
+.dz-table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+.dz-table th, .dz-table td { padding: 4px 8px; border-bottom: 1px solid var(--sh-line); text-align: left; vertical-align: top; }
+.dz-table .num, .dz-table th.num { text-align: right; }
+.dz-table td.dz-mono, .dz-table td.dz-day { white-space: nowrap; }
+.dz-callrow td { padding-top: 0; }
+.dz-callrow .rc { border-top: 0; padding-top: 0; }
+
+.dz-composer { display: flex; gap: 8px; }
+.dz-composer input { flex: 1; background: var(--bg-0); color: var(--sh-ink); border: 1px solid var(--sh-line); border-radius: 7px; padding: 5px 9px; font: 12.5px var(--sh-font-ui); }
+.dz-confirm[hidden] { display: none; }
+.dz-confirm { border-top: 1px solid var(--accent); padding-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.dz-prompt { white-space: pre-wrap; background: var(--bg-0); border: 1px solid var(--sh-line); border-radius: 7px; padding: 8px 10px; font: 12px var(--font-mono); max-height: 320px; overflow: auto; margin: 0; }
+.dz-go { border-color: var(--accent) !important; font-weight: 600; }
+
+.dz-moves { margin: 6px 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
+.dz-tag { margin-left: 8px; font-size: 11.5px; padding: 0 6px; border: 1px solid var(--sh-line); border-radius: 8px; color: var(--sh-ink-2); }
+.dz-imports { margin-top: 2px; }
+
+.dz-flow { display: flex; align-items: stretch; gap: 6px; overflow-x: auto; }
+.dz-step { flex: 1 1 0; min-width: 130px; background: var(--sh-panel-2); border: 1px solid var(--sh-line); border-radius: 8px; padding: 8px; display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.dz-step.guard, .dz-step.refusal { border-color: rgba(248, 113, 113, .5); }
+.dz-step.lands { border-color: rgba(74, 222, 128, .5); }
+.dz-step.ruling { border-color: var(--accent); }
+.dz-fig { font: 12px var(--font-mono); color: var(--sh-ink); }
+.dz-src { font-size: 11px; color: var(--sh-ink-3); overflow-wrap: anywhere; }
+.dz-arrow { align-self: center; color: var(--sh-ink-3); font-size: 12px; }
+.dz-sources { font-size: 11.5px; display: flex; flex-direction: column; gap: 3px; }

@@ -69,7 +69,6 @@ export const SCREENS: readonly ScreenDef[] = [
     label: "Design",
     group: "project",
     rail: "project",
-    buildsIn: 87,
     blurb: "Five lenses on the project's design: Armed, Placed, Consolidated, Path to target, System flows.",
   },
   {
@@ -93,7 +92,6 @@ export const SCREENS: readonly ScreenDef[] = [
     label: "History",
     group: "project",
     rail: "project",
-    buildsIn: 90,
     blurb:
       "One timeline of agent turns, edits, refusals, rulings, commits and catalogue changes, each naming its source; compare two points; replay a session.",
   },
@@ -102,7 +100,6 @@ export const SCREENS: readonly ScreenDef[] = [
     label: "Example flows",
     group: "help",
     rail: null,
-    buildsIn: 91,
     blurb: "Six guided flows played over the real screens: start a task, a blocked edit and your call, review a change, and more.",
   },
   { id: "older", label: "Older views", group: "rail", rail: "older", blurb: "The dashboard's views from before the workspace, until #92 retires them." },

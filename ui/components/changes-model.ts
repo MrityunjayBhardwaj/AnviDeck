@@ -11,6 +11,7 @@
 import type { HookLogEntry } from "../../shared/types";
 import type { ChangesResponse, CommitsRead, DharanaRead, PrFile, PrSession, SessionsRead } from "../../shared/changes-types";
 import { boundaryId, logFileMatches } from "../../shared/changes";
+import { elsewhereText, type RunsElsewhere } from "../../shared/agent-elsewhere";
 import type { DiffFile } from "../../shared/diff";
 import { parsePrSections, type Evidence, type Gap, type SectionState } from "../../shared/pr-evidence";
 
@@ -269,13 +270,18 @@ export function sessionsSummary(sessions: SessionsRead): { lines: string[]; prob
 export interface AgentLite {
   id: string;
   status: string;
+  /** Another AnviDeck server runs it (#104): only that server can take a comment for it. */
+  runsElsewhere?: RunsElsewhere;
 }
 
 export type AgentsList = { state: "loading" } | { state: "ok"; agents: AgentLite[] } | { state: "off" | "failed"; reason: string };
 
 export const LIVE = new Set(["starting", "working", "waiting"]);
 
-export type CommentTarget = { enabled: true; agentId: string; note: string } | { enabled: false; why: string };
+export type CommentTarget =
+  | { enabled: true; agentId: string; note: string }
+  /** `elsewhere`: the agent runs in another AnviDeck server; the page links to it there. */
+  | { enabled: false; why: string; elsewhere?: { agentId: string; at: RunsElsewhere } };
 
 /** Where a line comment goes: the PR's running AnviDeck agent, or why the box is off. */
 export function commentTarget(sessions: SessionsRead, agents: AgentsList): CommentTarget {
@@ -292,7 +298,20 @@ export function commentTarget(sessions: SessionsRead, agents: AgentsList): Comme
   }
   if (agents.state === "loading") return { enabled: false, why: "Reading the agents…" };
   if (agents.state !== "ok") return { enabled: false, why: `Could not read the agents (${agents.state}): ${agents.reason}` };
-  const live = ids.map((id) => agents.agents.find((a) => a.id === id)).filter((a): a is AgentLite => !!a && LIVE.has(a.status));
+  const matched = ids.map((id) => agents.agents.find((a) => a.id === id)).filter((a): a is AgentLite => !!a);
+  // Running, but in another server: this one would refuse the comment (409), so say where it is.
+  const there = matched.filter((a) => a.runsElsewhere);
+  const live = matched.filter((a) => !a.runsElsewhere && LIVE.has(a.status));
+  if (live.length === 0 && there.length === 1) {
+    const a = there[0];
+    return {
+      enabled: false,
+      why: `This PR's agent ${a.id} (${a.status}) is not run by this server: ${elsewhereText(a.runsElsewhere!)}, and only that server can send it a comment. Comment from that server's Changes screen.`,
+      elsewhere: { agentId: a.id, at: a.runsElsewhere! },
+    };
+  }
+  if (live.length === 0 && there.length > 1)
+    return { enabled: false, why: `This PR's agents run in other AnviDeck servers (${there.map((a) => `${a.id}: ${elsewhereText(a.runsElsewhere!)}`).join("; ")}); comment from the server that runs the one you mean.` };
   if (live.length === 1) return { enabled: true, agentId: live[0].id, note: `Goes to agent ${live[0].id} (${live[0].status}) on its next turn.` };
   if (live.length > 1) return { enabled: false, why: `${live.length} running AnviDeck agents match this PR (${live.map((a) => a.id).join(", ")}); AnviDeck does not guess which one.` };
   const known = ids.map((id) => {
