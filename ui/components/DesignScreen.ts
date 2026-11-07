@@ -183,7 +183,8 @@ export function DesignScreen(projectName: string | null, params: URLSearchParams
       card.append(table);
     }
     card.append(el("div", { class: "dz-note", id: "dz-trial-sum" }, sum.line), el("div", { class: "sh-dim dz-note", id: "dz-trial-pop" }, sum.population));
-    if (r.status === "measured" && r.trialReading) card.append(el("div", { class: "sh-dim dz-note dz-mono" }, r.trialReading));
+    if (r.status === "measured" && r.textReportCut) card.append(el("div", { class: "dz-gap", id: "dz-trial-cut" }, r.textReportCut));
+    else if (r.status === "measured" && r.trialReading) card.append(el("div", { class: "sh-dim dz-note dz-mono" }, r.trialReading));
     return card;
   }
 

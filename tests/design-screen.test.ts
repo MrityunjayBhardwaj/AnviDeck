@@ -103,6 +103,20 @@ const STRUCTURE = {
   counts: { divergence: { grandfathered: 0, new: 0, fixed: 0 }, cycle: { total: 0, new: 0 }, examinedBetweenComponents: 0, edges: 0 },
 };
 
+let refusalsAnswer: unknown = { status: "no-design", project: "stave", reason: "none" };
+const measured = (over: Record<string, unknown>) => ({
+  status: "measured", project: "stave", package: "/s/packages/editor",
+  window: { since: "2026-10-06T00:00:00.000Z", until: null, chosenBy: "default" },
+  instrument: { name: "structure-refusals.js", path: "/r.js", sha256: "abc", mtime: "", args: [], ranAt: "2026-11-05T12:13:53.242Z", ms: 1, exit: 0, exitMeaning: "" },
+  transcripts: { read: 3, unreadable: 0, badLines: 0 },
+  totals: { edits: 1, sessions: 1, applied: 1, refused: 0, refusedByCheckAlone: 0, deniedOtherwise: 0, erroredOtherwise: 0, noResult: 0, timedOut: 0, cancelled: 0, unrecognised: 0 },
+  notices: {}, refusals: [], timeouts: [], unrecognised: [],
+  exposure: null, defaultBranch: null, byDesign: [], trialReading: "TRIAL READING: 0 refusals in 1 edit", report: "",
+  cache: { at: "", ageMs: 0, refreshing: false, ttlMs: 1 },
+  calls: { file: "/c.jsonl", exists: true, status: "ok", lines: 0, unreadableLines: 0, unverified: 0, ofProject: 0, notListed: 0, readAt: "" },
+  ...over,
+});
+
 function answer(url: string, method: string, body: unknown): Response {
   if (method === "POST") {
     posts.push({ url, body });
@@ -110,7 +124,7 @@ function answer(url: string, method: string, body: unknown): Response {
   }
   if (url.startsWith("/api/structure/")) return Response.json(STRUCTURE);
   if (url.startsWith("/api/project/")) return Response.json({ name: "stave", path: "/Users/x/stave", catalogues: [], boundaries: [] });
-  if (url.startsWith("/api/refusals")) return Response.json({ status: "no-design", project: "stave", reason: "none" });
+  if (url.startsWith("/api/refusals")) return Response.json(refusalsAnswer);
   if (url.startsWith("/api/design/cost")) return Response.json({ status: "no-design", project: "stave", reason: "none" });
   if (url.startsWith("/api/design/hooks")) return Response.json({ readAt: "2026-11-05T12:00:00Z", files: [], hooks: [], notRead: "plugins are not read" });
   return new Response("{}", { status: 404 });
@@ -146,9 +160,9 @@ const settle = async () => {
   for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
 };
 
-async function screen(): Promise<FakeEl> {
+async function screen(lens = "placed"): Promise<FakeEl> {
   const { DesignScreen } = await import("../ui/components/DesignScreen");
-  const root = DesignScreen("stave", new URLSearchParams("lens=placed")) as unknown as FakeEl;
+  const root = DesignScreen("stave", new URLSearchParams(`lens=${lens}`)) as unknown as FakeEl;
   await settle();
   return root;
 }
@@ -182,5 +196,24 @@ describe("Ask before writing, through the screen", () => {
     expect(root.byId("dz-ask-empty")!.textContent).toContain("Type a question first");
     expect(root.byId("dz-confirm")!.textContent).not.toContain(q.placeholder);
     expect(posts).toEqual([]);
+  });
+});
+
+describe("the trial record's own reading line (#256)", () => {
+  const CUT = "the instrument's text report never ended, so it may be cut short: its trial reading is not shown, and notices are counted from its --json report";
+  afterAll(() => {
+    refusalsAnswer = { status: "no-design", project: "stave", reason: "none" };
+  });
+  test("a text report that ended: the reading line is shown, nothing about a cut", async () => {
+    refusalsAnswer = measured({});
+    const trial = (await screen("armed")).byId("dz-trial")!;
+    expect(trial.textContent).toContain("TRIAL READING: 0 refusals in 1 edit");
+    expect(trial.find((e) => e.id === "dz-trial-cut")).toBeNull();
+  });
+  test("a text report cut short: the card says so where the reading would be, never a blank", async () => {
+    refusalsAnswer = measured({ trialReading: null, textReportCut: CUT });
+    const trial = (await screen("armed")).byId("dz-trial")!;
+    expect(trial.find((e) => e.id === "dz-trial-cut")?.textContent).toBe(CUT);
+    expect(trial.textContent).not.toContain("TRIAL READING");
   });
 });
