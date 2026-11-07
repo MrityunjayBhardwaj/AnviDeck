@@ -30,6 +30,8 @@ import {
   type Marks,
   type TreeNode,
   workingHere,
+  blameLabelAt,
+  lineChunks,
 } from "./code-model";
 
 type Kid = Node | string | null | undefined | false;
@@ -96,6 +98,7 @@ export function CodeScreen(project: string | null, params: URLSearchParams): HTM
   let working: Working | null = null;
   let open = new Set<string>();
   let openLine: number | null = null;
+  let lineWatch: IntersectionObserver | null = null;
 
   const setHash = () => {
     const q = new URLSearchParams();
@@ -230,6 +233,8 @@ export function CodeScreen(project: string | null, params: URLSearchParams): HTM
   }
 
   function paintFile() {
+    lineWatch?.disconnect();
+    lineWatch = null;
     paintHead();
     if (!tree) return;
     if (!selected) {
@@ -269,10 +274,12 @@ export function CodeScreen(project: string | null, params: URLSearchParams): HTM
         : `▲ ${u.trap!.entryId} cites ${u.trap!.cite}, past the end of this file (${r.text.split("\n").length} lines) at ${r.sha.slice(0, 7)}.`));
     const lines = r.text.split("\n");
     if (lines.length && lines[lines.length - 1] === "") lines.pop();
-    const editor = el("div", { class: `cd-editor${blame ? " blame" : ""}`, id: "cd-editor" });
+    // A repaint (a line's card opening, Blame) keeps the place in the file.
+    const shown = document.getElementById("cd-editor");
+    const keepTop = shown?.dataset.file === selected ? shown.scrollTop : 0;
+    const editor = el("div", { class: `cd-editor${blame ? " blame" : ""}`, id: "cd-editor", "data-file": selected });
     const bl = r.blame.status === "ok" ? r.blame : null;
-    let prev = "";
-    lines.forEach((text, i) => {
+    const paintLine = (into: HTMLElement, i: number) => {
       const n = i + 1;
       const ms = lm.byLine.get(n);
       const g = gutterOf(ms);
@@ -280,10 +287,9 @@ export function CodeScreen(project: string | null, params: URLSearchParams): HTM
       if (blame) {
         const sha = bl?.lines[i] ?? "";
         const c = bl?.commits[sha];
-        kids.push(el("span", { class: "cd-bl", title: c ? `${c.sha}\n${c.author} · ${c.at}\n${c.summary}` : "" }, sha && sha !== prev && c ? `${sha.slice(0, 7)} ${c.at.slice(0, 10)} ${c.author}` : ""));
-        prev = sha;
+        kids.push(el("span", { class: "cd-bl", title: c ? `${c.sha}\n${c.author} · ${c.at}\n${c.summary}` : "" }, c && blameLabelAt(bl?.lines, i) ? `${sha.slice(0, 7)} ${c.at.slice(0, 10)} ${c.author}` : ""));
       }
-      kids.push(el("span", { class: `cd-g ${g ? `cd-${g.cls}` : ""}` }, g?.glyph ?? ""), el("span", { class: "cd-num" }, String(n)), el("span", { class: "cd-t" }, text));
+      kids.push(el("span", { class: `cd-g ${g ? `cd-${g.cls}` : ""}` }, g?.glyph ?? ""), el("span", { class: "cd-num" }, String(n)), el("span", { class: "cd-t" }, lines[i]));
       const row = el("div", { class: `cd-l${g ? ` mk-${g.cls}` : ""}`, "data-line": String(n) }, ...kids);
       if (ms) {
         row.classList.add("has");
@@ -292,11 +298,42 @@ export function CodeScreen(project: string | null, params: URLSearchParams): HTM
           paintFile();
         };
       }
-      editor.append(row);
-      if (ms && openLine === n) editor.append(el("div", { class: "cd-hover" }, ...ms.map(markCard)));
-    });
+      into.append(row);
+      if (ms && openLine === n) into.append(el("div", { class: "cd-hover" }, ...ms.map(markCard)));
+    };
     const blameNote = blame ? el("div", { class: "sh-dim cd-note" }, r.blame.status === "ok" ? `blame: git blame ${r.sha.slice(0, 7)} -- ${r.file} (${Object.keys(r.blame.commits).length} commits)` : `blame could not be read: ${r.blame.reason}`) : null;
-    fileEl.replaceChildren(head, ...cards, blameNote ?? "", editor);
+    const chunks = lineChunks(lines.length);
+    const longNote = chunks.length > 1 ? el("div", { class: "sh-dim cd-note", id: "cd-long" }, `A long file (${lines.length} lines): lines are painted as you scroll to them, so find-in-page sees only those on screen.`) : null;
+    fileEl.replaceChildren(head, ...cards, blameNote ?? "", longNote ?? "", editor);
+    if (chunks.length === 1) for (let i = chunks[0].start; i < chunks[0].end; i++) paintLine(editor, i);
+    else if (chunks.length > 1) {
+      // Painting every line of a long file froze the window (#251). Each chunk keeps its height;
+      // only the ones near the view hold lines, so the file scrolls as one. The height comes from
+      // a real row, measured here: the browser, not the stylesheet's numbers, decides it.
+      paintLine(editor, chunks[0].start);
+      const linePx = (editor.firstElementChild as HTMLElement).getBoundingClientRect().height || 20; // 0 only if the screen is not showing
+      editor.replaceChildren();
+      lineWatch = new IntersectionObserver((seen) => {
+        for (const s of seen) {
+          const box = s.target as HTMLElement;
+          const { start, end } = chunks[Number(box.dataset.chunk)];
+          if (s.isIntersecting && !box.firstChild) {
+            box.style.height = "";
+            for (let i = start; i < end; i++) paintLine(box, i);
+          } else if (!s.isIntersecting && box.firstChild) {
+            box.style.height = `${box.getBoundingClientRect().height}px`;
+            box.replaceChildren();
+          }
+        }
+      }, { root: editor, rootMargin: "600px 0px" });
+      chunks.forEach((c, k) => {
+        const box = el("div", { class: "cd-chunk", "data-chunk": String(k) });
+        box.style.height = `${(c.end - c.start) * linePx}px`;
+        editor.append(box);
+        lineWatch!.observe(box);
+      });
+    }
+    editor.scrollTop = keepTop;
   }
 
   function editPanel(): HTMLElement {

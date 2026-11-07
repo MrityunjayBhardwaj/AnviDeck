@@ -11,7 +11,7 @@ import { spawnSync } from "node:child_process";
 import { citesIn, cleanRelPath, parseBlame, placeCites, readCodeTree } from "../server/readers/code";
 import { onlyFile } from "../server/routes/refusals";
 import { ALL_TIME, windowOf } from "../server/readers/refusals";
-import { breakingEdges, buildTree, countsLine, defaultFile, editState, importLines, lineMarks, marks, refusalsSource, resolveSpec, gutterOf, workingHere } from "../ui/components/code-model";
+import { breakingEdges, buildTree, countsLine, defaultFile, editState, importLines, lineMarks, marks, refusalsSource, resolveSpec, gutterOf, workingHere, lineChunks, blameLabelAt, WHOLE_FILE_LINES, CHUNK_LINES } from "../ui/components/code-model";
 import type { CodeTreeOk, WorkingFile } from "../shared/code-types";
 import type { Refusal, RefusalsMeasured, RefusalsResponse } from "../shared/refusal-types";
 import type { StructureEdge, StructureMeasured, StructureNoDesign } from "../shared/structure-types";
@@ -328,5 +328,37 @@ describe("editing belongs to the desktop window (#241, #244)", () => {
   test("a file an agent holds keeps its own reason, in the window and out of it", () => {
     const held = { ...w, editable: false, reason: "an agent is working on it" };
     expect(workingHere(held, false, "only the app acts").reason).toBe("an agent is working on it");
+  });
+});
+
+describe("a long file is painted in chunks (#251)", () => {
+  test("up to the limit it is one chunk, so every line is painted", () => {
+    expect(lineChunks(WHOLE_FILE_LINES)).toEqual([{ start: 0, end: WHOLE_FILE_LINES }]);
+    expect(lineChunks(1)).toEqual([{ start: 0, end: 1 }]);
+    expect(lineChunks(0)).toEqual([]);
+  });
+
+  test("past it, every line is in exactly one chunk, and in order", () => {
+    for (const count of [WHOLE_FILE_LINES + 1, CHUNK_LINES * 8, 50_000, 50_001]) {
+      const chunks = lineChunks(count);
+      expect(chunks.length).toBeGreaterThan(1);
+      expect(chunks[0].start).toBe(0);
+      expect(chunks[chunks.length - 1].end).toBe(count);
+      chunks.forEach((c, i) => {
+        expect(c.end).toBeGreaterThan(c.start);
+        expect(c.end - c.start).toBeLessThanOrEqual(CHUNK_LINES);
+        if (i) expect(c.start).toBe(chunks[i - 1].end);
+      });
+    }
+  });
+
+  test("the blame column names a commit only where it changes, whichever line is painted first", () => {
+    const shas = ["a", "a", "b", "b", "a"];
+    expect(shas.map((_, i) => blameLabelAt(shas, i))).toEqual(["a", null, "b", null, "a"]);
+    // A chunk starting at line 3 (index 2) and one starting mid-run at index 3 answer the same out of order.
+    expect(blameLabelAt(shas, 3)).toBeNull();
+    expect(blameLabelAt(shas, 2)).toBe("b");
+    expect(blameLabelAt(undefined, 0)).toBeNull();
+    expect(blameLabelAt([""], 0)).toBeNull();
   });
 });

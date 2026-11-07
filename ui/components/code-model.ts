@@ -248,6 +248,28 @@ export function lineMarks(text: string, file: string, fm: FileMarks | undefined)
   return { byLine, unplaced };
 }
 
+/** A file up to this many lines is painted whole, so find-in-page sees all of it (#251). */
+export const WHOLE_FILE_LINES = 1000;
+/** Lines per chunk of a longer file: only the chunks near the view hold real lines. */
+export const CHUNK_LINES = 250;
+
+/** The file's lines (0-based, `end` exclusive) split into chunks: each line in exactly one. */
+export function lineChunks(count: number, whole = WHOLE_FILE_LINES, size = CHUNK_LINES): { start: number; end: number }[] {
+  if (count <= whole) return count ? [{ start: 0, end: count }] : [];
+  const out: { start: number; end: number }[] = [];
+  for (let start = 0; start < count; start += size) out.push({ start, end: Math.min(start + size, count) });
+  return out;
+}
+
+/**
+ * The commit a line's blame column names, or null when the line above already names it. Decided
+ * from the two lines themselves, so a chunk painted out of order still labels its first line.
+ */
+export function blameLabelAt(shas: string[] | undefined, i: number): string | null {
+  const sha = shas?.[i];
+  return sha && sha !== shas![i - 1] ? sha : null;
+}
+
 /** The strongest mark of a line, for its gutter: refused, then divergent, then trap. */
 export function gutterOf(ms: LineMark[] | undefined): { glyph: string; cls: string } | null {
   if (!ms?.length) return null;
