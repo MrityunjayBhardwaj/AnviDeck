@@ -1,3 +1,4 @@
+import { outputNeverEnded, readProcess } from "../child-output";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { announcesContinuation, entryIdFromHeader, ENTRY_HEADER_LINE } from "../../shared/parser";
@@ -137,7 +138,7 @@ export async function listAtCommit(
  * not finished by then is stopped and the read answers ok: false, so a read
  * that cannot finish is a failure, never a short answer (#34).
  */
-async function gitIn(
+export async function gitIn(
   dir: string,
   args: string[],
   timeoutMs?: number
@@ -153,15 +154,12 @@ async function gitIn(
           proc.kill();
         }, timeoutMs)
       : undefined;
-    const [out, err] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]);
-    const code = await proc.exited;
+    const { stdout: out, stderr: err, code, ended } = await readProcess(proc, `git ${args[0]}`);
     clearTimeout(timer);
     if (timedOut) {
       return { ok: false, out: "", err: `git ${args[0]} did not finish within ${timeoutMs! / 1000} s and was stopped` };
     }
+    if (!ended) return { ok: false, out: "", err: outputNeverEnded(`git ${args[0]}`) };
     return { ok: code === 0, out, err: err.trim() };
   } catch (e) {
     return { ok: false, out: "", err: (e as Error).message };

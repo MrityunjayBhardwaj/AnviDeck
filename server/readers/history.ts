@@ -17,6 +17,7 @@
  *
  * Read-only: it reads files and asks git (log, rev-list, rev-parse, show, diff, worktree list); it writes nothing.
  */
+import { outputNeverEnded, readProcess } from "../child-output";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { listReplaySessions } from "./replay";
@@ -100,10 +101,10 @@ export async function gitRead(dir: string, args: string[], timeoutMs = GIT_TIMEO
       timedOut = true;
       proc.kill();
     }, timeoutMs);
-    const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
-    const code = await proc.exited;
+    const { stdout: out, stderr: err, code, ended } = await readProcess(proc, `git ${args[0]}`);
     clearTimeout(timer);
     if (timedOut) return { ok: false, err: `git ${args[0]} did not finish within ${timeoutMs / 1000} s and was stopped` };
+    if (!ended) return { ok: false, err: outputNeverEnded(`git ${args[0]} in ${dir}`) };
     if (code !== 0) return { ok: false, err: `git ${args[0]} in ${dir}: ${err.trim() || `exit ${code}`}` };
     return { ok: true, out };
   } catch (e) {

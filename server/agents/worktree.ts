@@ -1,3 +1,4 @@
+import { outputNeverEnded, readProcess } from "../child-output";
 import { appendFileSync, existsSync, lstatSync, readFileSync, readlinkSync, symlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -23,7 +24,8 @@ export { git, githubRepoOf, mainCheckout, type Run, type RunResult };
 export const spawnRun: Run = async (cmd, args, opts) => {
   try {
     const p = Bun.spawn([cmd, ...args], { cwd: opts?.cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore" });
-    const [stdout, stderr, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+    const { stdout, stderr, code, ended } = await readProcess(p, cmd);
+    if (!ended) return { code: 125, stdout: "", stderr: outputNeverEnded(`${cmd} ${args[0] ?? ""}`) };
     return { code, stdout, stderr };
   } catch (e) {
     return { code: 127, stdout: "", stderr: (e as Error).message };

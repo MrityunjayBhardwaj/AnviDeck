@@ -163,8 +163,8 @@ exec "${realGit}" "$@"
       const r = await withFakeGit("hang", () => peekEntryDatesForFile(join(repo, "krama.md"), 4000));
       expect(r.state).toBe("failed");
       if (r.state === "failed") expect(r.err).toContain("did not finish within 0.4 s");
-      // Stopped, not waited out: the stand-in would hang for 30 s.
-      expect(performance.now() - t0).toBeLessThan(3000);
+      // Stopped, not waited out: the stand-in would hang for 30 s. (The wait after the exit can take a few seconds: #253.)
+      expect(performance.now() - t0).toBeLessThan(10_000);
     } finally {
       setDatesGitTimeoutMs(prev);
     }

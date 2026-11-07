@@ -34,6 +34,12 @@ import { callLine, shortDay, withRecorded } from "../ui/components/refusal-call-
 import { refusalCallTarget } from "../ui/components/agents-model";
 import type { CallRecord, CallsRead, RefusalsMeasured, RefusalsResponse, RefusalWindow } from "../shared/refusal-types";
 
+/**
+ * Where a fake instrument writes its report, as the real one reads it: the path after --json. It
+ * throws without one: index -1 + 1 would be argv[0], and the fake would write over node itself.
+ */
+const REPORT = "(() => { const i = process.argv.indexOf('--json'); if (i < 0) throw new Error('no --json'); return process.argv[i + 1]; })()";
+
 const dirs: string[] = [];
 const scratch = (p = "refusals-") => {
   const d = realpathSync(mkdtempSync(join(tmpdir(), p)));
@@ -326,17 +332,17 @@ describe("runInstrument when the instrument cannot answer", () => {
     }
   });
   test("a report that does not parse → unreadable", async () => {
-    const r = await runInstrument("p", pkg(), WIN, { script: fake("require('fs').writeFileSync('/dev/fd/3', '{not json'); process.exit(1);") });
+    const r = await runInstrument("p", pkg(), WIN, { script: fake("require('fs').writeFileSync(" + REPORT + ", '{not json'); process.exit(1);") });
     expect(r.status).toBe("unreadable");
     if (r.status === "unreadable") expect(r.reason).toContain("does not parse");
   });
   test("an outcome this reader does not know → unreadable, never left out of the totals", async () => {
-    const r = await runInstrument("p", pkg(), WIN, { script: fake("require('fs').writeFileSync('/dev/fd/3', JSON.stringify({ calls: [{ id: 'x', outcome: 'quarantined', session: 's' }] })); process.exit(1);") });
+    const r = await runInstrument("p", pkg(), WIN, { script: fake("require('fs').writeFileSync(" + REPORT + ", JSON.stringify({ calls: [{ id: 'x', outcome: 'quarantined', session: 's' }] })); process.exit(1);") });
     expect(r.status).toBe("unreadable");
     if (r.status === "unreadable") expect(r.reason).toContain("quarantined");
   });
   test("the instrument refusing the reader's own arguments → unreadable, never its verdict on the data", async () => {
-    for (const why of ["unrecognised argument(s): --json /dev/fd/3", "--since is required", "--since is not a time: x"]) {
+    for (const why of ["unrecognised argument(s): --json report.json", "--since is required", "--since is not a time: x"]) {
       const r = await runInstrument("p", pkg(), WIN, { script: fake(`console.log('structure-refusals: NOT MEASURED — ${why}'); process.exit(2);`) });
       expect(`${why}: ${r.status}`).toBe(`${why}: unreadable`);
       if (r.status === "unreadable") expect(r.reason).toContain(why);
@@ -548,10 +554,10 @@ setTimeout(() => {}, 60000);`);
   }, 30_000);
 
   test("when the reason re-read fails, each refusal says why, never blank", async () => {
-    // The fake writes to fd 3 at load, so the driver's require() of it throws: the driver answers ok:false.
+    // The fake writes its report at load, and the driver's require() passes no --json, so it throws: the driver answers ok:false.
     const d = scratch("refusals-driver-");
     const script = join(d, "fake.js");
-    writeFileSync(script, `require('fs').writeFileSync('/dev/fd/3', JSON.stringify({ calls: [{ id: 'toolu_R', outcome: 'refused', session: 's', at: '2026-10-22T16:16:24Z', tool: 'Edit', file: 'src/a.ts', transcript: '/nonexistent.jsonl' }] })); process.exit(1);`);
+    writeFileSync(script, `require('fs').writeFileSync(${REPORT}, JSON.stringify({ calls: [{ id: 'toolu_R', outcome: 'refused', session: 's', at: '2026-10-22T16:16:24Z', tool: 'Edit', file: 'src/a.ts', transcript: '/nonexistent.jsonl' }] })); process.exit(1);`);
     const r = (await runInstrument("p", scratch("refusals-pkg-"), WIN, { script })) as RefusalsMeasured;
     expect(r.status).toBe("measured");
     expect(r.refusals[0].reason).toBeNull();

@@ -5,7 +5,7 @@
  * why), run under node the way server/readers/structure.ts runs the structure guard. This reader
  * finds the project's registered package, runs the instrument once per window, caches the answer
  * (it reads every transcript on the machine: minutes, not seconds), and shapes it. Every count is
- * the instrument's: its --json report (sent to a pipe on fd 3, never to a file) gives the calls
+ * the instrument's: its --json report (a file in the run's own scratch folder, read once and removed with it) gives the calls
  * and their outcomes, its text report gives the notice line and the trial reading verbatim, and
  * its exported readTranscript gives back the guard's words for each refusal
  * (refusals-driver.cjs), because the --json report drops them.
@@ -20,6 +20,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs"
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
+import { settleAfterExit } from "../child-output";
 import { driverArgs, feedDriver, type DriverName } from "./node-drivers";
 import { listStructure, TMP_ROOT } from "./structure";
 import { readCalls } from "./calls";
@@ -112,7 +113,7 @@ export function packageOf(project: string, opts: { path?: string | null; package
 
 // ── running the instrument ─────────────────────────────────────────────────────────────────
 
-interface Spawned { code: number | null; signal: string | null; stdout: string; stderr: string; fd3: string; ms: number; startError?: string; fd3Error?: string }
+interface Spawned { code: number | null; signal: string | null; stdout: string; stderr: string; report: string; ms: number; startError?: string }
 
 /** TMPDIR for one run: a folder of its own under TMP_ROOT, removed by done() when the run ends. */
 function scratchTmp(): { dir: string; done: () => void } {
@@ -121,43 +122,46 @@ function scratchTmp(): { dir: string; done: () => void } {
   return { dir, done: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
-function spawnNode(args: string[], withFd3: boolean, timeoutMs: number, driver?: DriverName): Promise<Spawned> {
+/** Stands in for the report's path in an instrument's arguments, as shown on the answer: each run has its own. */
+const REPORT_FILE = "<the run's scratch folder>/report.json";
+
+function spawnNode(args: string[], timeoutMs: number, driver?: DriverName): Promise<Spawned> {
   const tmp = scratchTmp();
   const t0 = Date.now();
+  const reportPath = join(tmp.dir, "report.json");
+  // Read before the scratch folder goes. No file is the same as an empty one: the instrument wrote no report.
+  const report = () => {
+    try {
+      return readFileSync(reportPath, "utf8");
+    } catch {
+      return "";
+    }
+  };
   return new Promise<Spawned>((resolve) => {
     let child: ReturnType<typeof spawn> | undefined;
-    let stdout = "", stderr = "", fd3 = "";
-    let fd3Error: string | undefined;
+    let stdout = "", stderr = "";
     try {
-      child = spawn("node", args, {
+      child = spawn("node", args.map((a) => (a === REPORT_FILE ? reportPath : a)), {
         env: { ...process.env, TMPDIR: tmp.dir },
-        stdio: withFd3 ? [driver ? "pipe" : "ignore", "pipe", "pipe", "pipe"] : [driver ? "pipe" : "ignore", "pipe", "pipe"],
+        stdio: [driver ? "pipe" : "ignore", "pipe", "pipe"],
       });
       if (driver) feedDriver(child.stdin, driver);
       child.stdout!.on("data", (d) => (stdout += d));
       child.stderr!.on("data", (d) => (stderr += d));
-      if (withFd3) {
-        const s3 = child.stdio[3] as NodeJS.ReadableStream;
-        s3.on("data", (d) => (fd3 += d));
-        // Bun (1.3.10) sets the extra pipe up with a socket connect that fails now and then ("Failed to
-        // connect", ENOENT): 6 of 100 spawns in a row on an idle machine, 2026-11-05 (#219). Its report is
-        // then lost; said below, never an unhandled error and never read as "no report".
-        s3.on("error", (e: Error) => (fd3Error = e.message));
-      }
     } catch (e) {
-      // Seen under heavy load (2026-11-05): Bun's spawn threw ENOENT setting up the fd 3 pipe. Said, not thrown.
+      // A spawn that throws is said, not thrown.
       child?.kill("SIGKILL");
-      resolve({ code: null, signal: null, stdout, stderr, fd3, ms: Date.now() - t0, startError: (e as Error).message });
+      resolve({ code: null, signal: null, stdout, stderr, report: "", ms: Date.now() - t0, startError: (e as Error).message });
       return;
     }
     const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs);
     child.on("error", (e) => {
       clearTimeout(timer);
-      resolve({ code: null, signal: null, stdout, stderr, fd3, ms: Date.now() - t0, startError: e.message });
+      resolve({ code: null, signal: null, stdout, stderr, report: "", ms: Date.now() - t0, startError: e.message });
     });
-    child.on("close", (code, signal) => {
+    settleAfterExit(child, "the refusals instrument", (code, signal) => {
       clearTimeout(timer);
-      resolve({ code, signal, stdout, stderr, fd3, ms: Date.now() - t0, ...(fd3Error ? { fd3Error } : {}) });
+      resolve({ code, signal, stdout, stderr, report: report(), ms: Date.now() - t0 });
     });
   }).finally(tmp.done);
 }
@@ -214,18 +218,16 @@ export async function runInstrument(project: string, pkgDir: string, win: Refusa
   const script = opts.script ?? REFUSALS_SCRIPT;
   const id = scriptIdentity(script);
   const args = ["--package", pkgDir, "--since", win.since, ...(win.until ? ["--until", win.until] : []),
-    ...(opts.transcripts ? ["--transcripts", opts.transcripts] : []), "--json", "/dev/fd/3"];
+    ...(opts.transcripts ? ["--transcripts", opts.transcripts] : []), "--json", REPORT_FILE];
   const ranAt = new Date().toISOString();
   if ("error" in id) return { status: "unreadable", project, package: pkgDir, window: win, instrument: { name: "structure-refusals.js", path: script, args, ranAt }, reason: id.error };
-  const run = await spawnNode([script, ...args], true, opts.timeoutMs ?? RUN_TIMEOUT_MS);
+  const run = await spawnNode([script, ...args], opts.timeoutMs ?? RUN_TIMEOUT_MS);
   const instrument: RefusalInstrument = { name: "structure-refusals.js", path: script, sha256: id.sha256, mtime: id.mtime, args, ranAt, ms: run.ms, exit: run.code, exitMeaning: exitMeaning(run.code) };
   const base = { project, package: pkgDir, window: win, instrument };
   if (run.startError) return { status: "unreadable", ...base, reason: `could not start node to run the instrument: ${run.startError}` };
   if (run.signal) return { status: "unreadable", ...base, reason: `the instrument was stopped by ${run.signal}${run.ms >= (opts.timeoutMs ?? RUN_TIMEOUT_MS) ? ` after ${Math.round(run.ms / 1000)} s (the time limit)` : ""}` };
   const report = run.stdout;
-  if (run.fd3Error && !run.fd3.trim())
-    return { status: "unreadable", ...base, reason: `the pipe the instrument writes its --json report to (fd 3) failed: ${run.fd3Error}; ask again` };
-  if (!run.fd3.trim()) {
+  if (!run.report.trim()) {
     // The instrument stops before its report when it cannot measure; it says why on its first line.
     const stop = /structure-refusals: NOT MEASURED — (.*)/.exec(report);
     if (stop && ARGUMENT_REFUSED.test(stop[1]))
@@ -236,7 +238,7 @@ export async function runInstrument(project: string, pkgDir: string, win: Refusa
   }
   let json: any;
   try {
-    json = JSON.parse(run.fd3);
+    json = JSON.parse(run.report);
   } catch (e) {
     return { status: "unreadable", ...base, reason: `the instrument's --json report does not parse: ${(e as Error).message}` };
   }
@@ -259,7 +261,7 @@ export async function runInstrument(project: string, pkgDir: string, win: Refusa
   let reasons: Record<string, { reason: string | null }> = {};
   let reasonErrors: Record<string, string> = {};
   if (wanted.length) {
-    const d = await spawnNode(driverArgs([script, JSON.stringify({ pkgDir: json.package ?? pkgDir, since: json.since ?? win.since, until: json.until ?? win.until, wanted })]), false, 120_000, "refusals");
+    const d = await spawnNode(driverArgs([script, JSON.stringify({ pkgDir: json.package ?? pkgDir, since: json.since ?? win.since, until: json.until ?? win.until, wanted })]), 120_000, "refusals");
     let r: any = null;
     try { r = JSON.parse(d.stdout); } catch { /* below */ }
     if (r && r.ok) {

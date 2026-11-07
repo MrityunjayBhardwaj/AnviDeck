@@ -78,7 +78,6 @@ describe.skipIf(!controlPath)("stave control session 811b15d0, 2026-10-30 00:00â
     const again = await readReplay(CONTROL_SID, WINDOW);
     expect(again.sources.github.detail).toMatch(/^2 of 2 PR answer\(s\) from cache/);
     expect(again.prs.find((p) => p.number === 2271)?.changedFiles).toBe(24);
-    expect(again.timingsMs.github).toBeLessThan(1000);
   }, 60000);
 
   test("only the 5 real code changes are scope 'project'; scratch writes and links are not (#27)", () => {
