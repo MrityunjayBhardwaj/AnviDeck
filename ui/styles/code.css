@@ -1,0 +1,62 @@
+/* Project · Code (#88). Loaded by ui/components/CodeScreen.ts. The prototype's Code screen on the
+   shell's tokens (shell.css): colour only for state and layer. */
+
+.cd { max-width: 1280px; }
+.cd .sh-head .cd-acts { margin-left: auto; display: flex; gap: 8px; }
+.cd .sh-btn.on { border-color: var(--accent); color: var(--sh-ink); background: var(--sh-accent-soft); }
+.cd-legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11.5px; color: var(--sh-ink-2); }
+.cd-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.cd-legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.cd-counts { font-size: 11.5px; display: flex; flex-direction: column; gap: 2px; }
+.cd-bad { color: var(--red); }
+.cd-warn { color: var(--yellow); }
+.cd-acc { color: var(--accent); }
+.cd-trap { color: var(--cyan); }
+.cd-ok { color: var(--green); }
+.cd-mono { font: 12px var(--font-mono); word-break: break-all; }
+
+.cd-wrap { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 12px; align-items: start; }
+.cd-tree { font: 12px var(--font-mono); gap: 1px; max-height: 76vh; overflow: auto; padding: 8px; }
+.cd-row { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-radius: 5px; cursor: pointer; white-space: nowrap; }
+.cd-row:hover { background: var(--sh-panel-2); }
+.cd-row.on { background: var(--sh-accent-soft); }
+.cd-sw { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+.cd-name { overflow: hidden; text-overflow: ellipsis; }
+.cd-mk { font-size: 10.5px; }
+.cd-row .cd-mk:first-of-type { margin-left: auto; }
+.cd-elsewhere { margin-top: 10px; font: 11.5px var(--sh-font-ui); white-space: normal; }
+
+.cd-file { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.cd-filehead { font-size: 12px; }
+.cd-card { background: var(--sh-panel-2); border: 1px solid var(--sh-line); border-radius: 8px; padding: 9px 11px; display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; }
+.cd-card-bad { border-color: rgba(248, 113, 113, .55); }
+.cd-card-warn { border-color: rgba(250, 204, 21, .45); }
+.cd-card-trap { border-color: rgba(34, 211, 238, .45); }
+.cd-card-acc { border-color: rgba(124, 140, 245, .5); }
+.cd-row-flex { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.cd-chip-bad { color: var(--red); border-color: rgba(248, 113, 113, .5); }
+.cd-chip-warn { color: var(--yellow); border-color: rgba(250, 204, 21, .45); }
+.cd-chip-trap { color: var(--cyan); border-color: rgba(34, 211, 238, .45); }
+.cd-reason { margin: 0; white-space: pre-wrap; font: 11.5px/1.5 var(--font-mono); background: var(--bg-0); border-radius: 6px; padding: 6px 8px; max-height: 220px; overflow: auto; }
+.cd-unplaced { font-size: 12px; color: var(--sh-ink-2); }
+.cd-note { font-size: 11.5px; }
+
+.cd-editor { font: 12.5px/1.65 var(--font-mono); border: 1px solid var(--sh-line); border-radius: 8px; overflow: auto; max-height: 76vh; background: #10141c; }
+.cd-l { display: grid; grid-template-columns: 18px 44px 1fr; }
+.cd-editor.blame .cd-l { grid-template-columns: 230px 18px 44px 1fr; }
+.cd-l > span { white-space: pre; padding-right: 8px; }
+.cd-l.has { cursor: pointer; }
+.cd-l.mk-bad { background: rgba(248, 113, 113, .12); }
+.cd-l.mk-warn { background: rgba(250, 204, 21, .07); }
+.cd-l.mk-trap { background: rgba(34, 211, 238, .06); }
+.cd-g { text-align: center; }
+.cd-num { color: var(--sh-ink-3); text-align: right; user-select: none; }
+.cd-bl { color: var(--sh-ink-3); font-size: 11px; overflow: hidden; text-overflow: ellipsis; padding-left: 6px; }
+.cd-hover { margin: 4px 10px 6px 62px; display: flex; flex-direction: column; gap: 6px; font-family: var(--sh-font-ui); white-space: normal; }
+.cd-editor.blame .cd-hover { margin-left: 292px; }
+
+.cd-editpanel { gap: 8px; }
+.cd-ta { width: 100%; min-height: 60vh; box-sizing: border-box; background: #10141c; color: var(--sh-ink); border: 1px solid var(--sh-line); border-radius: 8px; padding: 8px; font: 12.5px/1.6 var(--font-mono); tab-size: 2; }
+.cd-out { font-size: 12.5px; }
+
+@media (max-width: 900px) { .cd-wrap { grid-template-columns: 1fr; } }

@@ -53,9 +53,10 @@ afterAll(() => {
 
 describe("no write is served over HTTP (#241)", () => {
   test("the app has write routes to check (else this test would pass on nothing)", () => {
-    // Today: agents (start, stop, resume, permissions, messages), Work (issue, merge), calls.
+    // Today: agents (start, stop, resume, permissions, messages), Work (issue, merge), calls, Code's edit.
     expect(writeRoutes.length).toBeGreaterThanOrEqual(8);
     expect(writeRoutes.map((r) => `${r.method} ${r.path}`)).toContain("POST /api/prs/:n/merge");
+    expect(writeRoutes.map((r) => `${r.method} ${r.path}`)).toContain("POST /api/code/:project/edit");
   });
 
   test("every non-GET route the app has is refused over a real port, from its own Origin too", async () => {

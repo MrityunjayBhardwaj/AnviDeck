@@ -72,11 +72,14 @@ function isoOf(s: string, name: string): string {
   return d.toISOString();
 }
 
+/** `?since=all`: every refusal the transcripts hold (#193). */
+export const ALL_TIME = "1970-01-01T00:00:00.000Z";
+
 export function windowOf(since: string | null | undefined, until: string | null | undefined, now: Date = new Date()): RefusalWindow {
   return {
-    since: since ? isoOf(since, "since") : defaultSince(now),
+    since: since === "all" ? ALL_TIME : since ? isoOf(since, "since") : defaultSince(now),
     until: until ? isoOf(until, "until") : null,
-    chosenBy: since ? "?since" : `the last ${DEFAULT_DAYS} days (from midnight UTC)`,
+    chosenBy: since === "all" ? "all time (?since=all)" : since ? "?since" : `the last ${DEFAULT_DAYS} days (from midnight UTC)`,
   };
 }
 

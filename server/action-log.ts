@@ -26,6 +26,12 @@ export interface ActionRecord {
   result: "accepted" | "refused" | "failed";
   reason?: string;
   body?: Record<string, unknown> | string;
+  /**
+   * What the route itself says it acted on (set with `c.set(AUDIT_KEY, …)`), recorded whole
+   * whatever the body's size: e.g. Code's edit names the file, its path on disk and the sha256
+   * before and after, which the body preview cannot carry for a large edit.
+   */
+  detail?: Record<string, string | number>;
 }
 
 export interface ActionRead {

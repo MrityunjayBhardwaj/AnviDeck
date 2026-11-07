@@ -22,6 +22,7 @@ import { MapView } from "./components/MapView";
 import { WorkScreen } from "./components/WorkScreen";
 import { ChangesScreen } from "./components/ChangesScreen";
 import { NotesScreen } from "./components/NotesScreen";
+import { CodeScreen } from "./components/CodeScreen";
 import { DesignScreen } from "./components/DesignScreen";
 import { HistoryScreen } from "./components/HistoryScreen";
 import { HelpScreen } from "./components/HelpScreen";
@@ -245,6 +246,8 @@ function renderMain() {
     mainEl.appendChild(WorkScreen(currentProjectName, route.params, { startAgent: (p, n) => startAgent.open(p, n) }));
   } else if (id === "notes") {
     mainEl.appendChild(NotesScreen(currentProjectName, route.params));
+  } else if (id === "code") {
+    mainEl.appendChild(CodeScreen(currentProjectName, route.params));
   } else if (id === "design") {
     mainEl.appendChild(DesignScreen(currentProjectName, route.params));
   } else if (id === "history") {
