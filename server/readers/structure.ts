@@ -14,6 +14,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSyn
 import { homedir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { settleAfterExit } from "../child-output";
 import { driverArgs, feedDriver } from "./node-drivers";
 import type {
   EdgeClass,
@@ -327,7 +328,7 @@ function spawnDriver(input: DriverInput, guardPath: string, signal?: AbortSignal
       signal?.removeEventListener("abort", stop);
       resolve({ json: { status: "not-measured", reason: `could not start node to run the guard: ${e.message}` }, ms: Date.now() - t0, stderr });
     });
-    child.on("close", (code, sig) => {
+    settleAfterExit(child, "the structure guard", (code, sig) => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", stop);
       let json: any = null;

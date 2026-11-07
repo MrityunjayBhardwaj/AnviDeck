@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { settleAfterExit } from "../child-output";
 import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -73,7 +74,7 @@ export const spawnCollect: SpawnFn = (cmd, args, timeoutMs) =>
       clearTimeout(timer);
       resolve({ code: null, stdout: out, stderr: err, timedOut, error: e.message });
     });
-    child.on("close", (code) => {
+    settleAfterExit(child, cmd, (code) => {
       clearTimeout(timer);
       resolve({ code, stdout: out, stderr: err, timedOut });
     });

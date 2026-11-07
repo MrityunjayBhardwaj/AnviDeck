@@ -1,3 +1,4 @@
+import { outputNeverEnded, readProcess } from "../child-output";
 import { existsSync, readdirSync, readFileSync, statSync, openSync, readSync, closeSync, realpathSync } from "node:fs";
 import { join, dirname, basename, isAbsolute, relative } from "node:path";
 import { homedir } from "node:os";
@@ -369,8 +370,9 @@ export async function runAsync(cmd: string[], timeoutMs = 10000): Promise<{ ok: 
   try {
     const p = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" });
     const timer = setTimeout(() => p.kill(), timeoutMs);
-    const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+    const { stdout: out, stderr: err, code, ended } = await readProcess(p, cmd[0]);
     clearTimeout(timer);
+    if (!ended) return { ok: false, out: "", err: outputNeverEnded(cmd[0]) };
     return { ok: code === 0, out, err: err.trim() };
   } catch (e) {
     return { ok: false, out: "", err: (e as Error).message };

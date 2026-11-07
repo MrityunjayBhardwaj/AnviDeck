@@ -1,3 +1,4 @@
+import { outputNeverEnded, readProcess } from "../child-output";
 import { existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { githubRepoOf, knownProjects, mainCheckout, type KnownProject, type Run, type RunResult } from "./repo";
@@ -29,8 +30,9 @@ export function timedRun(ms: number): Run {
         timedOut = true;
         p.kill();
       }, ms);
-      const [stdout, stderr, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+      const { stdout, stderr, code, ended } = await readProcess(p, cmd);
       clearTimeout(timer);
+      if (!ended && !timedOut) return { code: 125, stdout: "", stderr: outputNeverEnded(`${cmd} ${args[0] ?? ""}`) };
       return timedOut ? { code: 124, stdout, stderr: `${cmd} ${args[0] ?? ""} took longer than ${ms / 1000}s and was stopped` } : { code, stdout, stderr };
     } catch (e) {
       return { code: 127, stdout: "", stderr: (e as Error).message };

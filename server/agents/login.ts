@@ -1,3 +1,4 @@
+import { readProcess } from "../child-output";
 import { realpathSync, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
 
@@ -162,11 +163,8 @@ export async function readLogin(claude: ClaudeBinary | null, env: Record<string,
   try {
     const proc = Bun.spawn([claude.path, "auth", "status", "--json"], { env, stdout: "pipe", stderr: "pipe" });
     const timer = setTimeout(() => proc.kill(), 15_000);
-    const [out, err, code] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
+    // JSON that parses is whole, so output that never ended is judged by parseAuthStatus below.
+    const { stdout: out, stderr: err, code } = await readProcess(proc, "claude auth status");
     clearTimeout(timer);
     const parsed = parseAuthStatus(out);
     if (parsed.error) return { ...parsed, error: `${parsed.error} (exit ${code}${err.trim() ? `: ${err.trim().slice(0, 200)}` : ""})` };
