@@ -223,7 +223,7 @@ export function queueRows(home: HomeResponse | null, host: AgentsRead, ready: Re
 // ── the health line ──────────────────────────────────────────────────────────────────────
 
 export interface HealthRow {
-  id: "guards" | "allowed-breaks" | "notes" | "grounding" | "sources";
+  id: "guards" | "allowed-breaks" | "notes" | "grounding" | "child-reads" | "sources";
   label: string;
   value: string;
   /** The population after the value, e.g. "of 7,248". */
@@ -327,6 +327,19 @@ export function healthModel(input: HealthInput): HealthModel {
   });
 
   rows.push(groundingRow(project, projectsReadAt));
+
+  // Reads cut short (#257): absent from an older server's answer, which is "could not read", never 0.
+  const cr = metric("child-reads");
+  rows.push({
+    id: "child-reads",
+    label: "Reads cut short",
+    value: shownValue(cr),
+    state: cr ? cr.state : "unknown",
+    note: cr ? cr.note : "This server's answer has no count of reads cut short.",
+    asOf: cr ? `read ${hhmm(home.generatedAt)}` : null,
+    source: cr?.source ?? "server/child-output.ts",
+    ...(cr?.state === "warn" ? { watch: `${cr.value} read${cr.value === "1" ? "" : "s"} cut short` } : {}),
+  });
 
   const src = metric("sources");
   if (src) {

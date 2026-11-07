@@ -13,6 +13,7 @@ import type {
 } from "../../shared/home-types";
 import { readLiveSessionsReport } from "./sessions";
 import { encodeCwd, findTranscript, ghPrView, runAsync } from "./replay";
+import { countingSince, lostOutputEnds } from "../child-output";
 import { listStructure, readStructure } from "./structure";
 
 /**
@@ -343,6 +344,30 @@ export function structureMetrics(a: {
       asOf: a.measuredOf,
     },
   ];
+}
+
+/**
+ * Reads of a child's output cut short (#257): how many times, since this server started, a process exited and its
+ * output never ended, so the wait gave up (server/child-output.ts). Said every time, 0 included, with when counting
+ * began, so silence can't read as "not measured".
+ */
+export function childReadsMetric(lost = lostOutputEnds(), since = countingSince): HomeMetric {
+  return {
+    id: "child-reads",
+    label: "Reads cut short",
+    state: lost > 0 ? "warn" : "ok",
+    value: String(lost),
+    note:
+      lost === 0
+        ? `No process's output has been cut short since this server started (${since.slice(0, 16).replace("T", " ")} UTC).`
+        : `${lost} time${lost === 1 ? "" : "s"} since this server started (${since.slice(0, 16).replace("T", " ")} UTC), a process exited but its output never ended, so AnviDeck stopped waiting. Plain text from such a run was reported as a failed read, never as a shorter answer; JSON was used only if it parsed. Each one is a [child] line in the server's log.`,
+    source: "server/child-output.ts, counted in this server process",
+  };
+}
+
+/** The figures Home's health line is built from, each naming its source; "sources" is added once they are all read. */
+export function healthMetrics(structure: Parameters<typeof structureMetrics>[0], notes: Parameters<typeof notesMetric>[0], now: number): HomeMetric[] {
+  return [...structureMetrics(structure), notesMetric(notes, now), childReadsMetric()];
 }
 
 /** Out-of-date notes, dated by the snapshot it comes from. */
@@ -694,11 +719,8 @@ export async function readHome(budgetMs = HOME_BUDGET_MS): Promise<HomeResponse>
   // Notes currency
   const notes = readNotesCurrency();
 
-  // Metrics: four, each naming its source.
-  const metrics: HomeMetric[] = [
-    ...structureMetrics({ source: structureSource, reading: structureReading, newBreaks, allowed, measured, measuredOf }),
-    notesMetric(notes, now),
-  ];
+  // Metrics, each naming its source.
+  const metrics = healthMetrics({ source: structureSource, reading: structureReading, newBreaks, allowed, measured, measuredOf }, notes, now);
   const sourceList = { sessions: sessionsSource, prs: prsSource, structure: structureSource, notes: notes.source };
   const unreadable = Object.entries(sourceList).filter(([, s]) => s.status === "could-not-read" || s.status === "partial" || s.status === "not-measured" || s.status === "reading");
   metrics.push({

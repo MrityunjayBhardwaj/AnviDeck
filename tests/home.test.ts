@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { needsCount, headlineText, badgeText, stripText } from "../ui/home-count";
-import { byDeadline, deadlineIn, STILL_READING, groupFailedPrs, orderQueue, parseAuthoredPrs, prLinkFromLine, prLinksIn, prVerdict, readNotesCurrency, resetAuthoredSearch, searchAuthoredPrs, splitAuthoredPrs, answersFromSearch } from "../server/readers/home";
+import { healthMetrics, byDeadline, deadlineIn, STILL_READING, groupFailedPrs, orderQueue, parseAuthoredPrs, prLinkFromLine, prLinksIn, prVerdict, readNotesCurrency, resetAuthoredSearch, searchAuthoredPrs, splitAuthoredPrs, answersFromSearch } from "../server/readers/home";
 import type { HomeResponse, QueueItem } from "../shared/home-types";
 
 const TMP = "/private/tmp/claude-501/ui18/test-fixtures";
@@ -279,6 +279,12 @@ describe("notes currency snapshot", () => {
     writeFileSync(join(d, "health-2026-10-03.json"), "{ broken");
     expect(readNotesCurrency(d).source.status).toBe("could-not-read");
   });
+});
+
+test("Home's health figures include reads cut short, whatever else could be read (#257)", () => {
+  const none = { status: "none" as const, label: "x" };
+  const ids = healthMetrics({ source: none, reading: false, newBreaks: 0, allowed: 0, measured: 0, measuredOf: null }, { value: null, source: none }, Date.now()).map((m) => m.id);
+  expect(ids).toEqual(["new-breaks", "allowed-breaks", "notes", "child-reads"]);
 });
 
 describe("Home answers within a budget (#61)", () => {
