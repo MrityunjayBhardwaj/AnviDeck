@@ -321,7 +321,7 @@ export function CodeScreen(project: string | null, params: URLSearchParams): HTM
             box.style.height = "";
             for (let i = start; i < end; i++) paintLine(box, i);
           } else if (!s.isIntersecting && box.firstChild) {
-            box.style.height = `${box.offsetHeight}px`;
+            box.style.height = `${box.getBoundingClientRect().height}px`;
             box.replaceChildren();
           }
         }
