@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { Hono } from "hono";
-import { installGuard, TOKEN_HEADER } from "../server/guard";
+import { installGuard } from "../server/guard";
+import { dispatch, isFromApp } from "../server/desktop";
 import { ActionLog, type ActionRecord } from "../server/action-log";
 import { refusalRoutes } from "../server/routes/refusals";
 import { CallError, CallStore, callFrom, MAX_NOTE } from "../server/calls";
@@ -136,35 +137,41 @@ describe("callFrom", () => {
 
 // ── the routes, behind the whole guard ─────────────────────────────────────────────────────
 
-const TOKEN = "refusals-test-token";
+/** Sent from the desktop app's window, over its private channel (#241); anything else goes over HTTP. */
+const APP = Object.freeze({ fromApp: "yes" }) as unknown as Record<string, string>;
 const HOST = "localhost:4111";
 const ORIGIN = `http://${HOST}`;
 
 function server(dir = scratch(), deps: Omit<NonNullable<Parameters<typeof refusalRoutes>[0]>, "store"> = {}) {
   const log = new ActionLog(join(dir, "log"));
   const app = new Hono();
-  installGuard(app, { bind: "127.0.0.1", token: TOKEN, log });
+  installGuard(app, { bind: "127.0.0.1", log, isFromApp });
   const store = new CallStore(dir);
   app.route("/api", refusalRoutes({ store, ...deps }));
-  const post = (key: string, headers: Record<string, string>, body: unknown) =>
-    app.request(`${ORIGIN}/api/refusals/${encodeURIComponent(key)}/call`, { method: "POST", headers: { host: HOST, "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
+  const post = async (key: string, headers: Record<string, string>, body: unknown): Promise<{ status: number; json: () => Promise<unknown> }> => {
+    if (headers === APP) {
+      const r = await dispatch(app, { method: "POST", path: `/api/refusals/${encodeURIComponent(key)}/call`, body }, HOST);
+      return { status: r.status, json: async () => r.body };
+    }
+    return app.request(`${ORIGIN}/api/refusals/${encodeURIComponent(key)}/call`, { method: "POST", headers: { host: HOST, "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
+  };
   const get = (path: string) => app.request(`${ORIGIN}${path}`, { headers: { host: HOST } });
   const actions = (): ActionRecord[] => (existsSync(log.file) ? readFileSync(log.file, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
   return { app, store, post, get, actions, dir };
 }
 
 describe("POST /api/refusals/:key/call and GET /api/calls", () => {
-  test("without the token or Origin the call is refused, logged, and not recorded", async () => {
+  test("over HTTP the call is refused, logged, and not recorded, whatever it carries (#241)", async () => {
     const s = server();
     expect((await s.post("toolu_1", { origin: ORIGIN }, { project: "stave", call: "right" })).status).toBe(403);
-    expect((await s.post("toolu_1", { [TOKEN_HEADER]: TOKEN }, { project: "stave", call: "right" })).status).toBe(403);
+    expect((await s.post("toolu_1", { "x-anvideck-token": "anything" }, { project: "stave", call: "right" })).status).toBe(403);
     expect(existsSync(s.store.file)).toBe(false);
     expect(s.actions().map((a) => `${a.result} ${a.area} ${a.target}`)).toEqual(["refused refusals toolu_1", "refused refusals toolu_1"]);
   });
 
-  test("from AnviDeck's page with the token: appended to calls.jsonl, logged as accepted, and read back; a new server reads it too", async () => {
+  test("from the app's window: appended to calls.jsonl, logged as accepted, and read back; a new server reads it too", async () => {
     const s = server();
-    const h = { origin: ORIGIN, [TOKEN_HEADER]: TOKEN };
+    const h = APP;
     const a = await s.post("toolu_1", h, { project: "stave", call: "wrong", note: "first" });
     expect(a.status).toBe(201);
     const b = await s.post("toolu_1", h, { project: "stave", call: "right", refusal: { file: "src/engine/StrudelEngine.ts" } });
@@ -181,7 +188,7 @@ describe("POST /api/refusals/:key/call and GET /api/calls", () => {
 
   test("a bad call is answered 400 with its reason and logged as failed; nothing is appended", async () => {
     const s = server();
-    const r = await s.post("toolu_1", { origin: ORIGIN, [TOKEN_HEADER]: TOKEN }, { project: "stave", call: "maybe" });
+    const r = await s.post("toolu_1", APP, { project: "stave", call: "maybe" });
     expect(r.status).toBe(400);
     expect(((await r.json()) as { error: string }).error).toContain('"right" or "wrong"');
     expect(existsSync(s.store.file)).toBe(false);
@@ -194,11 +201,11 @@ describe("POST /api/refusals/:key/call and GET /api/calls", () => {
     writeFileSync(blocker, "");
     const s = server(d);
     const app = new Hono();
-    installGuard(app, { bind: "127.0.0.1", token: TOKEN, log: new ActionLog(join(d, "log")) });
+    installGuard(app, { bind: "127.0.0.1", log: new ActionLog(join(d, "log")), isFromApp });
     app.route("/api", refusalRoutes({ store: new CallStore(join(blocker, "sub")) }));
-    const r = await app.request(`${ORIGIN}/api/refusals/k/call`, { method: "POST", headers: { host: HOST, origin: ORIGIN, [TOKEN_HEADER]: TOKEN, "content-type": "application/json" }, body: JSON.stringify({ project: "stave", call: "right" }) });
+    const r = await dispatch(app, { method: "POST", path: "/api/refusals/k/call", body: { project: "stave", call: "right" } }, HOST);
     expect(r.status).toBe(500);
-    expect(((await r.json()) as { error: string }).error).toContain("your call was not recorded");
+    expect((r.body as { error: string }).error).toContain("your call was not recorded");
     void s;
   });
 
@@ -617,7 +624,7 @@ describe("callLine", () => {
 // ── a call's key must name a refusal the instrument counted (#178) ─────────────────────────
 
 describe("a call on a key that is no refusal", () => {
-  const h = { origin: ORIGIN, [TOKEN_HEADER]: TOKEN };
+  const h = APP;
   const WIN2: RefusalWindow = { since: "2026-10-06T00:00:00.000Z", until: null, chosenBy: "test" };
   const A = measuredAnswer("proj", "/pkg", WIN2, [{ key: "toolu_REAL", at: "2026-10-22T16:16:24Z" }], "2026-11-05T12:00:00.000Z");
 
@@ -694,7 +701,7 @@ describe("a call on a key that is no refusal", () => {
 // ── a call from an agent in a worktree belongs to its project (#179) ────────────────────────
 
 describe("the project of a call made from an agent's folder", () => {
-  const h = { origin: ORIGIN, [TOKEN_HEADER]: TOKEN };
+  const h = APP;
   const g = (cwd: string, ...a: string[]) => spawnSync("git", ["-C", cwd, "-c", "user.name=t", "-c", "user.email=t@t", ...a], { encoding: "utf8" });
   /** A main checkout with a registered package, and a sibling worktree of it named like stave-wt-gaps. */
   function repoWithWorktree() {

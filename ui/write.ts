@@ -1,17 +1,12 @@
 /**
- * The one way a page asks AnviDeck to act (#76). Every write (anything but GET) goes through
- * write(): it sends this server's write token, read from the
- * <meta name="anvideck-write-token"> the server put into the page, in the X-AnviDeck-Token
- * header. The server refuses a write without it, and logs every write either way.
+ * The one way a page asks AnviDeck to act (#76, #241). Every write (anything but GET) goes
+ * through write(), and only the desktop app can send one: it travels over the app's private
+ * channel (`invoke("write")` → the app → the server's stdin), never over HTTP. The server
+ * refuses every write that reaches it over HTTP and logs it.
+ *
+ * In a browser (the read-only build) write() sends nothing and throws a WriteError saying where
+ * actions are taken, so every screen's error path shows the reason.
  */
-
-const TOKEN_META = "anvideck-write-token";
-const TOKEN_HEADER = "X-AnviDeck-Token";
-
-/** The token the server placed in this page, or null when the page has none. */
-export function writeToken(): string | null {
-  return document.querySelector<HTMLMetaElement>(`meta[name="${TOKEN_META}"]`)?.content || null;
-}
 
 export type WriteMethod = "POST" | "PUT" | "PATCH" | "DELETE";
 
@@ -38,17 +33,12 @@ export async function write<T = unknown>(method: WriteMethod, url: string, body?
     if (r.status < 200 || r.status >= 300) throw new WriteError(r.status, obj);
     return r.body as T;
   }
-  const headers: Record<string, string> = {};
-  const token = writeToken();
-  // Sent without a token when the page has none: the server then refuses with its reason and logs it.
-  if (token) headers[TOKEN_HEADER] = token;
-  if (body !== undefined) headers["content-type"] = "application/json";
-  const res = await fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
-  const j = (await res.json().catch(() => ({}))) as unknown;
-  const obj = j && typeof j === "object" ? (j as Record<string, unknown>) : {};
-  if (!res.ok) throw new WriteError(res.status, obj);
-  return j as T;
+  throw new WriteError(403, { error: BROWSER_READ_ONLY });
 }
+
+/** What a write from a browser page answers: nothing is sent. */
+export const BROWSER_READ_ONLY =
+  "AnviDeck takes actions only in its desktop app (bun run desktop:dev); this browser page is read-only";
 
 /** True inside the Tauri desktop window. */
 export function inDesktop(): boolean {

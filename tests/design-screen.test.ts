@@ -117,7 +117,16 @@ function answer(url: string, method: string, body: unknown): Response {
 }
 
 beforeAll(() => {
-  for (const k of ["document", "fetch", "history"]) saved[k] = g[k];
+  for (const k of ["document", "fetch", "history", "window"]) saved[k] = g[k];
+  // The desktop window: a write goes over the app's channel (#241), answered by the same fake server.
+  g.window = {
+    __TAURI_INTERNALS__: {
+      invoke: async (_cmd: string, a: { method: string; path: string; body: unknown }) => {
+        const r = answer(a.path, a.method, a.body ?? undefined);
+        return { status: r.status, body: await r.json() };
+      },
+    },
+  };
   const head = new FakeEl("head");
   g.document = {
     head,

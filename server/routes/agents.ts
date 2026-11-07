@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { AgentHost, HostError, type HostEvent, type QueryFn } from "../agents/host";
 import { loginOnlyEnv, readLogin, resolveClaude, type LoginStatus } from "../agents/login";
-import { sameOriginWrites, withWriteToken } from "../guard";
+import { sameOriginWrites } from "../guard";
 import { FromIssue } from "../agents/from-issue";
 
 // The full write guard (same origin + this server's token) and the action log are installed
@@ -119,13 +119,12 @@ export function createAgentHost(
 
   const page = new Hono();
   // Temporary page for #75 only; the Agents screen (#82) replaces it.
-  page.get("/agent-host", (c) => {
-    // The page carries this server's write token, which changes at every start: never cache it.
-    c.header("cache-control", "no-store");
-    return c.html(withWriteToken(`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>AnviDeck: agent host</title>
+  // It carries no token (#241): writes come only through the desktop app's channel.
+  page.get("/agent-host", (c) =>
+    c.html(`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>AnviDeck: agent host</title>
 <link rel="stylesheet" href="/styles/deck.css"></head><body><div id="agent-host"></div>
-<script type="module" src="/agent-host.js"></script></body></html>`));
-  });
+<script type="module" src="/agent-host.js"></script></body></html>`),
+  );
   page.get("/agent-host.js", async () => {
     const f = Bun.file(join(import.meta.dir, "..", "..", "dist", "agent-host.js"));
     if (!(await f.exists())) return new Response("Not found — run: bun run build", { status: 404 });

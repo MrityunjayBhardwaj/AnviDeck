@@ -63,10 +63,10 @@ class ApiError extends Error {
   }
 }
 
-/** Every request this page makes goes through here, so the write token (#76) is one line. */
+/** Every request this page makes goes through here: reads over HTTP, writes through the one write helper. */
 async function call(method: string, path: string, body?: unknown): Promise<unknown> {
   const url = `/api/agents${path === "/" ? "" : path}`;
-  // Every write goes through the one write helper (token + reason on refusal), then the
+  // Every write goes through the one write helper (the app's channel, #241; the reason on refusal), then the
   // action list is re-read so the write shows up there, refused or not.
   if (method !== "GET") return write(method as WriteMethod, url, body).finally(() => void renderActions());
   const res = await fetch(url, {

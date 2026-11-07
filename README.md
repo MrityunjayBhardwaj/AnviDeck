@@ -45,7 +45,7 @@ AnviDeck serves your session transcripts, memory and catalogues, so it answers o
 
 ### 🖥️ Desktop app (in progress, milestone "Desktop app (Tauri)")
 
-AnviDeck is moving to a desktop app built with [Tauri](https://tauri.app) (#240). The window shows the same screens. The server runs inside the app as a sidecar: reads come from it on a loopback port, and in the app every action goes over the app's private channel to it, never over HTTP. The browser build (`bun run dev`) still takes actions over HTTP until #241 removes them. Requires Bun and a Rust toolchain (`rustc`, `cargo`; on macOS the Xcode command-line tools).
+AnviDeck is moving to a desktop app built with [Tauri](https://tauri.app) (#240). The window shows the same screens. The server runs inside the app as a sidecar: reads come from it on a loopback port, and every action goes over the app's private channel to it, never over HTTP. Nothing sent over HTTP can make AnviDeck act (#241), so the browser build (`bun run dev`) is read-only: you can look, and you act in the app. Requires Bun and a Rust toolchain (`rustc`, `cargo`; on macOS the Xcode command-line tools).
 
 ```bash
 bun install
