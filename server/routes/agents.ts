@@ -4,6 +4,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { AgentHost, HostError, type HostEvent, type QueryFn } from "../agents/host";
 import { loginOnlyEnv, readLogin, resolveClaude, type LoginStatus } from "../agents/login";
 import { sameOriginWrites } from "../guard";
+import { replayFromEnv } from "../agents/replay";
 import { FromIssue } from "../agents/from-issue";
 
 // The full write guard (same origin + this server's token) and the action log are installed
@@ -86,11 +87,15 @@ export function agentRoutes(host: AgentHost, login: () => Promise<LoginStatus>, 
 /** The single host this server runs, its routes, and a minimal page to watch it (until #82). */
 export function createAgentHost(
   broadcast: (msg: string) => void,
-  makeHost: () => AgentHost = () =>
-    new AgentHost({
-      query: query as unknown as QueryFn,
+  makeHost: () => AgentHost = () => {
+    // The desktop checks (#242) play recorded runs instead of Claude Code; said loudly.
+    const replay = replayFromEnv();
+    if (replay) console.error(`[agents] REPLAY MODE: agents play recordings (${replay.names.join(", ")}), not Claude Code`);
+    return new AgentHost({
+      query: replay?.query ?? (query as unknown as QueryFn),
       emit: (e: HostEvent) => broadcast(JSON.stringify(e)),
-    }),
+    });
+  },
 ) {
   let host: AgentHost;
   try {

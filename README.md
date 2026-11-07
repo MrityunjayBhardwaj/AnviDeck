@@ -58,6 +58,16 @@ bun run desktop:build   # the same, then a release AnviDeck.app under desktop/sr
 - If the server cannot start, or stops, the window says so in a red bar at the top.
 - Release builds have no developer tools. `cargo build --features e2e` adds a WebDriver port for end-to-end checks (#242); it can press any button, so it is never part of a normal build.
 
+**Checks that drive the app window** (#242):
+
+```bash
+bun run desktop:e2e     # builds the test app (with a WebDriver port), then runs the checks in its window
+```
+
+- **What they check:** every screen opens with no failed read and no script error. They also check Allow on Home, Deny with a message, Stop then Resume, a Help flow, that nothing writes over HTTP, and that the release build has no WebDriver.
+- **Agents are replays.** The agents in these checks play real runs recorded once (`tests/fixtures/replays`), so no Claude usage is spent. A click that answers differently from the recording fails the check with the reason.
+- **Recording:** `bun scripts/record-agent-replays.ts --check` makes one tiny real run and says whether Claude Code still sends the same shape. `--out <dir>` records again. Each recording is cleaned before it is written, and the cleaner refuses one that still names your home folder, user name or an email.
+
 ## 🔭 The six views
 
 | View | What it shows |
