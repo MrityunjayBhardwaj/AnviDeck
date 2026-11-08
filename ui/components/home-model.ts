@@ -293,7 +293,8 @@ export function healthModel(input: HealthInput): HealthModel {
     label: "Guards",
     value: g.state === "on" ? "on" : g.text.replace(/^Guards: /, ""),
     state: guardsState,
-    note: `AnviDeck: ${guards.filter((x) => x.on).length} of ${guards.length} write guards on (this machine only, same origin, a token on every write, every write logged). ${structureWords}`,
+    // Said from the guard list itself, so the words cannot drift from the guards counted (#262).
+    note: `AnviDeck: ${guards.filter((x) => x.on).length} of ${guards.length} write guards on (${guards.filter((x) => x.on).map((x) => x.short).join("; ") || "none"}). ${structureWords}`,
     asOf: nb?.asOf ? `commit of ${day(nb.asOf)}` : null,
     source: `ui/shell/guards.ts (each guard's code checked by a test) · ${nb?.source ?? "structure guard: no answer"}`,
     ...(guardsState === "bad" ? { watch: `${nb!.value} new rule break${nb!.value === "1" ? "" : "s"}` } : g.state === "partial" ? { watch: g.text } : {}),

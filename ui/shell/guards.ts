@@ -6,6 +6,8 @@
 
 export interface Guard {
   what: string;
+  /** A few words for a sentence that lists the guards, e.g. Home's health line (#262). */
+  short: string;
   on: boolean;
   /** Where it is enforced (or the issue that builds it), as shown to the reader. */
   where: string;
@@ -16,18 +18,21 @@ export interface Guard {
 export const GUARDS: readonly Guard[] = [
   {
     what: "Answers only this machine: Host must be a loopback name, a foreign Origin is refused",
+    short: "this machine only, same origin",
     on: true,
     where: "server/access.ts (#66)",
     code: { file: "server/access.ts", has: "export function localOnly" },
   },
   {
     what: "Nothing sent over HTTP can act: every write is refused there; actions come only from the desktop app's window, over its private channel",
+    short: "no action over HTTP, writes only from the app's window",
     on: true,
     where: "writesOnlyFromApp in server/guard.ts, dispatch in server/desktop.ts (#241)",
     code: { file: "server/guard.ts", has: "export function writesOnlyFromApp" },
   },
   {
     what: "Every write written to an action log, refused ones included",
+    short: "every write logged",
     on: true,
     where: "logWrites in server/guard.ts, ActionLog in server/action-log.ts (#76)",
     code: { file: "server/action-log.ts", has: "export class ActionLog" },

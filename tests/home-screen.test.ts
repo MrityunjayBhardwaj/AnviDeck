@@ -8,6 +8,7 @@ import { permissionQueue, type AskingAgent } from "../shared/permission-requests
 import type { AgentsRead, StripAgent } from "../ui/shell/activity";
 import type { HomeMetric, HomeResponse, QueueItem } from "../shared/home-types";
 import type { ProjectSummary } from "../shared/types";
+import { GUARDS, type Guard } from "../ui/shell/guards";
 import home from "../server/routes/home";
 import { newestDate, notesMetric, structureMetrics } from "../server/readers/home";
 import { keyedReuse, reconcile, type ParentLike } from "../ui/components/keyed-rows";
@@ -360,6 +361,15 @@ describe("the health line", () => {
     const old = rowOf(good.slice(0, 4));
     expect(old.rows.find((r) => r.id === "child-reads")).toMatchObject({ value: "could not read", state: "unknown", asOf: null });
     expect(old.word).toBe("Could not check everything");
+  });
+  test("the Guards note lists the guards that are on, in their own words, and nothing else (#262)", () => {
+    const by = (gs?: readonly Guard[]) => healthModel({ home: homeOf([], { metrics: good }), failed: false, project: project(), projectsReadAt: null, ...(gs ? { guards: gs } : {}) }).rows.find((r) => r.id === "guards")!;
+    const note = by().note;
+    expect(note).toStartWith(`AnviDeck: ${GUARDS.length} of ${GUARDS.length} write guards on (${GUARDS.map((g) => g.short).join("; ")}).`);
+    expect(note).not.toMatch(/token/i);
+    const off = by(GUARDS.map((g, i) => ({ ...g, on: i !== 1 })));
+    expect(off.note).not.toContain(GUARDS[1]!.short);
+    expect(off.note).toContain(`${GUARDS.length - 1} of ${GUARDS.length}`);
   });
   test("Home not read: could not read health, not healthy", () => {
     expect(healthModel({ home: null, failed: true, project: null, projectsReadAt: null }).word).toBe("Could not read health");
