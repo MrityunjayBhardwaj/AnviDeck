@@ -29,6 +29,7 @@ import {
   RefusalsError,
   runInstrument,
   windowOf,
+  TEXT_REPORT_CUT,
 } from "../server/readers/refusals";
 import { callLine, shortDay, withRecorded } from "../ui/components/refusal-call-model";
 import { refusalCallTarget } from "../ui/components/agents-model";
@@ -336,6 +337,30 @@ describe("runInstrument when the instrument cannot answer", () => {
     expect(r.status).toBe("unreadable");
     if (r.status === "unreadable") expect(r.reason).toContain("does not parse");
   });
+  // #256: the text report is the process's output. A background `sleep` that inherits it keeps it open after node
+  // exits, so its end never comes, as it sometimes doesn't under Bun.
+  const reportsThen = (hold: boolean) =>
+    fake(
+      "require('fs').writeFileSync(" + REPORT + ", JSON.stringify({ calls: [{ id: 'n1', outcome: 'applied', session: 's', notices: ['fixed'] }] }));" +
+        "console.log('  notices said (not refused): fixed 1');" +
+        "console.log('TRIAL READING: 0 refusals in 1 edit');" +
+        (hold ? "require('child_process').spawn('sleep', ['8'], { stdio: ['ignore', 'inherit', 'inherit'], detached: true }).unref();" : "") +
+        "process.exit(0);",
+    );
+  test("a text report that ends: its trial reading, verbatim, and nothing said about a cut", async () => {
+    const r = (await runInstrument("p", pkg(), WIN, { script: reportsThen(false) })) as RefusalsMeasured;
+    expect(r.status).toBe("measured");
+    expect(r.trialReading).toBe("TRIAL READING: 0 refusals in 1 edit");
+    expect(r.textReportCut).toBeUndefined();
+  });
+  test("a text report that never ended → its trial reading is not shown, and the answer says why (#256)", async () => {
+    const r = (await runInstrument("p", pkg(), WIN, { script: reportsThen(true) })) as RefusalsMeasured;
+    expect(r.status).toBe("measured");
+    expect(r.trialReading).toBeNull();
+    expect(r.textReportCut).toBe(TEXT_REPORT_CUT);
+    expect(r.notices).toEqual({ fixed: 1 }); // from the --json report, whole either way
+    expect(r.totals.applied).toBe(1);
+  }, 15_000);
   test("an outcome this reader does not know → unreadable, never left out of the totals", async () => {
     const r = await runInstrument("p", pkg(), WIN, { script: fake("require('fs').writeFileSync(" + REPORT + ", JSON.stringify({ calls: [{ id: 'x', outcome: 'quarantined', session: 's' }] })); process.exit(1);") });
     expect(r.status).toBe("unreadable");

@@ -113,7 +113,7 @@ export function packageOf(project: string, opts: { path?: string | null; package
 
 // ── running the instrument ─────────────────────────────────────────────────────────────────
 
-interface Spawned { code: number | null; signal: string | null; stdout: string; stderr: string; report: string; ms: number; startError?: string }
+interface Spawned { code: number | null; signal: string | null; stdout: string; stderr: string; report: string; ms: number; startError?: string; ended?: boolean }
 
 /** TMPDIR for one run: a folder of its own under TMP_ROOT, removed by done() when the run ends. */
 function scratchTmp(): { dir: string; done: () => void } {
@@ -121,6 +121,9 @@ function scratchTmp(): { dir: string; done: () => void } {
   const dir = mkdtempSync(join(TMP_ROOT, "refusals-run-"));
   return { dir, done: () => rmSync(dir, { recursive: true, force: true }) };
 }
+
+/** Said in place of the trial reading when the instrument's text output never ended (#256). */
+export const TEXT_REPORT_CUT = "the instrument's text report never ended, so it may be cut short: its trial reading is not shown, and notices are counted from its --json report";
 
 /** Stands in for the report's path in an instrument's arguments, as shown on the answer: each run has its own. */
 const REPORT_FILE = "<the run's scratch folder>/report.json";
@@ -159,9 +162,9 @@ function spawnNode(args: string[], timeoutMs: number, driver?: DriverName): Prom
       clearTimeout(timer);
       resolve({ code: null, signal: null, stdout, stderr, report: "", ms: Date.now() - t0, startError: e.message });
     });
-    settleAfterExit(child, "the refusals instrument", (code, signal) => {
+    settleAfterExit(child, "the refusals instrument", (code, signal, ended) => {
       clearTimeout(timer);
-      resolve({ code, signal, stdout, stderr, report: report(), ms: Date.now() - t0 });
+      resolve({ code, signal, stdout, stderr, report: report(), ms: Date.now() - t0, ended });
     });
   }).finally(tmp.done);
 }
@@ -292,10 +295,13 @@ export async function runInstrument(project: string, pkgDir: string, win: Refusa
     ...(reasons[c.id]?.reason ? {} : { reasonError: reasonErrors[c.id] ?? "the instrument gave no reason for this call" }),
     call: { state: "none" },
   }));
-  const notices = noticesFrom(report);
+  // The JSON report is a file, whole either way; the text report is the process's output, and when that never
+  // ended it may be cut short, so a missing line would read as the instrument not saying it (#256).
+  const textCut = run.ended === false;
+  const notices = textCut ? null : noticesFrom(report);
   const fallback: Record<string, number> = {};
   for (const c of json.calls) for (const k of c.notices ?? []) fallback[k] = (fallback[k] ?? 0) + 1;
-  const trial = report.split("\n").find((l) => /^\s*TRIAL READING:/.test(l));
+  const trial = textCut ? undefined : report.split("\n").find((l) => /^\s*TRIAL READING:/.test(l));
   return {
     status: "measured",
     ...base,
@@ -309,6 +315,7 @@ export async function runInstrument(project: string, pkgDir: string, win: Refusa
     defaultBranch: json.defaultBranch ?? null,
     byDesign: Array.isArray(json.byDesign) ? json.byDesign : [],
     trialReading: trial ? trial.trim() : null,
+    ...(textCut ? { textReportCut: TEXT_REPORT_CUT } : {}),
     report,
     cache: { at: ranAt, ageMs: 0, refreshing: false, ttlMs: CACHE_TTL_MS },
     calls: { file: "", exists: false, status: "none", lines: 0, unreadableLines: 0, unverified: 0, ofProject: 0, notListed: 0, readAt: ranAt },

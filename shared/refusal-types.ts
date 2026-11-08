@@ -139,7 +139,12 @@ export interface RefusalsMeasured extends Base {
   byDesign: unknown[];
   /** The instrument's own last reading line ("TRIAL READING: …"), verbatim. */
   trialReading: string | null;
-  /** The instrument's whole text report, verbatim. */
+  /**
+   * Present only when the instrument's text output never ended (#256): why the trial reading is not shown and the
+   * notices come from the --json report. `report` may then be cut short.
+   */
+  textReportCut?: string;
+  /** The instrument's whole text report, verbatim (cut short when `textReportCut` is set). */
   report: string;
   cache: RefusalCache;
   /**
