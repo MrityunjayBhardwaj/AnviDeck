@@ -61,7 +61,7 @@ export interface OlderPr {
 export type MetricState = "ok" | "warn" | "bad" | "unknown";
 
 export interface HomeMetric {
-  id: "new-breaks" | "allowed-breaks" | "notes" | "sources";
+  id: "new-breaks" | "allowed-breaks" | "notes" | "child-reads" | "sources";
   label: string;
   state: MetricState;
   value: string;

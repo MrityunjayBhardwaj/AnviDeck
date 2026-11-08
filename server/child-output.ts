@@ -21,6 +21,8 @@ export const AFTER_EXIT_QUIET_MS = 3000;
 let lost = 0;
 /** How many waits this server has ended because a child's output never ended. */
 export const lostOutputEnds = () => lost;
+/** When this process started counting them: the count is of this server's life, shown on Home (#257). */
+export const countingSince = new Date().toISOString();
 
 function noteLost(what: string): void {
   lost++;

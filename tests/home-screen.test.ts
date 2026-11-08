@@ -309,6 +309,7 @@ describe("the health line", () => {
     metric("allowed-breaks", { value: "17", asOf: "2026-11-05T13:19:36+05:30" }),
     metric("notes", { state: "warn", value: "2,906 of 7,248", asOf: "2026-10-02" }),
     metric("sources", { value: "4 of 4" }),
+    metric("child-reads", { value: "0" }),
   ];
   test("healthy with one thing to watch, each figure with its date", () => {
     const h = healthModel({ home: homeOf([], { metrics: good }), failed: false, project: project(), projectsReadAt: "2026-11-05T10:00:00Z" });
@@ -347,6 +348,18 @@ describe("the health line", () => {
     const h = healthModel({ home: homeOf([], { metrics: m }), failed: false, project: project(), projectsReadAt: null });
     expect(h.word).toBe("Needs attention");
     expect(h.tail).toContain("2 new rule breaks");
+  });
+  test("reads cut short (#257): 0 is said and fine; any is a thing to watch; absent is could not read, never 0", () => {
+    const rowOf = (m: HomeMetric[]) => healthModel({ home: homeOf([], { metrics: m }), failed: false, project: project(), projectsReadAt: "2026-11-05T10:00:00Z" });
+    const zero = rowOf(good);
+    expect(zero.rows.find((r) => r.id === "child-reads")).toMatchObject({ label: "Reads cut short", value: "0", state: "ok" });
+    expect(zero.tail).not.toContain("cut short");
+    const two = rowOf([...good.slice(0, 4), metric("child-reads", { state: "warn", value: "2" })]);
+    expect(two.rows.find((r) => r.id === "child-reads")).toMatchObject({ value: "2", state: "warn", watch: "2 reads cut short" });
+    expect(two.tail).toBe("· 2 things to watch: 2,906 notes are out of date; 2 reads cut short");
+    const old = rowOf(good.slice(0, 4));
+    expect(old.rows.find((r) => r.id === "child-reads")).toMatchObject({ value: "could not read", state: "unknown", asOf: null });
+    expect(old.word).toBe("Could not check everything");
   });
   test("Home not read: could not read health, not healthy", () => {
     expect(healthModel({ home: null, failed: true, project: null, projectsReadAt: null }).word).toBe("Could not read health");
@@ -402,8 +415,8 @@ describe("the reader dates each health figure", () => {
   test("readHome builds its metrics through these, with the measured date", () => {
     const src = readFileSync("server/readers/home.ts", "utf8");
     expect(src).toContain("measuredOf = newestDate([measuredOf, r.measuredAt.date]);");
-    expect(src).toContain("...structureMetrics({ source: structureSource, reading: structureReading, newBreaks, allowed, measured, measuredOf }),");
-    expect(src).toContain("notesMetric(notes, now),");
+    expect(src).toContain("healthMetrics({ source: structureSource, reading: structureReading, newBreaks, allowed, measured, measuredOf }, notes, now)");
+    expect(src).toContain("return [...structureMetrics(structure), notesMetric(notes, now), childReadsMetric()];");
   });
 });
 

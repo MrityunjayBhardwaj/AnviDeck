@@ -9,6 +9,7 @@ import { gitIn } from "../server/readers/git-history";
 import { gitRead } from "../server/readers/history";
 import { runAsync } from "../server/readers/replay";
 import { timedRun } from "../server/readers/work";
+import { childReadsMetric } from "../server/readers/home";
 
 const made: string[] = [];
 afterAll(() => {
@@ -120,6 +121,22 @@ test("Bun.spawn output whose stream fails has not ended, so it is never taken as
   const empty = new ReadableStream<Uint8Array>({ start: (c) => c.close() });
   const r = await readProcess({ stdout: failing, stderr: empty, exited: Promise.resolve(0) }, "test child", QUIET);
   expect(r).toMatchObject({ code: 0, ended: false, stdout: "part of a log" });
+});
+
+test("Home's count of reads cut short is this counter, live (#257)", async () => {
+  const before = childReadsMetric();
+  expect(before.value).toBe(String(lostOutputEnds()));
+  await viaBun(HOLDS);
+  const after = childReadsMetric();
+  expect(Number(after.value)).toBe(Number(before.value) + 1);
+  expect(after.state).toBe("warn");
+  expect(after.note).toContain("since this server started");
+});
+
+test("Home's count says 0 when there were none, and from when", () => {
+  const m = childReadsMetric(0, "2026-11-08T09:00:00.000Z");
+  expect(m).toMatchObject({ id: "child-reads", value: "0", state: "ok" });
+  expect(m.note).toContain("2026-11-08 09:00 UTC");
 });
 
 test("a caller's reason says why the output was not used", () => {
