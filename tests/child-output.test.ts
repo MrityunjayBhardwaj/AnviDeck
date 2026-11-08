@@ -132,11 +132,31 @@ describe("every wait for a child's output goes through server/child-output.ts", 
     const p = join(d, n);
     return statSync(p).isDirectory() ? files(p) : p.endsWith(".ts") ? [p] : [];
   });
-  const waitsForEnd = /\.(on|once)\("close"|new Response\(\s*\w+\.(stdout|stderr)\s*\)/;
+  // Every spelling of "wait for the stream's end" this repo's runtimes offer (#258): a close handler in any quote,
+  // a Response over a child's stream, Bun's stream-to-text helpers and the stream's own body readers.
+  const waitsForEnd =
+    /\.(on|once)\(\s*["'`]close["'`]|new Response\(\s*[\w.]+\.(stdout|stderr)\s*\)|readableStreamTo\w+\(|\.(stdout|stderr)\.(text|json|bytes|arrayBuffer)\(/;
 
   test("the rule can see one (else it would pass on nothing)", () => {
-    expect(waitsForEnd.test(`child.on("close", () => {})`)).toBe(true);
-    expect(waitsForEnd.test(`new Response(p.stdout).text()`)).toBe(true);
+    for (const line of [
+      `child.on("close", () => {})`,
+      `child.once('close', done)`,
+      "child.on(`close`, done)",
+      `new Response(p.stdout).text()`,
+      `new Response(this.proc.stderr).text()`,
+      `await Bun.readableStreamToText(p.stdout)`,
+      `await readableStreamToArrayBuffer(p.stderr)`,
+      `await proc.stdout.text()`,
+      `await proc.stderr.json()`,
+      `await p.stdout.bytes()`,
+      `await p.stdout.arrayBuffer()`,
+    ])
+      expect(`${line}: ${waitsForEnd.test(line)}`).toBe(`${line}: true`);
+  });
+
+  test("and does not see what is not a wait for a child's output", () => {
+    for (const line of [`ws.close()`, `onClose: () => clients.delete(ws)`, `const said = (r.stderr || r.stdout).trim()`, `child.stdout.on("data", f)`, `closeSync(fd)`])
+      expect(`${line}: ${waitsForEnd.test(line)}`).toBe(`${line}: false`);
   });
 
   test("no other file under server/ waits for the end by itself", () => {
