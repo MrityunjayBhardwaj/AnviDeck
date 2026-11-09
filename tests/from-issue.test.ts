@@ -114,6 +114,23 @@ async function setup(o: { ref?: "tracked" | "linked" | "none"; ignoreAnvi?: bool
   return { ...r, run, calls, h, started, fi };
 }
 
+test("a mode above the cap is refused before anything is made (#249)", async () => {
+  const s = await setup();
+  const e = await refusal(s.fi.start({ project: "widget", issue: "7", mode: "bypassPermissions", confirm: "I understand Full access runs every tool call without asking" }));
+  expect(e.status).toBe(403);
+  expect(s.calls.filter((c) => c.includes("worktree"))).toEqual([]);
+  expect(s.calls).toEqual([]);
+  expect(s.started).toHaveLength(0);
+});
+
+test("the mode chosen reaches the agent started from an issue (#249)", async () => {
+  const s = await setup();
+  const r = await s.fi.start({ project: "widget", issue: "7", mode: "plan" });
+  expect(s.started[0]!.options.permissionMode).toBe("plan");
+  expect(s.h.get(r.agent.id).mode).toBe("plan");
+  s.h.stopAll("test over");
+});
+
 async function refusal(p: Promise<unknown>): Promise<HostError> {
   try {
     await p;

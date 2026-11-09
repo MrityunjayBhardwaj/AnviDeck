@@ -226,11 +226,11 @@ ref/                      ANVI_THESIS.md, DATA_EXAMPLES.md
 
 **Readers read; one module acts.** Every action goes through the agent host or the action log, reaches AnviDeck only through the desktop app's private channel (never HTTP), and is recorded.
 
-**You decide; agents do.** Agents propose and change; you answer permission requests, review and merge. Agents never merge.
+**You decide; agents do.** Agents propose and change; you answer permission requests, review and merge. Agents never merge. How much an agent may do without asking is the permission mode you pick when it starts, capped per machine (#249).
 
 **Every figure says where it came from.** A reader that could not look says so (`unreadable`, `partial`), never "nothing found". Nothing illustrative is shown as measured (#87).
 
-**Zero config.** Point it at `~/.claude/` and `~/.anvideck/` and it works. Overrides are environment variables (`PORT`, `HOST`, `ANVIDECK_HEALTH_DIR`, `ANVIDECK_STRUCTURE_TMP`, `ANVIDECK_STRUCTURE_GUARD`, `ANVIDECK_WORK_TMP`).
+**Zero config.** Point it at `~/.claude/` and `~/.anvideck/` and it works. Overrides are environment variables (`PORT`, `HOST`, `ANVIDECK_HEALTH_DIR`, `ANVIDECK_STRUCTURE_TMP`, `ANVIDECK_STRUCTURE_GUARD`, `ANVIDECK_WORK_TMP`, `ANVIDECK_AGENT_MODE_CAP`).
 
 **Local by default.** This machine only; no cloud service of AnviDeck's own and no telemetry. Network use is GitHub through `gh` and the agents' own Claude Code sessions on your login.
 

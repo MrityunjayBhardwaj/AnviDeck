@@ -615,3 +615,14 @@ describe("the screen acts only through the shared pieces", () => {
     expect(screen).toContain("watchFocus(S.root);");
   });
 });
+
+test("an agent in Full access is marked on its tab; others are not (#249)", async () => {
+  const { agentTabs } = await import("../ui/components/agents-model");
+  const base = { cwd: "/p", prompt: "x", status: "done", running: false, createdAt: "2026-11-10T00:00:00Z", updatedAt: "2026-11-10T00:00:00Z", pendingPermissions: [] };
+  const tabs = agentTabs([
+    { ...base, id: "a1", mode: "bypassPermissions", permissionMode: "bypassPermissions" },
+    { ...base, id: "a2", mode: "acceptEdits", permissionMode: "acceptEdits" },
+    { ...base, id: "a3", mode: "bypassPermissions", permissionMode: "default" },
+  ], []);
+  expect(Object.fromEntries(tabs.map((t) => [t.id, t.fullAccess ?? false]))).toEqual({ a1: true, a2: false, a3: false });
+});

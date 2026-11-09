@@ -12,6 +12,7 @@ import { explainStartFailure, loginOnlyEnv, resolveClaude, type AgentEnv, type C
 import { messagesIn, parseMessageRequest, renderForAgent, type SentMessage } from "../../shared/agent-messages";
 import { parsePermissionAnswer, type PendingPermission } from "../../shared/permission-requests";
 import { elsewhereText, type RunsElsewhere } from "../../shared/agent-elsewhere";
+import { checkMode, DEFAULT_MODE, FULL_ACCESS_CONFIRM, isAgentMode, MODE_CAP_ENV, modeCapFrom, modeInfo, rank, type AgentMode, type ModeCap } from "../../shared/agent-modes";
 
 export type { PendingPermission };
 
@@ -40,7 +41,7 @@ export type QueryFn = (params: {
 
 export class HostError extends Error {
   /** `detail` is sent beside `error` in the response body (e.g. `resumable` on a refused message). */
-  constructor(readonly status: 400 | 404 | 409 | 429 | 502 | 503, message: string, readonly detail?: Record<string, unknown>) {
+  constructor(readonly status: 400 | 403 | 404 | 409 | 429 | 502 | 503, message: string, readonly detail?: Record<string, unknown>) {
     super(message);
   }
 }
@@ -171,6 +172,8 @@ export interface HostDeps {
   ownerAlive?: (o: AgentOwner) => boolean;
   /** How soon a write that found the registry locked is retried (tests shorten it). */
   retryMs?: number;
+  /** The highest permission mode an agent may start in (#249). Default: from ANVIDECK_AGENT_MODE_CAP. */
+  modeCap?: ModeCap;
 }
 
 export const DEFAULT_CAP = 3;
@@ -191,6 +194,8 @@ export function capFromEnv(v: string | undefined = process.env.ANVIDECK_AGENT_CA
 export class AgentHost {
   readonly registry: AgentRegistry;
   readonly cap: number;
+  /** The highest permission mode an agent may start in on this machine, and where that came from (#249). */
+  readonly modeCap: ModeCap;
   private readonly queryFn: QueryFn;
   private readonly resolve: () => ClaudeBinary | null;
   private readonly envFn: () => AgentEnv;
@@ -219,6 +224,7 @@ export class AgentHost {
     this.resolve = deps.resolveClaude ?? (() => resolveClaude());
     this.envFn = deps.env ?? (() => loginOnlyEnv());
     this.cap = deps.cap ?? capFromEnv();
+    this.modeCap = deps.modeCap ?? modeCapFrom(process.env[MODE_CAP_ENV]);
     this.emitFn = deps.emit ?? (() => {});
     const port = Number.parseInt(process.env.PORT ?? "4000", 10);
     this.owner = {
@@ -416,8 +422,19 @@ export class AgentHost {
     return this.registry.readTranscript(id);
   }
 
+  /**
+   * The permission mode a start asks for, checked against this machine's cap (#249): 400 for a
+   * mode that is not one, or Full access without its confirmation; 403 for one above the cap.
+   * Enforced here, on the server; the dialogs only show it.
+   */
+  checkStartMode(mode: unknown, confirm?: unknown): AgentMode {
+    const c = checkMode(mode, this.modeCap, confirm);
+    if (!c.ok) throw new HostError(c.status, c.error, { modeCap: this.modeCap.cap });
+    return c.mode;
+  }
+
   /** Start an agent in `cwd` with `prompt`. Refused, not queued, when the cap is reached. */
-  start(req: { cwd: unknown; prompt: unknown; issue?: unknown }): AgentView {
+  start(req: { cwd: unknown; prompt: unknown; issue?: unknown; mode?: unknown; confirm?: unknown }): AgentView {
     const cwd = typeof req.cwd === "string" ? req.cwd.trim() : "";
     const prompt = typeof req.prompt === "string" ? req.prompt.trim() : "";
     if (!cwd || !isAbsolute(cwd)) throw new HostError(400, "folder must be an absolute path");
@@ -434,6 +451,7 @@ export class AgentHost {
       issue = Number(req.issue);
       if (!Number.isInteger(issue) || issue <= 0) throw new HostError(400, "issue must be a positive whole number");
     }
+    const mode = this.checkStartMode(req.mode, req.confirm);
     this.checkCap();
     const claude = this.requireClaude();
     const now = new Date().toISOString();
@@ -443,6 +461,7 @@ export class AgentHost {
       cwd,
       prompt,
       issue,
+      mode,
       status: "starting",
       createdAt: now,
       updatedAt: now,
@@ -463,6 +482,9 @@ export class AgentHost {
     this.refuseElsewhere(found, "resume it");
     if (!found.sessionId) throw new HostError(409, "agent never reached Claude Code, so there is no session to resume; start a new one");
     const prompt = typeof promptIn === "string" && promptIn.trim() ? promptIn.trim() : "Continue.";
+    // A resume keeps the mode it was started in, and is refused if the cap has been lowered since.
+    // Its Full access was confirmed when it started.
+    this.checkStartMode(found.mode ?? DEFAULT_MODE, FULL_ACCESS_CONFIRM);
     this.checkCap();
     const claude = this.requireClaude();
     // Claim it under the lock: if another server resumed it a moment ago, it now runs there.
@@ -646,12 +668,15 @@ export class AgentHost {
     rec.status = "starting";
     rec.reason = undefined;
     rec.apiKeySource = undefined;
+    rec.permissionMode = undefined;
+    const mode = rec.mode ?? DEFAULT_MODE;
     rec.claudePath = claude.path;
     rec.claudeRealPath = claude.realPath;
     rec.strippedEnv = stripped;
     this.record(rec.id, "host", {
       event: resumeId ? "resumed" : "started",
       prompt,
+      mode,
       claudePath: claude.path,
       claudeRealPath: claude.realPath,
       strippedEnv: stripped,
@@ -664,7 +689,14 @@ export class AgentHost {
       env,
       abortController: abort,
       resume: resumeId,
-      canUseTool: (toolName, toolInput, opts) => this.park(rec.id, live, toolName, toolInput, opts),
+      // Always said, never left to the folder's settings, so the agent runs in the mode shown (#249).
+      permissionMode: mode,
+      // Under Full access Claude Code approves every call before any callback is asked (only deny
+      // rules still stop one), so no permission callback is given: the SDK warns that it would never
+      // be called (sdk.mjs, CLAUDE_SDK_CAN_USE_TOOL_SHADOWED), and nothing can come to you to answer.
+      ...(mode === "bypassPermissions"
+        ? { allowDangerouslySkipPermissions: true }
+        : { canUseTool: (toolName: string, toolInput: Record<string, unknown>, opts: Parameters<NonNullable<Options["canUseTool"]>>[2]) => this.park(rec.id, live, toolName, toolInput, opts) }),
       stderr: (d) => {
         live.stderrTail = (live.stderrTail + d).slice(-2000);
       },
@@ -703,6 +735,20 @@ export class AgentHost {
       rec.apiKeySource = m.apiKeySource;
       rec.claudeCodeVersion = m.claude_code_version;
       rec.model = m.model;
+      rec.permissionMode = m.permissionMode;
+      // A mode wider than the one chosen, or one this host does not know, never runs (#249). A
+      // narrower one runs, and the card shows both (e.g. Full access that your settings turn off).
+      const asked = rec.mode ?? DEFAULT_MODE;
+      if (!isAgentMode(m.permissionMode) || rank(m.permissionMode) > rank(asked)) {
+        this.endRun(rec.id, live, {
+          status: "failed",
+          reason:
+            m.permissionMode === undefined
+              ? `Stopped at once: Claude Code did not report its permission mode, so it could not be checked against the ${modeInfo(asked).label} it was started in`
+              : `Stopped at once: Claude Code reported permission mode "${m.permissionMode}", wider than the ${modeInfo(asked).label} it was started in`,
+        });
+        return;
+      }
       if (m.apiKeySource !== "none") {
         this.endRun(rec.id, live, {
           status: "failed",
