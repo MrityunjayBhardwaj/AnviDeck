@@ -32,8 +32,11 @@ const GIT_CLEARS: [string, string][] = [
   ["credential.https://gist.github.com.helper", ""],
 ];
 
-/** An empty folder for gh's configuration: outside AnviDeck's store, so whatever gh writes there is never committed. */
-export const emptyGhConfigDir = () => join(tmpdir(), "anvideck-agent-gh-none");
+/**
+ * An empty folder for one agent's gh configuration: outside AnviDeck's store, so whatever gh writes
+ * there is never committed, and one per agent, so a login one agent puts there reaches no other.
+ */
+export const emptyGhConfigDir = (agentId: string) => join(tmpdir(), "anvideck-agent-gh-none", agentId);
 
 /**
  * The environment for an agent under `access`. "your-login" changes nothing. "none" returns what
@@ -42,7 +45,7 @@ export const emptyGhConfigDir = () => join(tmpdir(), "anvideck-agent-gh-none");
 export function withGithubAccess(
   base: Record<string, string>,
   access: GithubAccess,
-  ghConfigDir: string = emptyGhConfigDir(),
+  ghConfigDir: string,
 ): { env: Record<string, string>; removed: string[] } {
   if (access !== "none") return { env: base, removed: [] };
   const env = { ...base };

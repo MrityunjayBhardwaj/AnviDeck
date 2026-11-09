@@ -13,7 +13,7 @@ import { messagesIn, parseMessageRequest, renderForAgent, type SentMessage } fro
 import { parsePermissionAnswer, type PendingPermission } from "../../shared/permission-requests";
 import { elsewhereText, type RunsElsewhere } from "../../shared/agent-elsewhere";
 import { githubAccessInfo, unavailable, type GithubAccess, type GithubAccessRead } from "../../shared/github-access";
-import { readGithubAccess, withGithubAccess } from "./github-access";
+import { emptyGhConfigDir, readGithubAccess, withGithubAccess } from "./github-access";
 
 export type { PendingPermission };
 
@@ -175,8 +175,8 @@ export interface HostDeps {
   retryMs?: number;
   /** Agent GitHub access (#147), read at each start and resume. Default: settings.json in the registry's folder. */
   githubAccess?: () => GithubAccessRead;
-  /** The empty folder "none" points gh's configuration at (tests use their own). */
-  ghConfigDir?: string;
+  /** Where the empty folders "none" points each agent's gh configuration at go (tests use their own). Default: emptyGhConfigDir. */
+  ghConfigDir?: (agentId: string) => string;
 }
 
 export const DEFAULT_CAP = 3;
@@ -199,7 +199,7 @@ export class AgentHost {
   readonly cap: number;
   private readonly queryFn: QueryFn;
   private readonly githubAccessFn: () => GithubAccessRead;
-  private readonly ghConfigDir?: string;
+  private readonly ghConfigDir: (agentId: string) => string;
   private readonly resolve: () => ClaudeBinary | null;
   private readonly envFn: () => AgentEnv;
   private emitFn: (e: HostEvent) => void;
@@ -228,7 +228,7 @@ export class AgentHost {
     this.envFn = deps.env ?? (() => loginOnlyEnv());
     this.cap = deps.cap ?? capFromEnv();
     this.githubAccessFn = deps.githubAccess ?? (() => readGithubAccess(this.registry.dir));
-    this.ghConfigDir = deps.ghConfigDir;
+    this.ghConfigDir = deps.ghConfigDir ?? emptyGhConfigDir;
     this.emitFn = deps.emit ?? (() => {});
     const port = Number.parseInt(process.env.PORT ?? "4000", 10);
     this.owner = {
@@ -657,7 +657,7 @@ export class AgentHost {
   private launch(rec: AgentRecord, prompt: string, claude: ClaudeBinary, resumeId: string | undefined, github: GithubAccess): void {
     const login = this.envFn();
     const stripped = login.stripped;
-    const { env, removed } = withGithubAccess(login.env, github, this.ghConfigDir);
+    const { env, removed } = withGithubAccess(login.env, github, this.ghConfigDir(rec.id));
     const input = new MessageQueue();
     input.push(prompt);
     const abort = new AbortController();

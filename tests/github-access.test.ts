@@ -61,7 +61,7 @@ function standIns() {
 describe("the environment under each setting", () => {
   test("your login changes nothing", () => {
     const { base } = standIns();
-    expect(withGithubAccess(base, "your-login")).toEqual({ env: base, removed: [] });
+    expect(withGithubAccess(base, "your-login", "/unused")).toEqual({ env: base, removed: [] });
   });
 
   test("none removes the token variables and the ssh agent, and says which by name", () => {
@@ -162,7 +162,7 @@ describe("the host applies it at each start and resume", () => {
       resolveClaude: () => CLAUDE,
       env: () => ({ env: { PATH: "/usr/bin", SSH_AUTH_SOCK: "/tmp/agent.sock", GH_TOKEN: "x" }, stripped: [] }),
       cap: 5,
-      ghConfigDir: join(dir, "..", `${dir.split("/").pop()}-gh`),
+      ghConfigDir: (id) => join(dir, "..", `${dir.split("/").pop()}-gh`, id),
     });
     return { h, calls, dir };
   }
@@ -188,6 +188,11 @@ describe("the host applies it at each start and resume", () => {
     expect(calls[0]!.env!.GH_TOKEN).toBeUndefined();
     expect(calls[0]!.env!.GIT_CONFIG_NOSYSTEM).toBe("1");
     expect(h.get(a.id)).toMatchObject({ githubAccess: "none", githubRemoved: ["GH_TOKEN", "SSH_AUTH_SOCK"] });
+    // Each agent gets a gh folder of its own: a login one puts there reaches no other.
+    const b = h.start({ cwd: scratch(), prompt: "y" });
+    await until(() => h.get(b.id).status === "done");
+    expect(calls[0]!.env!.GH_CONFIG_DIR).toEndWith(`/${a.id}`);
+    expect(calls[1]!.env!.GH_CONFIG_DIR).toEndWith(`/${b.id}`);
   });
 
   test("a resume gets the setting as it is now", async () => {
