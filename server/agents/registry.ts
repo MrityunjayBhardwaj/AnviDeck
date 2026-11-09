@@ -1,3 +1,4 @@
+import type { GithubAccess } from "../../shared/github-access";
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, linkSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -127,6 +128,10 @@ export interface AgentRecord {
   reason?: string;
   /** From the init message: where the credential came from. Must be "none". */
   apiKeySource?: string;
+  /** The GitHub access its last run had (#147). Absent on records from before: those ran on your login. */
+  githubAccess?: GithubAccess;
+  /** What that access took out of its environment (names only). */
+  githubRemoved?: string[];
   claudeCodeVersion?: string;
   model?: string;
   /** The claude binary the last run used, as PATH named it and what it pointed at. */

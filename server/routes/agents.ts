@@ -6,6 +6,8 @@ import { loginOnlyEnv, readLogin, resolveClaude, type LoginStatus } from "../age
 import { sameOriginWrites } from "../guard";
 import { replayFromEnv } from "../agents/replay";
 import { FromIssue } from "../agents/from-issue";
+import { writeGithubAccess } from "../agents/github-access";
+import { GITHUB_ACCESS, githubAccessInfo, isGithubAccess, unavailable } from "../../shared/github-access";
 
 // The full write guard (same origin + this server's token) and the action log are installed
 // on the whole app (installGuard in server/guard.ts), so every /api write route is covered.
@@ -30,6 +32,8 @@ export function agentRoutes(host: AgentHost, login: () => Promise<LoginStatus>, 
       claude,
       login: await login(),
       cap: host.cap,
+      // Agent GitHub access (#147): the setting, and each choice with why it cannot be picked yet.
+      githubAccess: { setting: host.githubAccess(), options: GITHUB_ACCESS.map((g) => ({ ...g, unavailable: unavailable(g.access) })) },
       running: host.running,
       registry: host.registry.dir,
       // This server, as its agents name it; an agent with runsElsewhere is another server's (#104).
@@ -54,6 +58,21 @@ export function agentRoutes(host: AgentHost, login: () => Promise<LoginStatus>, 
       throw new HostError(400, "body must be JSON");
     }
   };
+
+  // Change Agent GitHub access (#147): { access }. Applies from the next start or resume; agents
+  // already running keep the environment they started with. A write: only from the desktop app.
+  r.post("/settings/github-access", async (c) => {
+    const b = await body(c);
+    if (!isGithubAccess(b.access)) throw new HostError(400, "access must be one of your-login, none, bot");
+    const why = unavailable(b.access);
+    if (why) throw new HostError(409, `${githubAccessInfo(b.access).label} is ${why}`);
+    try {
+      writeGithubAccess(host.registry.dir, b.access);
+    } catch (e) {
+      throw new HostError(503, (e as Error).message);
+    }
+    return c.json({ setting: host.githubAccess(), running: host.running });
+  });
 
   r.post("/", async (c) => {
     const b = await body(c);

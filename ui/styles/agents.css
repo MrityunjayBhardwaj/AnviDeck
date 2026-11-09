@@ -47,6 +47,8 @@
 .aw-chip.warn { color: var(--yellow); border-color: rgba(250, 204, 21, .4); }
 .aw-chip.bad { color: var(--red); border-color: rgba(248, 113, 113, .4); }
 .aw-chip.ok { color: var(--green); border-color: rgba(74, 222, 128, .4); }
+/* Agent GitHub access picker (#147). */
+.aw-select { background: var(--sh-panel-2); color: var(--sh-ink); border: 1px solid var(--sh-line); border-radius: 6px; padding: 1px 6px; font: inherit; font-size: 12px; }
 
 .aw-log { display: flex; flex-direction: column; gap: 8px; max-height: 62vh; overflow: auto; padding-right: 4px; }
 .aw-grid .aw-log { max-height: 34vh; }

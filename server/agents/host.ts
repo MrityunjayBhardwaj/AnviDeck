@@ -12,6 +12,8 @@ import { explainStartFailure, loginOnlyEnv, resolveClaude, type AgentEnv, type C
 import { messagesIn, parseMessageRequest, renderForAgent, type SentMessage } from "../../shared/agent-messages";
 import { parsePermissionAnswer, type PendingPermission } from "../../shared/permission-requests";
 import { elsewhereText, type RunsElsewhere } from "../../shared/agent-elsewhere";
+import { githubAccessInfo, unavailable, type GithubAccess, type GithubAccessRead } from "../../shared/github-access";
+import { readGithubAccess, withGithubAccess } from "./github-access";
 
 export type { PendingPermission };
 
@@ -171,6 +173,10 @@ export interface HostDeps {
   ownerAlive?: (o: AgentOwner) => boolean;
   /** How soon a write that found the registry locked is retried (tests shorten it). */
   retryMs?: number;
+  /** Agent GitHub access (#147), read at each start and resume. Default: settings.json in the registry's folder. */
+  githubAccess?: () => GithubAccessRead;
+  /** The empty folder "none" points gh's configuration at (tests use their own). */
+  ghConfigDir?: string;
 }
 
 export const DEFAULT_CAP = 3;
@@ -192,6 +198,8 @@ export class AgentHost {
   readonly registry: AgentRegistry;
   readonly cap: number;
   private readonly queryFn: QueryFn;
+  private readonly githubAccessFn: () => GithubAccessRead;
+  private readonly ghConfigDir?: string;
   private readonly resolve: () => ClaudeBinary | null;
   private readonly envFn: () => AgentEnv;
   private emitFn: (e: HostEvent) => void;
@@ -219,6 +227,8 @@ export class AgentHost {
     this.resolve = deps.resolveClaude ?? (() => resolveClaude());
     this.envFn = deps.env ?? (() => loginOnlyEnv());
     this.cap = deps.cap ?? capFromEnv();
+    this.githubAccessFn = deps.githubAccess ?? (() => readGithubAccess(this.registry.dir));
+    this.ghConfigDir = deps.ghConfigDir;
     this.emitFn = deps.emit ?? (() => {});
     const port = Number.parseInt(process.env.PORT ?? "4000", 10);
     this.owner = {
@@ -416,6 +426,23 @@ export class AgentHost {
     return this.registry.readTranscript(id);
   }
 
+  /** The Agent GitHub access setting as it reads now (#147). */
+  githubAccess(): GithubAccessRead {
+    return this.githubAccessFn();
+  }
+
+  /**
+   * The GitHub access the next run gets. A setting that cannot be read refuses the run (503) rather
+   * than guess: guessing "your login" would hand over the login you may have taken away.
+   */
+  private requireGithubAccess(): GithubAccess {
+    const g = this.githubAccessFn();
+    if (g.status !== "ok") throw new HostError(503, `the Agent GitHub access setting could not be read (${g.file}: ${g.reason}), so no agent starts until it is fixed or set again`);
+    const why = unavailable(g.access);
+    if (why) throw new HostError(409, `Agent GitHub access is ${githubAccessInfo(g.access).label}, which is ${why}`);
+    return g.access;
+  }
+
   /** Start an agent in `cwd` with `prompt`. Refused, not queued, when the cap is reached. */
   start(req: { cwd: unknown; prompt: unknown; issue?: unknown }): AgentView {
     const cwd = typeof req.cwd === "string" ? req.cwd.trim() : "";
@@ -435,6 +462,7 @@ export class AgentHost {
       if (!Number.isInteger(issue) || issue <= 0) throw new HostError(400, "issue must be a positive whole number");
     }
     this.checkCap();
+    const github = this.requireGithubAccess();
     const claude = this.requireClaude();
     const now = new Date().toISOString();
     const rec: AgentRecord = {
@@ -451,7 +479,7 @@ export class AgentHost {
     };
     this.agents.set(rec.id, rec);
     this.seq.set(rec.id, 0);
-    this.launch(rec, prompt, claude, undefined);
+    this.launch(rec, prompt, claude, undefined, github);
     return this.view(rec);
   }
 
@@ -464,6 +492,8 @@ export class AgentHost {
     if (!found.sessionId) throw new HostError(409, "agent never reached Claude Code, so there is no session to resume; start a new one");
     const prompt = typeof promptIn === "string" && promptIn.trim() ? promptIn.trim() : "Continue.";
     this.checkCap();
+    // A resume gets the setting as it is now, not as it was when the agent started.
+    const github = this.requireGithubAccess();
     const claude = this.requireClaude();
     // Claim it under the lock: if another server resumed it a moment ago, it now runs there.
     let rec: AgentRecord;
@@ -486,7 +516,7 @@ export class AgentHost {
     const lines = this.registry.readTranscript(id).lines;
     rec.messageCount = Math.max(rec.messageCount, lines.length ? lines[lines.length - 1].seq : 0);
     this.seq.set(id, rec.messageCount);
-    this.launch(rec, prompt, claude, rec.sessionId);
+    this.launch(rec, prompt, claude, rec.sessionId, github);
     return this.view(rec);
   }
 
@@ -624,8 +654,10 @@ export class AgentHost {
     return { ...a, running: true, pendingPermissions };
   }
 
-  private launch(rec: AgentRecord, prompt: string, claude: ClaudeBinary, resumeId: string | undefined): void {
-    const { env, stripped } = this.envFn();
+  private launch(rec: AgentRecord, prompt: string, claude: ClaudeBinary, resumeId: string | undefined, github: GithubAccess): void {
+    const login = this.envFn();
+    const stripped = login.stripped;
+    const { env, removed } = withGithubAccess(login.env, github, this.ghConfigDir);
     const input = new MessageQueue();
     input.push(prompt);
     const abort = new AbortController();
@@ -649,9 +681,13 @@ export class AgentHost {
     rec.claudePath = claude.path;
     rec.claudeRealPath = claude.realPath;
     rec.strippedEnv = stripped;
+    rec.githubAccess = github;
+    rec.githubRemoved = removed;
     this.record(rec.id, "host", {
       event: resumeId ? "resumed" : "started",
       prompt,
+      githubAccess: github,
+      githubRemoved: removed,
       claudePath: claude.path,
       claudeRealPath: claude.realPath,
       strippedEnv: stripped,

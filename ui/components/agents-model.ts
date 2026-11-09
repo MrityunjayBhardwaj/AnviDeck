@@ -600,6 +600,8 @@ export interface HostAgent {
   model?: string;
   claudeCodeVersion?: string;
   apiKeySource?: string;
+  /** The GitHub access its last run had (#147). */
+  githubAccess?: string;
   costEstimateUsd?: number;
   pendingPermissions: { requestId: string; toolName: string; input: Record<string, unknown>; askedAt: string; decisionReason?: string; blockedPath?: string }[];
 }
