@@ -1,3 +1,4 @@
+import type { AgentMode } from "../../shared/agent-modes";
 import type { GithubAccess } from "../../shared/github-access";
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, linkSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
@@ -128,6 +129,10 @@ export interface AgentRecord {
   reason?: string;
   /** From the init message: where the credential came from. Must be "none". */
   apiKeySource?: string;
+  /** The permission mode it was started in (#249). Absent on records from before: those ran in "default". */
+  mode?: AgentMode;
+  /** The permission mode Claude Code reported at init on the last run, as it said it. */
+  permissionMode?: string;
   /** The GitHub access its last run had (#147). Absent on records from before: those ran on your login. */
   githubAccess?: GithubAccess;
   /** What that access took out of its environment (names only). */

@@ -15,6 +15,7 @@
  *
  * Writes go through ui/write.ts only. All text from agents is set as text, never as HTML.
  */
+import { modeLine } from "../../shared/agent-modes";
 import { write, WriteError } from "../write";
 import { agentRequests, keepCardsOf } from "./PermissionRequests";
 import { refusalCall } from "./RefusalCall";
@@ -425,7 +426,8 @@ function tabsRow(agents: HostAgent[], sel: ReturnType<typeof selected>): HTMLEle
       row.append(el("span", "aw-tabs-k", `· ${d.project} terminal sessions`));
     }
     const on = !d.route.grid && sel !== null && (sel.kind === "host" ? tab.kind === "host" && sel.agent.id === tab.id : tab.kind === "terminal" && sel.sid === tab.id);
-    const b = el("button", `aw-tab${on ? " on" : ""}`, el("span", `aw-dot ${tab.tone}`), el("span", "l", tab.label), el("span", "st", tab.status));
+    const b = el("button", `aw-tab${on ? " on" : ""}`, el("span", `aw-dot ${tab.tone}`), el("span", "l", tab.label),
+      ...(tab.fullAccess ? [el("span", "aw-chip bad aw-tab-mode", "⚠ Full access")] : []), el("span", "st", tab.status));
     b.type = "button";
     b.dataset.tab = tab.key;
     b.title = tab.kind === "terminal" ? `${tab.id} · started in a terminal: view only` : tab.id;
@@ -470,6 +472,14 @@ function timelineFor(a: HostAgent): { tl: Timeline | null; lines: HostLoad; sess
     hooksFrom: cli ? hookWindow(cli.transcript)?.from ?? null : null,
   });
   return { tl, lines, session };
+}
+
+/** The agent's permission mode on its card (#249); Full access in red. */
+function modeChip(a: HostAgent): HTMLElement {
+  const m = modeLine(a.mode, a.permissionMode);
+  const chip = el("span", `aw-chip aw-mode ${m.wide ? "bad" : ""}`, m.wide ? `⚠ ${m.text}` : m.text);
+  chip.dataset.mode = a.mode ?? "default";
+  return chip;
 }
 
 function statusChip(a: HostAgent): HTMLElement {
@@ -576,7 +586,7 @@ function hostCard(a: HostAgent, compact: boolean): HTMLElement {
   const title = el("b", "", agentLabel(a));
   title.title = a.prompt;
   const head = el("div", "aw-card-head", el("span", `aw-dot ${hostTone(a)}`), title,
-    el("span", "aw-note", `${a.id} · ${a.cwd}`), statusChip(a), controls(a, out));
+    el("span", "aw-note", `${a.id} · ${a.cwd}`), modeChip(a), statusChip(a), controls(a, out));
   if (compact) {
     title.style.cursor = "pointer";
     title.onclick = () => S.deps!.go(hashFor({ agent: a.id }));
@@ -630,6 +640,7 @@ function hostDetail(a: HostAgent): HTMLElement {
         ["folder", a.cwd],
         ["session", a.sessionId ?? "not reported yet"],
         ["model", a.model ?? "not reported yet"],
+        ["permission mode", modeLine(a.mode, a.permissionMode).text],
         ["GitHub", githubAccessLine(a.githubAccess).text],
         ["login source", a.apiKeySource === undefined ? "not reported yet" : a.apiKeySource === "none" ? "claude.ai login (apiKeySource none)" : `NOT the login: ${a.apiKeySource}`],
         ["started", a.createdAt.replace("T", " ").slice(0, 19) + " UTC"],
