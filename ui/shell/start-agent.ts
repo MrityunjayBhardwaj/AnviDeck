@@ -5,6 +5,7 @@
  * resolves, anvi's own check of the worktree, and the board. All server text is set as text.
  */
 import { write, WriteError } from "../write";
+import { createModePicker } from "./mode-picker";
 
 export interface StartAgentDeps {
   projects: () => string[];
@@ -42,10 +43,12 @@ export function createStartAgent(deps: StartAgentDeps): { open: (project: string
   const start = el("button", { id: "sa-start", type: "button", class: "sh-btn sh-sa-go" }, "Start agent");
   const close = el("button", { id: "sa-close", type: "button", class: "sh-btn" }, "Close");
   const out = el("div", { id: "sa-out", class: "sh-sa-out", "aria-live": "polite" });
+  const mode = createModePicker("sa");
   const box = el("div", { class: "sh-sa", role: "dialog", "aria-modal": "true", "aria-label": "Start an agent on an issue" },
     el("div", { class: "sh-sa-h" }, "Start an agent on an issue"),
     el("div", { class: "sh-sa-row" }, el("label", {}, "Project ", project), el("label", {}, "Issue #", issue)),
     el("div", { class: "sh-sa-row" }, note),
+    mode.element,
     el("div", { class: "sh-sa-row sh-dim" }, "Makes the issue's own worktree and branch, links the project's .anvi and ref into it, and starts the agent there with the issue and your workflow. Agents never merge."),
     el("div", { class: "sh-sa-row" }, check, start, close),
     out);
@@ -82,10 +85,12 @@ export function createStartAgent(deps: StartAgentDeps): { open: (project: string
 
   start.onclick = async () => {
     const q = params();
+    const m = mode.body();
+    if (!m.ok) return say("sh-sa-err", `Not started: ${m.why}`);
     start.disabled = true;
     say("sh-dim", "Making the worktree and starting the agent…");
     try {
-      const r = await write<Started>("POST", "/api/agents/from-issue", { project: q.project, issue: q.issue, note: note.value || undefined });
+      const r = await write<Started>("POST", "/api/agents/from-issue", { project: q.project, issue: q.issue, note: note.value || undefined, ...m.body });
       const links = r.links.map((l) =>
         el("div", { class: "sh-sa-link", "data-kind": l.kind, "data-state": l.state, "data-resolves": String(l.resolves) },
           el("span", { class: l.resolves ? "sh-sa-ok" : "sh-sa-err" }, l.resolves ? "resolves" : "does not resolve"),
@@ -132,6 +137,7 @@ export function createStartAgent(deps: StartAgentDeps): { open: (project: string
       // Opened from an issue (Work's Start agent, #85): its number is filled in.
       if (issueNumber !== undefined) issue.value = String(issueNumber);
       out.replaceChildren();
+      void mode.load();
       bg.classList.add("on");
       issue.focus();
     },

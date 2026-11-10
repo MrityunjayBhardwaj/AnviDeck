@@ -16,6 +16,7 @@
  *                 file and time, else counted as not placed.
  * Nothing is dropped silently: whatever could not be placed is counted in `unplaced`.
  */
+import { modeLine } from "../../shared/agent-modes";
 import type { CliRecord, HookLogRow, MeterRow } from "../../shared/agents-screen-types";
 import { messagesIn, type DeliveryState } from "../../shared/agent-messages";
 
@@ -600,6 +601,9 @@ export interface HostAgent {
   model?: string;
   claudeCodeVersion?: string;
   apiKeySource?: string;
+  /** The permission mode it was started in, and the one Claude Code reported (#249). */
+  mode?: string;
+  permissionMode?: string;
   costEstimateUsd?: number;
   pendingPermissions: { requestId: string; toolName: string; input: Record<string, unknown>; askedAt: string; decisionReason?: string; blockedPath?: string }[];
 }
@@ -622,6 +626,8 @@ export interface AgentTab {
   /** The dot's meaning. */
   tone: "waiting" | "working" | "done" | "failed" | "stopped" | "view";
   status: string;
+  /** Runs in Full access (#249): marked on its tab as on its card. */
+  fullAccess?: boolean;
 }
 
 /** Most urgent first: an agent waiting on you, then working, then failed, done, stopped. */
@@ -656,6 +662,7 @@ export function agentTabs(agents: HostAgent[], terminals: TerminalSession[]): Ag
     label: agentLabel(a),
     tone: hostTone(a),
     status: a.pendingPermissions.length ? `waiting on you (${a.pendingPermissions.length})` : a.status,
+    ...(modeLine(a.mode, a.permissionMode).wide ? { fullAccess: true } : {}),
   }));
   // A session AnviDeck started also has a Claude Code transcript: it is listed once, as the agent.
   const started = new Set(agents.map((a) => a.sessionId).filter((s): s is string => !!s));

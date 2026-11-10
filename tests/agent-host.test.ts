@@ -8,6 +8,7 @@ import { AgentRegistry } from "../server/agents/registry";
 import { explainStartFailure, loginOnlyEnv, parseAuthStatus, type ClaudeBinary } from "../server/agents/login";
 import { agentRoutes, createAgentHost, sameOriginWrites } from "../server/routes/agents";
 import { Hono } from "hono";
+import { FULL_ACCESS_CONFIRM, MODES, modeCapFrom, type AgentMode } from "../shared/agent-modes";
 
 const dirs: string[] = [];
 const scratch = () => {
@@ -21,8 +22,8 @@ afterAll(() => {
 
 const CLAUDE: ClaudeBinary = { path: "/fake/bin/claude", realPath: "/fake/lib/claude-2.1.318", fileId: "1:100:1" };
 
-const init = (apiKeySource = "none", session_id = "sess-1") =>
-  ({ type: "system", subtype: "init", apiKeySource, session_id, claude_code_version: "2.1.318", model: "m", cwd: "/x", tools: [], mcp_servers: [], permissionMode: "default", slash_commands: [], output_style: "default", uuid: "u" }) as unknown as SDKMessage;
+const init = (apiKeySource = "none", session_id = "sess-1", permissionMode = "default") =>
+  ({ type: "system", subtype: "init", apiKeySource, session_id, claude_code_version: "2.1.318", model: "m", cwd: "/x", tools: [], mcp_servers: [], permissionMode, slash_commands: [], output_style: "default", uuid: "u" }) as unknown as SDKMessage;
 const assistant = (text: string) =>
   ({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text }] }, parent_tool_use_id: null, session_id: "sess-1", uuid: "u2" }) as unknown as SDKMessage;
 const result = (subtype = "success", is_error = false) =>
@@ -58,7 +59,7 @@ async function until(pred: () => boolean, ms = 2000) {
   }
 }
 
-function makeHost(script: Script, opts: { cap?: number; dir?: string; resolve?: () => ClaudeBinary | null; env?: Record<string, string> } = {}) {
+function makeHost(script: Script, opts: { cap?: number; dir?: string; resolve?: () => ClaudeBinary | null; env?: Record<string, string>; modeCap?: AgentMode } = {}) {
   const dir = opts.dir ?? scratch();
   const events: HostEvent[] = [];
   const q = fake(script);
@@ -68,6 +69,7 @@ function makeHost(script: Script, opts: { cap?: number; dir?: string; resolve?: 
     resolveClaude: opts.resolve ?? (() => CLAUDE),
     env: () => loginOnlyEnv(opts.env ?? { PATH: "/usr/bin", ANTHROPIC_API_KEY: "sk-fake" }),
     cap: opts.cap ?? 3,
+    ...(opts.modeCap ? { modeCap: modeCapFrom(opts.modeCap) } : {}),
     emit: (e) => events.push(e),
   });
   const statuses = (id: string) =>
@@ -352,6 +354,139 @@ describe("agent host", () => {
     expect(q.push("three")).toBe(false);
     await reader;
     expect(got).toEqual(["one", "two"]);
+  });
+});
+
+describe("permission modes (#249)", () => {
+  // Claude Code reports the mode it was given, as the real one does.
+  const echo: Script = async function* (o) {
+    yield init("none", "sess-1", o.permissionMode ?? "missing");
+    yield result();
+  };
+  const refusedWith = (f: () => unknown): HostError => {
+    try {
+      f();
+    } catch (e) {
+      if (e instanceof HostError) return e;
+      throw e;
+    }
+    throw new Error("expected a refusal");
+  };
+
+  test("every mode the cap allows reaches query() unchanged; only Full access carries the SDK's extra flag", async () => {
+    const { host, calls } = makeHost(echo, { modeCap: "bypassPermissions", cap: 10 });
+    for (const m of MODES) {
+      const a = host.start({ cwd: scratch(), prompt: "x", mode: m.mode, confirm: m.mode === "bypassPermissions" ? FULL_ACCESS_CONFIRM : undefined });
+      await until(() => host.get(a.id).status === "done");
+      expect(host.get(a.id)).toMatchObject({ mode: m.mode, permissionMode: m.mode });
+    }
+    expect(calls.map((c) => c.options.permissionMode)).toEqual(MODES.map((m) => m.mode));
+    expect(calls.map((c) => c.options.allowDangerouslySkipPermissions ?? false)).toEqual(MODES.map((m) => m.mode === "bypassPermissions"));
+    // Full access gets no permission callback (it would never be asked); every other mode does.
+    expect(calls.map((c) => typeof c.options.canUseTool)).toEqual(MODES.map((m) => (m.mode === "bypassPermissions" ? "undefined" : "function")));
+  });
+
+  test("no mode is Ask me, said to the SDK rather than left to the folder's settings", async () => {
+    const { host, calls } = makeHost(echo);
+    const a = host.start({ cwd: scratch(), prompt: "x" });
+    await until(() => host.get(a.id).status === "done");
+    expect(calls[0].options.permissionMode).toBe("default");
+    expect(host.get(a.id).mode).toBe("default");
+  });
+
+  test("the cap is enforced by the host: Full access is refused by default, and nothing starts", () => {
+    const { host, calls } = makeHost(echo);
+    expect(host.modeCap.cap).toBe("acceptEdits");
+    const e = refusedWith(() => host.start({ cwd: scratch(), prompt: "x", mode: "bypassPermissions", confirm: FULL_ACCESS_CONFIRM }));
+    expect(e.status).toBe(403);
+    expect(e.message).toContain("above the cap on this machine (Accept edits");
+    expect(calls).toHaveLength(0);
+    expect(host.list()).toHaveLength(0);
+  });
+
+  test("Full access needs its confirmation even when the cap allows it; unknown modes and auto are refused", () => {
+    const { host, calls } = makeHost(echo, { modeCap: "bypassPermissions" });
+    expect(refusedWith(() => host.start({ cwd: scratch(), prompt: "x", mode: "bypassPermissions" })).status).toBe(400);
+    expect(refusedWith(() => host.start({ cwd: scratch(), prompt: "x", mode: "bypassPermissions", confirm: "yes" })).status).toBe(400);
+    for (const m of ["auto", "nope", 3]) expect(refusedWith(() => host.start({ cwd: scratch(), prompt: "x", mode: m })).status).toBe(400);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("a cap that is not a mode falls back to the default and says so, never to Full access", () => {
+    expect(modeCapFrom("everything")).toMatchObject({ cap: "acceptEdits", invalid: "everything" });
+    expect(modeCapFrom(undefined).cap).toBe("acceptEdits");
+    expect(modeCapFrom("plan").cap).toBe("plan");
+  });
+
+  test("a resume keeps the mode, and is refused once the cap no longer allows it", async () => {
+    const dir = scratch();
+    const first = makeHost(echo, { dir, modeCap: "bypassPermissions" });
+    const a = first.host.start({ cwd: scratch(), prompt: "x", mode: "bypassPermissions", confirm: FULL_ACCESS_CONFIRM });
+    await until(() => first.host.get(a.id).status === "done" && first.host.running === 0);
+    first.host.resume(a.id, "go on");
+    await until(() => first.calls.length === 2 && first.host.get(a.id).status === "done" && first.host.running === 0);
+    expect(first.calls[1].options.permissionMode).toBe("bypassPermissions");
+    expect(first.calls[1].options.resume).toBe("sess-1");
+    // The same registry read by a server whose cap is the default.
+    const later = makeHost(echo, { dir });
+    expect(refusedWith(() => later.host.resume(a.id, "go on")).status).toBe(403);
+    expect(later.calls).toHaveLength(0);
+  });
+
+  test("Claude Code reporting a wider mode than chosen stops the agent at once; a narrower one runs and is shown", async () => {
+    const wider = makeHost(async function* (o) {
+      yield init("none", "sess-1", "bypassPermissions");
+      await aborted(o);
+    });
+    const a = wider.host.start({ cwd: scratch(), prompt: "x", mode: "acceptEdits" });
+    await until(() => wider.host.get(a.id).status === "failed");
+    expect(wider.host.get(a.id).reason).toContain('reported permission mode "bypassPermissions", wider than the Accept edits');
+    expect(wider.statuses(a.id)).not.toContain("working");
+
+    const narrower = makeHost(async function* () {
+      yield init("none", "sess-1", "default");
+      yield result();
+    }, { modeCap: "bypassPermissions" });
+    const b = narrower.host.start({ cwd: scratch(), prompt: "x", mode: "bypassPermissions", confirm: FULL_ACCESS_CONFIRM });
+    await until(() => narrower.host.get(b.id).status === "done");
+    expect(narrower.host.get(b.id)).toMatchObject({ mode: "bypassPermissions", permissionMode: "default" });
+
+    const unknown = makeHost(async function* (o) {
+      yield init("none", "sess-1", "auto");
+      await aborted(o);
+    });
+    const c = unknown.host.start({ cwd: scratch(), prompt: "x" });
+    await until(() => unknown.host.get(c.id).status === "failed");
+
+    // An init with no mode at all cannot be checked, so it never runs either, and says why.
+    const silent = makeHost(async function* (o) {
+      const { permissionMode: _drop, ...rest } = init() as unknown as Record<string, unknown>;
+      yield rest as unknown as SDKMessage;
+      await aborted(o);
+    });
+    const d = silent.host.start({ cwd: scratch(), prompt: "x" });
+    await until(() => silent.host.get(d.id).status === "failed");
+    expect(silent.host.get(d.id).reason).toContain("did not report its permission mode");
+  });
+
+  test("over the route: the overview says what is offered and why not; a start above the cap is 403", async () => {
+    const { host, calls } = makeHost(echo);
+    const app = new Hono();
+    app.route("/api/agents", agentRoutes(host, async () => ({ ok: true, authMethod: "claude.ai", plan: "max" })));
+    const ov = (await (await app.request("http://localhost:4475/api/agents", { headers: { host: "localhost:4475" } })).json()) as {
+      modes: { cap: string; offered: { mode: string; allowed: boolean; why?: string }[] };
+    };
+    expect(ov.modes.cap).toBe("acceptEdits");
+    expect(ov.modes.offered.map((m) => `${m.mode}:${m.allowed}`)).toEqual(["plan:true", "dontAsk:true", "default:true", "acceptEdits:true", "bypassPermissions:false"]);
+    expect(ov.modes.offered[4].why).toContain("ANVIDECK_AGENT_MODE_CAP");
+    const res = await app.request("http://localhost:4475/api/agents", {
+      method: "POST",
+      headers: { "content-type": "application/json", host: "localhost:4475", origin: "http://localhost:4475" },
+      body: JSON.stringify({ cwd: scratch(), prompt: "x", mode: "bypassPermissions", confirm: FULL_ACCESS_CONFIRM }),
+    });
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { modeCap: string }).modeCap).toBe("acceptEdits");
+    expect(calls).toHaveLength(0);
   });
 });
 

@@ -6,6 +6,7 @@ import { loginOnlyEnv, readLogin, resolveClaude, type LoginStatus } from "../age
 import { sameOriginWrites } from "../guard";
 import { replayFromEnv } from "../agents/replay";
 import { FromIssue } from "../agents/from-issue";
+import { modesOffered } from "../../shared/agent-modes";
 
 // The full write guard (same origin + this server's token) and the action log are installed
 // on the whole app (installGuard in server/guard.ts), so every /api write route is covered.
@@ -30,6 +31,8 @@ export function agentRoutes(host: AgentHost, login: () => Promise<LoginStatus>, 
       claude,
       login: await login(),
       cap: host.cap,
+      // The permission modes a start may ask for on this machine, each saying if the cap allows it (#249).
+      modes: { cap: host.modeCap.cap, from: host.modeCap.from, ...(host.modeCap.invalid ? { invalid: host.modeCap.invalid } : {}), offered: modesOffered(host.modeCap) },
       running: host.running,
       registry: host.registry.dir,
       // This server, as its agents name it; an agent with runsElsewhere is another server's (#104).
@@ -57,7 +60,7 @@ export function agentRoutes(host: AgentHost, login: () => Promise<LoginStatus>, 
 
   r.post("/", async (c) => {
     const b = await body(c);
-    return c.json(host.start({ cwd: b.cwd, prompt: b.prompt, issue: b.issue }), 201);
+    return c.json(host.start({ cwd: b.cwd, prompt: b.prompt, issue: b.issue, mode: b.mode, confirm: b.confirm }), 201);
   });
   // Start an agent from an issue, in its own worktree (#78). The GET says what it would do, or
   // why it would refuse, without making anything; the POST does it.

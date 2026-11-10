@@ -24,7 +24,7 @@ afterAll(() => {
 
 const CLAUDE: ClaudeBinary = { path: "/fake/bin/claude", realPath: "/fake/lib/claude-2.1.318", fileId: "1:100:1" };
 const init = () =>
-  ({ type: "system", subtype: "init", apiKeySource: "none", session_id: "sess-1", claude_code_version: "2.1.318", model: "m", uuid: "u" }) as unknown as SDKMessage;
+  ({ type: "system", subtype: "init", apiKeySource: "none", session_id: "sess-1", claude_code_version: "2.1.318", model: "m", permissionMode: "default", uuid: "u" }) as unknown as SDKMessage;
 const assistant = (text: string) =>
   ({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text }] }, parent_tool_use_id: null, session_id: "sess-1", uuid: "u2" }) as unknown as SDKMessage;
 const result = (extra: Record<string, unknown> = {}) =>

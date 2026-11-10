@@ -1,3 +1,4 @@
+import type { AgentMode } from "../../shared/agent-modes";
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, linkSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -127,6 +128,10 @@ export interface AgentRecord {
   reason?: string;
   /** From the init message: where the credential came from. Must be "none". */
   apiKeySource?: string;
+  /** The permission mode it was started in (#249). Absent on records from before: those ran in "default". */
+  mode?: AgentMode;
+  /** The permission mode Claude Code reported at init on the last run, as it said it. */
+  permissionMode?: string;
   claudeCodeVersion?: string;
   model?: string;
   /** The claude binary the last run used, as PATH named it and what it pointed at. */

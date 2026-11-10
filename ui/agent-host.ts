@@ -3,6 +3,8 @@
  * plain; the Agents screen (#82) and the shell (#80) replace it. Served at /agent-host.
  * All text from agents is set with textContent, never as HTML.
  */
+import { createModePicker } from "./shell/mode-picker";
+import { modeLine } from "../shared/agent-modes";
 import "./desktop"; // in the desktop app, reads go to the bundled server (#240)
 import { write, type WriteMethod } from "./write";
 
@@ -20,6 +22,8 @@ interface Agent {
   status: string;
   reason?: string;
   apiKeySource?: string;
+  mode?: string;
+  permissionMode?: string;
   claudeCodeVersion?: string;
   model?: string;
   claudePath?: string;
@@ -118,10 +122,18 @@ const cwdIn = el("input", { id: "cwd", size: "60", placeholder: "/absolute/folde
 const promptIn = el("textarea", { id: "prompt", rows: "2", cols: "60", placeholder: "prompt" });
 const issueIn = el("input", { id: "issue", size: "6", placeholder: "issue #" });
 const startBtn = el("button", { id: "start" }, "Start agent");
+const modePick = createModePicker("ah");
+void modePick.load();
 startBtn.onclick = async () => {
   msg.textContent = "";
+  const m = modePick.body();
+  if (!m.ok) {
+    msg.className = "err";
+    msg.textContent = m.why;
+    return;
+  }
   try {
-    const a = (await call("POST", "/", { cwd: cwdIn.value, prompt: promptIn.value, issue: issueIn.value || undefined })) as Agent;
+    const a = (await call("POST", "/", { cwd: cwdIn.value, prompt: promptIn.value, issue: issueIn.value || undefined, ...m.body })) as Agent;
     agents.set(a.id, a);
     select(a.id);
   } catch (e) {
@@ -165,7 +177,7 @@ root.append(
   el("h1", {}, "Agent host"),
   el("div", { class: "note" }, "Temporary page (#75). The Agents screen (#82) replaces it."),
   loginBox,
-  el("div", { class: "box" }, el("div", {}, "Folder ", cwdIn, "  Issue ", issueIn), el("div", {}, promptIn), startBtn, " ", msg),
+  el("div", { class: "box" }, el("div", {}, "Folder ", cwdIn, "  Issue ", issueIn), el("div", {}, promptIn), modePick.element, startBtn, " ", msg),
   el("div", { class: "box", id: "from-issue" }, el("div", {}, el("b", {}, "From an issue"), el("span", { class: "k" }, "  its own worktree and branch, .anvi and ref linked (#78)")),
     el("div", {}, "Project ", fiProject, "  Issue ", fiIssue, "  ", fiNote, " ", fiBtn), fiMsg),
   listBox,
@@ -224,7 +236,7 @@ function renderList(): void {
   const rows = [...agents.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   keepCardsOf(rows);
   const table = el("table", {},
-    el("tr", {}, ...["agent", "status", "apiKeySource", "folder", "prompt", "runs", "why", ""].map((h) => el("th", {}, h))));
+    el("tr", {}, ...["agent", "status", "mode", "apiKeySource", "folder", "prompt", "runs", "why", ""].map((h) => el("th", {}, h))));
   for (const a of rows) {
     const live = a.running;
     const actions = el("td", {});
@@ -247,6 +259,7 @@ function renderList(): void {
         a.status === "waiting" ? `waiting on you (${a.pendingPermissions.map((p) => p.toolName).join(", ")})` : a.status),
         // Its parked permission requests (#77), each with Allow and Deny.
         ...agentRequests(a)),
+      el("td", { class: modeLine(a.mode, a.permissionMode).wide ? "err" : "", "data-mode": a.mode ?? "default" }, modeLine(a.mode, a.permissionMode).text),
       el("td", { class: a.apiKeySource === undefined ? "k" : a.apiKeySource === "none" ? "ok" : "err" }, a.apiKeySource ?? "not reported yet"),
       el("td", {}, a.cwd),
       el("td", {}, a.prompt.slice(0, 60)),
