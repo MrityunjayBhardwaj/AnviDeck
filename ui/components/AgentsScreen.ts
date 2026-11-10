@@ -20,6 +20,7 @@ import { write, WriteError } from "../write";
 import { agentRequests, keepCardsOf } from "./PermissionRequests";
 import { refusalCall } from "./RefusalCall";
 import { elsewhereText, elsewhereUrl } from "../../shared/agent-elsewhere";
+import { githubAccessInfo, githubAccessLine, type GithubAccess, type GithubAccessInfo, type GithubAccessRead } from "../../shared/github-access";
 import type { AgentsRead } from "../shell/activity";
 import type { AgentSessionResponse } from "../../shared/agents-screen-types";
 import type { ReplaySessionsResponse } from "../../shared/replay-types";
@@ -70,6 +71,8 @@ interface Overview {
   registry: string;
   /** Set when the registry file could not be read: the agents listed are only this server's (#104). */
   registryUnread?: string;
+  /** Agent GitHub access (#147): the setting, and each choice with why it cannot be picked yet. Absent from older servers. */
+  githubAccess?: { setting: GithubAccessRead; options: (GithubAccessInfo & { unavailable: string | null })[] };
 }
 
 // ── state kept across renders (the screen is rebuilt on every navigation) ───────────────────
@@ -274,7 +277,7 @@ function paint(): void {
     el("span", "aw-sub", "agents AnviDeck started, live · sessions started in a terminal, view only"),
     el("div", "aw-acts", gridBtn, newBtn));
 
-  const kids: HTMLElement[] = [head, hostLine(d.hostAgents), tabsRow(agents, sel)];
+  const kids: HTMLElement[] = [head, hostLine(d.hostAgents), githubLine(), tabsRow(agents, sel)];
   if (d.route.grid) kids.push(grid(agents));
   else if (sel?.kind === "host") kids.push(hostDetail(sel.agent));
   else if (sel?.kind === "terminal") kids.push(terminalDetail(sel.sid));
@@ -329,6 +332,67 @@ function hostLine(read: AgentsRead): HTMLElement {
     } else if (o.state === "error") line.append(el("span", "aw-err", ` · login and cap could not be read (${o.error})`));
     // Another AnviDeck server sharing the registry runs these (#104); they are not in this server's count or cap.
     if (elsewhere) line.append(` · ${elsewhere} running in another AnviDeck server`);
+  }
+  return line;
+}
+
+/** A pick made but not saved yet, kept across repaints; and what the last save said. */
+const G = { pick: null as GithubAccess | null, said: null as { ok: boolean; text: string } | null };
+
+/**
+ * Agent GitHub access (#147): what the agents may do on GitHub, said plainly, with a choice and Save.
+ * Saving is a write, so it works only in the desktop app's window; it applies from the next start or resume.
+ */
+function githubLine(): HTMLElement {
+  const line = el("div", "aw-note");
+  line.id = "aw-github";
+  const o = S.overview;
+  if (o.state !== "ok") return line;
+  const g = o.data.githubAccess;
+  if (!g) return (line.append("Agent GitHub access: this server does not report it"), line);
+  const s = g.setting;
+  if (s.status !== "ok") {
+    line.append(el("span", "aw-err", `Agent GitHub access could not be read (${s.file}: ${s.reason}); no agent starts until it is fixed or set again. `));
+  } else {
+    const info = githubAccessInfo(s.access);
+    line.append("Agent GitHub access: ", el("b", s.access === "your-login" ? "aw-warn" : "aw-ok", info.label), ` (${s.source === "set" ? `set ${s.setAt?.slice(0, 16).replace("T", " ") ?? ""} UTC` : "the default; nothing set"}): ${info.means}. `);
+  }
+  const current = s.status === "ok" ? s.access : null;
+  const pick = el("select", "aw-select") as HTMLSelectElement;
+  pick.id = "aw-github-pick";
+  pick.setAttribute("aria-label", "Agent GitHub access");
+  for (const opt of g.options) {
+    const op = el("option", "", opt.unavailable ? `${opt.label} (${opt.unavailable.split(":")[0]})` : opt.label) as HTMLOptionElement;
+    op.value = opt.access;
+    if (opt.unavailable) op.disabled = true;
+    pick.append(op);
+  }
+  pick.value = G.pick ?? current ?? "your-login";
+  pick.onchange = () => {
+    G.pick = pick.value as GithubAccess;
+    G.said = null;
+    paint();
+  };
+  const save = el("button", "aw-btn sm", "Save") as HTMLButtonElement;
+  save.id = "aw-github-save";
+  save.disabled = pick.value === current;
+  save.onclick = async () => {
+    save.disabled = true;
+    try {
+      await write("POST", "/api/agents/settings/github-access", { access: pick.value });
+      G.said = { ok: true, text: `Saved. Agents started or resumed from now on get ${githubAccessInfo(pick.value as GithubAccess).label}; running ones keep what they started with.` };
+      G.pick = null;
+      loadOverview();
+    } catch (e) {
+      G.said = { ok: false, text: `Not saved: ${e instanceof WriteError ? e.message : (e as Error).message}` };
+      paint();
+    }
+  };
+  line.append(pick, " ", save);
+  if (G.said) {
+    const said = el("span", G.said.ok ? "aw-ok" : "aw-err", ` ${G.said.text}`);
+    said.id = "aw-github-said";
+    line.append(said);
   }
   return line;
 }
@@ -577,6 +641,7 @@ function hostDetail(a: HostAgent): HTMLElement {
         ["session", a.sessionId ?? "not reported yet"],
         ["model", a.model ?? "not reported yet"],
         ["permission mode", modeLine(a.mode, a.permissionMode).text],
+        ["GitHub", githubAccessLine(a.githubAccess).text],
         ["login source", a.apiKeySource === undefined ? "not reported yet" : a.apiKeySource === "none" ? "claude.ai login (apiKeySource none)" : `NOT the login: ${a.apiKeySource}`],
         ["started", a.createdAt.replace("T", " ").slice(0, 19) + " UTC"],
         ["usage estimate", a.costEstimateUsd !== undefined ? `$${a.costEstimateUsd.toFixed(2)} (Claude Code's estimate, not a bill)` : "not reported yet"],
