@@ -17,6 +17,7 @@
  */
 import { modeLine } from "../../shared/agent-modes";
 import { write, WriteError } from "../write";
+import type { PushAnswer, PushPlanAnswer } from "../../shared/push-pr-types";
 import { agentRequests, keepCardsOf } from "./PermissionRequests";
 import { refusalCall } from "./RefusalCall";
 import { elsewhereText, elsewhereUrl } from "../../shared/agent-elsewhere";
@@ -530,7 +531,86 @@ function controls(a: HostAgent, out: HTMLElement): HTMLElement {
     };
     box.append(resume);
   }
+  // An agent under Agent GitHub access None commits but cannot push (#147): you do it, here (#268).
+  if (!a.runsElsewhere && !a.running && a.githubAccess === "none") {
+    const push = el("button", "aw-btn sm", "Push and open the PR…");
+    push.dataset.act = "push-pr";
+    push.title = "Show what would be pushed and the PR it would open, then push on your login when you confirm";
+    push.onclick = () => void pushPanel(a, out);
+    box.append(push);
+  }
   return box;
+}
+
+/**
+ * Push and open the PR (#268): read what pressing would do, show it, and push only on the second
+ * press, sending the branch and commit shown so the server refuses if either has moved.
+ */
+async function pushPanel(a: HostAgent, out: HTMLElement): Promise<void> {
+  out.className = "aw-composer-out aw-note";
+  out.textContent = "Reading what would be pushed…";
+  let ans: PushPlanAnswer;
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(a.id)}/push-pr`);
+    ans = (await res.json()) as PushPlanAnswer;
+    if (!res.ok) throw new Error((ans as unknown as { error?: string }).error ?? `status ${res.status}`);
+  } catch (e) {
+    out.className = "aw-composer-out aw-err";
+    out.textContent = `Could not read what would be pushed: ${(e as Error).message}`;
+    return;
+  }
+  if (!ans.ok) {
+    out.className = "aw-composer-out aw-err";
+    out.textContent = `Not offered: ${ans.why}`;
+    return;
+  }
+  const p = ans.plan;
+  const remote = p.remote.state === "new" ? "a new branch on origin" : p.remote.state === "at" ? `origin's ${p.branch} is at ${p.remote.sha.slice(0, 7)}; this must contain it (never a force push)` : `what origin has for it could not be read (${p.remote.reason})`;
+  const title = el("input", "aw-input");
+  title.value = p.title;
+  title.setAttribute("aria-label", "PR title");
+  title.id = "aw-push-title";
+  const body = el("textarea", "aw-input");
+  body.rows = 6;
+  body.value = p.body;
+  body.setAttribute("aria-label", "PR body");
+  body.id = "aw-push-body";
+  const go = el("button", "aw-btn sm", p.openPr ? `Push ${p.branch} to PR #${p.openPr.number}` : `Push ${p.branch} and open the PR`);
+  go.dataset.act = "push-pr-confirm";
+  const said = el("div", "aw-note");
+  const panel = el(
+    "div",
+    "aw-push",
+    el("div", "", `Pushes ${p.head.slice(0, 7)} to ${p.branch} on ${p.repo} (${remote}), on your login. `, p.openPr ? `PR #${p.openPr.number} is already open from it: no new PR.` : `Then opens a PR into ${p.base}.`),
+    el("div", "aw-note", `${p.commitCount} commit${p.commitCount === 1 ? "" : "s"} not on origin/${p.base} (as of the last fetch)${p.commitCount > p.commits.length ? `, newest ${p.commits.length} shown` : ""}:`),
+    el("ul", "aw-push-commits", ...p.commits.map((c) => el("li", "", el("code", "", c.sha.slice(0, 7)), ` ${c.subject}`))),
+    p.uncommitted ? el("div", "aw-err", `${p.uncommitted} file${p.uncommitted === 1 ? " is" : "s are"} changed but not committed in ${p.cwd}: not pushed.`) : null,
+    p.openPr ? null : el("label", "", "Title ", title),
+    p.openPr ? null : el("div", "aw-note", `Body (from the ${p.bodyFrom}):`),
+    p.openPr ? null : body,
+    el("div", "", go, " ", said),
+  );
+  panel.dataset.head = p.head;
+  panel.dataset.branch = p.branch;
+  out.className = "aw-composer-out";
+  out.replaceChildren(panel);
+  go.onclick = async () => {
+    go.disabled = true;
+    said.className = "aw-note";
+    said.textContent = "Pushing…";
+    try {
+      const r = await write<PushAnswer>("POST", `/api/agents/${encodeURIComponent(a.id)}/push-pr`, { branch: p.branch, head: p.head, title: title.value, body: body.value });
+      said.className = "aw-ok";
+      const link = el("a", "", r.pr.url);
+      link.setAttribute("href", r.pr.url);
+      link.setAttribute("target", "_blank");
+      said.replaceChildren(`Pushed ${r.head.slice(0, 7)} to ${r.branch}. ${r.pr.state === "created" ? "Opened" : "Already open:"} `, link);
+    } catch (e) {
+      go.disabled = false;
+      said.className = "aw-err";
+      said.textContent = `Refused: ${(e as Error).message}`;
+    }
+  };
 }
 
 /** The message box (#79), built once per agent. A refused message offers to resume with it. */
