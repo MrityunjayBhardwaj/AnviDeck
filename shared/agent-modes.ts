@@ -9,6 +9,7 @@
  *
  * Shared by the server (which enforces the cap) and the start dialogs (which only show it).
  */
+import { githubAccessInfo, isGithubAccess, type GithubAccess } from "./github-access";
 
 export type AgentMode = "plan" | "dontAsk" | "default" | "acceptEdits" | "bypassPermissions";
 
@@ -28,7 +29,8 @@ export const MODES: readonly ModeInfo[] = [
   {
     mode: "bypassPermissions",
     label: "Full access",
-    behaviour: "every tool call runs without asking, and only your deny rules still stop one: it can run any command, change any file, and push or merge on GitHub as you",
+    // What it may do on GitHub depends on Agent GitHub access (#147), so it is said beside this, from fullAccessOnGithub.
+    behaviour: "every tool call runs without asking, and only your deny rules still stop one: it can run any command and change any file",
   },
 ];
 
@@ -73,6 +75,34 @@ export function modesOffered(c: ModeCap): OfferedMode[] {
 /** The words a Full access start must carry, so the server knows the confirm was shown (#249). */
 export const FULL_ACCESS_CONFIRM = "I understand Full access runs every tool call without asking";
 
+/**
+ * What a Full access agent can do on GitHub, under the Agent GitHub access it would get (#270).
+ * null: the setting could not be read, so no agent starts at all.
+ */
+export function fullAccessOnGithub(access: GithubAccess | null): string {
+  if (access === null) return "Agent GitHub access could not be read, so no agent starts until it is fixed";
+  const label = githubAccessInfo(access).label;
+  if (access === "your-login") return `On GitHub it runs on your login (Agent GitHub access: ${label}), so it can also push, open PRs and merge as you, without asking`;
+  if (access === "none") return `Agent GitHub access is ${label}: its gh and git have no GitHub login, so it commits locally (not airtight until agents are sandboxed)`;
+  return `Agent GitHub access is ${label}`;
+}
+
+/**
+ * Full access is confirmed for one Agent GitHub access (#270): the one the dialog showed, or for
+ * a resume the one the agent was started with. Why a run is refused because that is not the
+ * setting now, or null when it is.
+ */
+export function fullAccessGithubChanged(confirmedFor: unknown, now: GithubAccess, when: "start" | "resume"): string | null {
+  if (confirmedFor === now) return null;
+  const nowLabel = githubAccessInfo(now).label;
+  if (when === "resume") {
+    const was = isGithubAccess(confirmedFor) ? githubAccessInfo(confirmedFor).label : "an Agent GitHub access it did not record";
+    return `this agent's Full access was confirmed with ${was}, and Agent GitHub access is now ${nowLabel}; start a new agent to confirm Full access with ${nowLabel}`;
+  }
+  if (!isGithubAccess(confirmedFor)) return `Full access must say which Agent GitHub access it was confirmed for (githubAccess); it is ${nowLabel}`;
+  return `Full access was confirmed for Agent GitHub access ${githubAccessInfo(confirmedFor).label}, but it is now ${nowLabel}; look at the dialog again and confirm for ${nowLabel}`;
+}
+
 export type ModeCheck = { ok: true; mode: AgentMode } | { ok: false; status: 400 | 403; error: string };
 
 /** The one check every start and resume goes through, on the server. */
@@ -110,14 +140,17 @@ export function startModeBody(
   picked: string,
   confirmed: boolean,
   offered: readonly OfferedMode[] | null,
-): { ok: true; body: { mode: AgentMode; confirm?: string } } | { ok: false; why: string } {
+  /** The Agent GitHub access the dialog showed beside Full access; null when it could not be read. */
+  github: GithubAccess | null,
+): { ok: true; body: { mode: AgentMode; confirm?: string; githubAccess?: GithubAccess } } | { ok: false; why: string } {
   if (!isAgentMode(picked)) return { ok: false, why: `${picked} is not a mode` };
   const o = offered?.find((m) => m.mode === picked);
   if (offered && !o) return { ok: false, why: `${modeInfo(picked).label} is not offered` };
   if (o && !o.allowed) return { ok: false, why: `${o.label} is ${o.why}` };
   if (picked === "bypassPermissions") {
     if (!confirmed) return { ok: false, why: "Full access: tick the box that says what it allows first" };
-    return { ok: true, body: { mode: picked, confirm: FULL_ACCESS_CONFIRM } };
+    if (github === null) return { ok: false, why: `Full access: ${fullAccessOnGithub(null)}` };
+    return { ok: true, body: { mode: picked, confirm: FULL_ACCESS_CONFIRM, githubAccess: github } };
   }
   return { ok: true, body: { mode: picked } };
 }

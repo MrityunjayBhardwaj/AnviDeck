@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { checkMode, FULL_ACCESS_CONFIRM, MODES, modeCapFrom, modeLine, modesOffered, startModeBody } from "../shared/agent-modes";
+import { checkMode, FULL_ACCESS_CONFIRM, fullAccessGithubChanged, fullAccessOnGithub, MODES, modeCapFrom, modeLine, modesOffered, startModeBody } from "../shared/agent-modes";
 
 // #249: what a start dialog may send, and what an agent's card says about its mode.
 
@@ -26,23 +26,46 @@ describe("what a start dialog sends", () => {
   const capped = modesOffered(modeCapFrom(undefined));
 
   test("a mode the cap allows is sent as itself, with no confirmation", () => {
-    expect(startModeBody("acceptEdits", false, capped)).toEqual({ ok: true, body: { mode: "acceptEdits" } });
-    expect(startModeBody("plan", true, capped)).toEqual({ ok: true, body: { mode: "plan" } });
+    expect(startModeBody("acceptEdits", false, capped, "your-login")).toEqual({ ok: true, body: { mode: "acceptEdits" } });
+    expect(startModeBody("plan", true, capped, null)).toEqual({ ok: true, body: { mode: "plan" } });
   });
 
   test("Full access is sent only with the box ticked, and then with the exact confirmation the server checks", () => {
-    expect(startModeBody("bypassPermissions", false, full)).toMatchObject({ ok: false, why: expect.stringContaining("tick the box") });
-    const sent = startModeBody("bypassPermissions", true, full);
-    expect(sent).toEqual({ ok: true, body: { mode: "bypassPermissions", confirm: FULL_ACCESS_CONFIRM } });
+    expect(startModeBody("bypassPermissions", false, full, "your-login")).toMatchObject({ ok: false, why: expect.stringContaining("tick the box") });
+    const sent = startModeBody("bypassPermissions", true, full, "your-login");
+    expect(sent).toEqual({ ok: true, body: { mode: "bypassPermissions", confirm: FULL_ACCESS_CONFIRM, githubAccess: "your-login" } });
     if (sent.ok) expect(checkMode(sent.body.mode, modeCapFrom("bypassPermissions"), sent.body.confirm)).toEqual({ ok: true, mode: "bypassPermissions" });
   });
 
   test("a mode above the cap is never sent, ticked or not; the dialog says why", () => {
-    expect(startModeBody("bypassPermissions", true, capped)).toMatchObject({ ok: false, why: expect.stringContaining("above the cap") });
+    expect(startModeBody("bypassPermissions", true, capped, "your-login")).toMatchObject({ ok: false, why: expect.stringContaining("above the cap") });
+  });
+
+  test("Full access carries the GitHub access the dialog showed, and is not sent when that could not be read (#270)", () => {
+    expect(startModeBody("bypassPermissions", true, full, "none")).toEqual({ ok: true, body: { mode: "bypassPermissions", confirm: FULL_ACCESS_CONFIRM, githubAccess: "none" } });
+    expect(startModeBody("bypassPermissions", true, full, null)).toMatchObject({ ok: false, why: expect.stringContaining("could not be read") });
+    // Narrower modes do not depend on it.
+    expect(startModeBody("default", false, full, null)).toEqual({ ok: true, body: { mode: "default" } });
+  });
+
+  test("Full access says what it can do on GitHub under each GitHub access, and nothing about GitHub on its own (#270)", () => {
+    expect(MODES.find((m) => m.mode === "bypassPermissions")!.behaviour).not.toContain("GitHub");
+    expect(fullAccessOnGithub("your-login")).toContain("push, open PRs and merge as you");
+    expect(fullAccessOnGithub("none")).toContain("no GitHub login");
+    expect(fullAccessOnGithub("none")).not.toContain("as you");
+    expect(fullAccessOnGithub(null)).toContain("could not be read");
+  });
+
+  test("a confirm counts only for the GitHub access it named (#270)", () => {
+    expect(fullAccessGithubChanged("your-login", "your-login", "start")).toBeNull();
+    expect(fullAccessGithubChanged("none", "your-login", "start")).toContain("now Your login");
+    expect(fullAccessGithubChanged(undefined, "none", "start")).toContain("must say which");
+    expect(fullAccessGithubChanged("none", "your-login", "resume")).toContain("start a new agent");
+    expect(fullAccessGithubChanged(undefined, "none", "resume")).toContain("did not record");
   });
 
   test("a value that is not a mode is never sent", () => {
-    expect(startModeBody("auto", true, full).ok).toBe(false);
+    expect(startModeBody("auto", true, full, "your-login").ok).toBe(false);
   });
 });
 
