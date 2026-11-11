@@ -98,10 +98,14 @@ export class CheckpointStore {
   /** One snapshot or Undo at a time per agent, in the order asked. */
   private readonly chains = new Map<string, Promise<unknown>>();
 
-  constructor(agentDir: string, opts: { run?: Run } = {}) {
+  /** How old an index.lock must be to count as left behind by a stopped git step. */
+  private readonly lockStaleMs: number;
+
+  constructor(agentDir: string, opts: { run?: Run; lockStaleMs?: number } = {}) {
     this.root = join(agentDir, "checkpoints");
     this.recordDir = join(agentDir, "turns");
     this.run = opts.run ?? gitRunner(SNAPSHOT_STEP_MS);
+    this.lockStaleMs = opts.lockStaleMs ?? SNAPSHOT_STEP_MS;
   }
 
   repoOf(id: string): string {
@@ -185,10 +189,25 @@ export class CheckpointStore {
     return repo;
   }
 
+  /**
+   * A git step stopped at its time limit leaves `index.lock` behind, and every later snapshot of the
+   * agent would then fail on it. Snapshots of one agent run one at a time here, so a lock older than
+   * the time limit is a leftover: it is removed.
+   */
+  private dropStaleLock(repo: string): void {
+    const lock = join(repo, "index.lock");
+    try {
+      if (Date.now() - statSync(lock).mtimeMs > this.lockStaleMs) rmSync(lock, { force: true });
+    } catch {
+      /* no lock */
+    }
+  }
+
   /** The folder as it is now, as a tree in the agent's snapshot repository. Records nothing. */
   async snapshot(id: string, cwd: string): Promise<Snapshot> {
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new CheckpointError(409, `the agent's folder ${cwd} no longer exists`, "folder-gone");
     const repo = await this.prepare(id, cwd);
+    this.dropStaleLock(repo);
     await this.must(repo, cwd, ["add", "-A", "."], "the folder could not be read into a snapshot");
     const tree = (await this.must(repo, cwd, ["write-tree"], "the snapshot could not be written")).trim();
     if (!SHA.test(tree)) throw new Error(`the snapshot named no tree (${tree.slice(0, 80)})`);

@@ -1,5 +1,5 @@
 import { randomUUID, type UUID } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import type {
   Options,
@@ -310,8 +310,15 @@ export class AgentHost {
   }
 
   private refuseHeld(id: string | null, cwd: string): void {
+    const real = (p: string) => {
+      try {
+        return realpathSync(p);
+      } catch {
+        return p;
+      }
+    };
     for (const [hid, h] of this.holds) {
-      if (hid === id || h.cwd === cwd) throw new HostError(409, `${hid === id ? "this agent" : `agent ${hid}, in the same folder,`} is busy: ${h.what}; try again when it is done`, { refusal: "busy" });
+      if (hid === id || real(h.cwd) === real(cwd)) throw new HostError(409, `${hid === id ? "this agent" : `agent ${hid}, in the same folder,`} is busy: ${h.what}; try again when it is done`, { refusal: "busy" });
     }
   }
 

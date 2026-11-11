@@ -892,6 +892,7 @@ function undoPanel(a: HostAgent): HTMLElement | null {
     if (!p.discardedCount) box.append(el("div", "aw-note", "The folder is already as it was at this checkpoint: nothing would change."));
     else box.append(changesBlock(p.discarded, p.discardedCount, `changed since checkpoint #${p.to}, by the agent or anyone else: Undo discards these changes`));
     box.append(el("div", "aw-note", "Files your .gitignore leaves out were never captured and stay as they are."));
+    for (const w of p.warnings ?? []) box.append(el("div", "aw-warn", w));
     const then = p.head.then, now = p.head.now;
     if (then && now && then.sha !== now.sha)
       box.append(el("div", "aw-warn", `The branch has moved since (${then.sha.slice(0, 7)} → ${now.sha.slice(0, 7)}${now.branch ? ` on ${now.branch}` : ""}). Undo puts files back only, never the branch: its commits stay, and the files will show as changes against them.`));

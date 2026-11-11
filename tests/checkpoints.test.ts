@@ -5,7 +5,7 @@
  * Real git on scratch repositories; the agent is a fake query() that edits the folder as a turn would.
  */
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -152,6 +152,21 @@ describe("the checkpoint store", () => {
     }
     // The other checkout's index was not touched.
     expect(sh(["git", "status", "--porcelain"], elsewhere).out.trim().split("\n").sort()).toEqual(["?? u.env"]);
+  });
+
+  test("an index.lock left by a stopped git step is removed once it is older than the time limit, not before", async () => {
+    const p = project();
+    const store = new CheckpointStore(join(scratch(), "agentdir"), { lockStaleMs: 60_000 });
+    await store.capture("ag1", p, { when: "before-run", run: 1 });
+    const lock = join(store.repoOf("ag1"), "index.lock");
+    writeFileSync(lock, "");
+    // A fresh lock may be another git step's: the snapshot fails (and says so), the lock stays.
+    expect(await store.capture("ag1", p, { when: "after-turn", run: 1 })).toBeNull();
+    expect(existsSync(lock)).toBe(true);
+    const old = new Date(Date.now() - 120_000);
+    utimesSync(lock, old, old);
+    expect(await store.capture("ag1", p, { when: "after-turn", run: 1 })).not.toBeNull();
+    expect(existsSync(lock)).toBe(false);
   });
 
   test("a snapshot that cannot be taken is recorded as failed, never thrown", async () => {
@@ -371,7 +386,7 @@ describe("Undo through the routes' side (AgentTurns)", () => {
     expect(turns.list(id).undo).toEqual({ ok: false, why: `agent ${second.id} is working in ${p}` });
     host.stop(second.id);
     await until(() => !host.get(second.id).running);
-    expect(turns.list(id).undo).toEqual({ ok: true });
+    expect(turns.list(id).undo).toEqual({ ok: true, warnings: [] });
   });
 
   test("refused while a terminal Claude Code session works in the folder, and when the sessions cannot be read", async () => {
@@ -385,6 +400,15 @@ describe("Undo through the routes' side (AgentTurns)", () => {
     await until(() => whens(h.store, a.id).length === 2 && !h.host.get(a.id).running);
     sessions = { sessions: [{ sessionId: "abcdef12-x", pid: 42, cwd: p, status: "busy" }], report: { status: "ok", errors: [] } as never };
     expect(h.turns.list(a.id).undo).toEqual({ ok: false, why: expect.stringContaining("a terminal Claude Code session (abcdef12, pid 42)") });
+    // In a folder inside the agent's: refused too.
+    mkdirSync(join(p, "sub"));
+    sessions = { sessions: [{ sessionId: "abcdef12-x", pid: 42, cwd: join(p, "sub"), status: "busy" }], report: { status: "ok", errors: [] } as never };
+    expect(h.turns.list(a.id).undo).toEqual({ ok: false, why: expect.stringContaining("works in " + join(p, "sub")) });
+    // In a folder above it (the project's root, when the agent's folder is a worktree inside it):
+    // Undo is offered, and the preview names the session.
+    sessions = { sessions: [{ sessionId: "abcdef12-x", pid: 42, cwd: join(p, ".."), status: "busy" }], report: { status: "ok", errors: [] } as never };
+    expect(h.turns.list(a.id).undo).toEqual({ ok: true, warnings: [expect.stringContaining("which holds this folder")] });
+    expect((await h.turns.plan(a.id, "1")).warnings).toEqual([expect.stringContaining("a terminal Claude Code session (abcdef12, pid 42)")]);
     sessions = { sessions: [], report: { status: "partial", errors: ["x.json: EACCES"] } as never };
     expect(h.turns.list(a.id).undo).toEqual({ ok: false, why: expect.stringContaining("could not all be read") });
   });
@@ -394,6 +418,9 @@ describe("Undo through the routes' side (AgentTurns)", () => {
     host.hold(id, p, "Undo to checkpoint 1 is putting its folder back");
     expect(() => host.resume(id, "go on")).toThrow(HostError);
     expect(() => host.start({ cwd: p, prompt: "another" })).toThrow(/is busy: Undo to checkpoint 1/);
+    // The same folder by another name (the temp folder is under a symlink on macOS: /var → /private/var).
+    const other = realpathSync(p) === p ? null : realpathSync(p);
+    if (other) expect(() => host.start({ cwd: other, prompt: "another" })).toThrow(/is busy: Undo to checkpoint 1/);
     host.release(id);
     expect(host.resume(id, "go on").status).toBe("starting");
   });

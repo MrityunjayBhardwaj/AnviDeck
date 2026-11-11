@@ -3,9 +3,14 @@
  * agent host takes (server/agents/checkpoints.ts).
  *
  * Undo is refused while anything may be working in the agent's folder: the agent itself (here or
- * on another server), another of AnviDeck's agents in the same folder, or a terminal Claude Code
- * session there. A sessions folder that could not be read refuses too: a session working there may
- * be among the unread.
+ * on another server), another of AnviDeck's agents whose folder is this one or inside it, or a
+ * terminal Claude Code session there. A sessions folder that could not be read refuses too: a
+ * session working there may be among the unread.
+ *
+ * One that works in a folder ABOVE the agent's (a session at the project's root, when the agent's
+ * worktree is `.claude/worktrees/issue-N` inside it) is named as a warning, not a refusal: it is
+ * working on another checkout, and refusing on it would turn Undo off whenever you have the
+ * project open in a terminal. It can still edit here; the preview says so.
  */
 import { realpathSync, statSync } from "node:fs";
 import { sep } from "node:path";
@@ -26,7 +31,8 @@ const realOr = (p: string) => {
   }
 };
 const within = (a: string, b: string) => a === b || a.startsWith(b.endsWith(sep) ? b : b + sep);
-const overlaps = (a: string, b: string) => within(a, b) || within(b, a);
+/** Is `other` (a session's or agent's folder) a folder above `here`, not `here` itself? */
+const above = (other: string, here: string) => other !== here && within(here, other);
 const SHA = /^[0-9a-f]{40}$/;
 
 export class AgentTurns {
@@ -45,34 +51,44 @@ export class AgentTurns {
     return s;
   }
 
-  /** Why nothing may put this agent's folder back now, or null. */
-  private busy(a: AgentView): string | null {
-    if (a.runsElsewhere) return `it runs on another AnviDeck server (pid ${a.runsElsewhere.pid}); stop it there first`;
-    if (a.running || LIVE_STATUSES.has(a.status)) return `it is ${a.status}; stop it first`;
+  /**
+   * Why nothing may put this agent's folder back now (`why`, or null), and what works in a folder
+   * above it (`warnings`: allowed, but named in the preview).
+   */
+  private busy(a: AgentView): { why: string | null; warnings: string[] } {
+    const warnings: string[] = [];
+    const no = (why: string) => ({ why, warnings });
+    if (a.runsElsewhere) return no(`it runs on another AnviDeck server (pid ${a.runsElsewhere.pid}); stop it there first`);
+    if (a.running || LIVE_STATUSES.has(a.status)) return no(`it is ${a.status}; stop it first`);
     const here = realOr(a.cwd);
     let others: AgentView[];
     try {
       others = this.host.list();
     } catch (e) {
-      return `whether another agent works in its folder could not be checked (${(e as Error).message})`;
+      return no(`whether another agent works in its folder could not be checked (${(e as Error).message})`);
     }
     for (const o of others) {
-      if (o.id === a.id) continue;
-      if ((o.running || o.runsElsewhere || LIVE_STATUSES.has(o.status)) && overlaps(here, realOr(o.cwd))) return `agent ${o.id} is ${o.status} in ${o.cwd}`;
+      if (o.id === a.id || !(o.running || o.runsElsewhere || LIVE_STATUSES.has(o.status))) continue;
+      const there = realOr(o.cwd);
+      if (within(there, here)) return no(`agent ${o.id} is ${o.status} in ${o.cwd}`);
+      if (above(there, here)) warnings.push(`agent ${o.id} is ${o.status} in ${o.cwd}, which holds this folder: make sure it is not editing here`);
     }
     let read: ReturnType<SessionsRead>;
     try {
       read = this.sessions();
     } catch (e) {
-      return `the live Claude Code sessions could not be read (${(e as Error).message}), so whether one works in this folder is not known`;
+      return no(`the live Claude Code sessions could not be read (${(e as Error).message}), so whether one works in this folder is not known`);
     }
     if (read.report.status === "unreadable" || read.report.status === "partial")
-      return `the live Claude Code sessions could not all be read (${read.report.errors.join("; ")}), so whether one works in this folder is not known`;
+      return no(`the live Claude Code sessions could not all be read (${read.report.errors.join("; ")}), so whether one works in this folder is not known`);
     for (const t of read.sessions) {
       if (!t.cwd || (a.sessionId && t.sessionId === a.sessionId)) continue;
-      if (overlaps(here, realOr(t.cwd))) return `a terminal Claude Code session (${t.sessionId.slice(0, 8)}, pid ${t.pid}) works in ${t.cwd}`;
+      const there = realOr(t.cwd);
+      const who = `a terminal Claude Code session (${t.sessionId.slice(0, 8)}, pid ${t.pid})`;
+      if (within(there, here)) return no(`${who} works in ${t.cwd}`);
+      if (above(there, here)) warnings.push(`${who} works in ${t.cwd}, which holds this folder: make sure it is not editing here`);
     }
-    return null;
+    return { why: null, warnings };
   }
 
   list(id: string): CheckpointsAnswer {
@@ -82,14 +98,15 @@ export class AgentTurns {
     const kept = store.kept(id);
     const undoable = store.undoable(id).map((c) => c.n);
     const folderGone = !existsDir(a.cwd);
-    const why = folderGone ? `its folder ${a.cwd} no longer exists` : this.busy(a);
+    const b = folderGone ? { why: `its folder ${a.cwd} no longer exists`, warnings: [] } : this.busy(a);
+    const why = b.why;
     return {
       agentId: id,
       cwd: a.cwd,
       records,
       unreadable,
       undoable,
-      undo: why ? { ok: false, why } : { ok: true },
+      undo: why ? { ok: false, why } : { ok: true, warnings: b.warnings },
       folderGone,
       kept,
     };
@@ -111,13 +128,13 @@ export class AgentTurns {
     const n = this.num(nIn);
     const a = this.host.get(id);
     const store = this.store();
-    const why = this.busy(a);
+    const { why, warnings } = this.busy(a);
     if (why) throw new HostError(409, `Undo is not offered now: ${why}`, { refusal: "busy" });
     try {
       const to = await store.target(id, a.cwd, n);
       const now = await store.serial(id, () => store.snapshot(id, a.cwd));
       const { changes, count } = await store.changes(id, a.cwd, to.tree, now.tree);
-      return { agentId: id, cwd: a.cwd, to: n, toAt: to.at, toWhen: to.when, current: now.tree, discarded: changes, discardedCount: count, head: { then: to.head, now: now.head } };
+      return { agentId: id, cwd: a.cwd, to: n, toAt: to.at, toWhen: to.when, current: now.tree, discarded: changes, discardedCount: count, head: { then: to.head, now: now.head }, warnings };
     } catch (e) {
       if (e instanceof CheckpointError) this.refused(e);
       throw new HostError(502, (e as Error).message, { refusal: "snapshot-failed" });
@@ -130,12 +147,12 @@ export class AgentTurns {
     if (typeof body.current !== "string" || !SHA.test(body.current)) throw new HostError(400, "current must be the folder's snapshot the preview showed (40 hex)");
     const a = this.host.get(id);
     const store = this.store();
-    const why = this.busy(a);
+    const { why } = this.busy(a);
     if (why) throw new HostError(409, `Undo refused: ${why}`, { refusal: "busy" });
     this.host.hold(id, a.cwd, `Undo to checkpoint ${n} is putting its folder back`);
     try {
       // Checked again under the hold: a resume between the check and the hold is refused from here on.
-      const again = this.busy(this.host.get(id));
+      const again = this.busy(this.host.get(id)).why;
       if (again) throw new HostError(409, `Undo refused: ${again}`, { refusal: "busy" });
       const r = await store.undo(id, a.cwd, n, body.current, a.runs);
       return { agentId: id, before: r.before.n, after: r.after.n, to: n, changeCount: r.after.changeCount };

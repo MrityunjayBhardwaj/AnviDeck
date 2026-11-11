@@ -83,7 +83,7 @@ export interface CheckpointsAnswer {
   /** The checkpoints that can still be undone to: their snapshots are on this machine. */
   undoable: number[];
   /** Whether Undo can be pressed now, and if not why. */
-  undo: { ok: true } | { ok: false; why: string };
+  undo: { ok: true; warnings: string[] } | { ok: false; why: string };
   /** The agent's folder no longer exists: its snapshots can be cleared. */
   folderGone: boolean;
   /** Snapshots are kept for this agent on this machine. */
@@ -104,6 +104,8 @@ export interface UndoPlan {
   discardedCount: number;
   /** The branch then and now: Undo puts files back, never the branch or its commits. */
   head: { then: CheckpointEntry["head"]; now: CheckpointEntry["head"] };
+  /** Sessions or agents working in a folder above this one: allowed, but they could edit here. */
+  warnings: string[];
 }
 
 export interface UndoAnswer {
