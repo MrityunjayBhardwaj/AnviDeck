@@ -99,3 +99,16 @@
 .aw-push-commits { margin: 0; padding-left: 18px; max-height: 160px; overflow: auto; }
 .aw-input { background: var(--sh-panel-2); color: var(--sh-ink); border: 1px solid var(--sh-line); border-radius: 6px; padding: 3px 6px; font: inherit; font-size: 12px; width: 100%; box-sizing: border-box; }
 .aw-push label > .aw-input { width: auto; min-width: 60%; }
+
+/* Checkpoints per turn (#248) */
+.aw-turns { display: flex; flex-direction: column; gap: 6px; max-height: 420px; overflow: auto; }
+.aw-turn { border-top: 1px solid var(--sh-line); padding-top: 6px; display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.aw-turn-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.aw-turn-head .r { margin-left: auto; }
+.aw-turn-files summary { cursor: pointer; }
+.aw-turn-file { display: flex; gap: 8px; font: 12px var(--font-mono); padding-left: 12px; }
+.aw-turn-st { width: 1.2em; font-weight: 600; }
+.aw-turn-st.A { color: var(--green); }
+.aw-turn-st.D { color: var(--red); }
+.aw-turn-st.M, .aw-turn-st.T { color: var(--yellow); }
+.aw-undo { border: 1px solid var(--red); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; font-size: 12px; }

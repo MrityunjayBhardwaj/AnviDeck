@@ -7,6 +7,9 @@ import { sameOriginWrites } from "../guard";
 import { replayFromEnv } from "../agents/replay";
 import { FromIssue } from "../agents/from-issue";
 import { PushPr } from "../agents/push-pr";
+import { AgentTurns } from "../agents/turns";
+import { CheckpointStore } from "../agents/checkpoints";
+import { AgentRegistry } from "../agents/registry";
 import { modesOffered } from "../../shared/agent-modes";
 import { writeGithubAccess } from "../agents/github-access";
 import { GITHUB_ACCESS, githubAccessInfo, isGithubAccess, unavailable } from "../../shared/github-access";
@@ -17,7 +20,13 @@ import { GITHUB_ACCESS, githubAccessInfo, isGithubAccess, unavailable } from "..
 export { sameOriginWrites };
 
 /** The /api/agents routes over one host. Exported as a factory so tests drive a fake query(). */
-export function agentRoutes(host: AgentHost, login: () => Promise<LoginStatus>, fromIssue: FromIssue = new FromIssue(host), pushPr: PushPr = new PushPr(host)): Hono {
+export function agentRoutes(
+  host: AgentHost,
+  login: () => Promise<LoginStatus>,
+  fromIssue: FromIssue = new FromIssue(host),
+  pushPr: PushPr = new PushPr(host),
+  turns: AgentTurns = new AgentTurns(host),
+): Hono {
   const r = new Hono();
   r.use("/*", sameOriginWrites);
 
@@ -107,6 +116,12 @@ export function agentRoutes(host: AgentHost, login: () => Promise<LoginStatus>, 
     const b = await body(c);
     return c.json(host.answer(c.req.param("id"), c.req.param("requestId"), b));
   });
+  // Checkpoints per turn (#248): what each turn changed; Undo's preview (GET) and press (POST,
+  // { current }); Clear. The GETs write nothing to the agent's folder or the record.
+  r.get("/:id/checkpoints", (c) => c.json(turns.list(c.req.param("id"))));
+  r.get("/:id/checkpoints/:n/undo", async (c) => c.json(await turns.plan(c.req.param("id"), c.req.param("n"))));
+  r.post("/:id/checkpoints/:n/undo", async (c) => c.json(await turns.undo(c.req.param("id"), c.req.param("n"), await body(c))));
+  r.post("/:id/checkpoints/clear", async (c) => c.json(await turns.clear(c.req.param("id"))));
 
   return r;
 }
@@ -118,9 +133,13 @@ export function createAgentHost(
     // The desktop checks (#242) play recorded runs instead of Claude Code; said loudly.
     const replay = replayFromEnv();
     if (replay) console.error(`[agents] REPLAY MODE: agents play recordings (${replay.names.join(", ")}), not Claude Code`);
+    const registry = new AgentRegistry();
     return new AgentHost({
+      registry,
       query: replay?.query ?? (query as unknown as QueryFn),
       emit: (e: HostEvent) => broadcast(JSON.stringify(e)),
+      // Checkpoints per turn (#248), in AnviDeck's own folder beside the registry.
+      checkpoints: new CheckpointStore(registry.dir),
     });
   },
 ) {
