@@ -286,6 +286,20 @@ describe("push and open the PR (#268)", () => {
     expect(calls.filter((c) => c[0] === "gh" && c[2] === "create")).toHaveLength(1);
   });
 
+  test("a push stopped by the time limit says it is not known whether it landed, never that it did not", async () => {
+    const w = await world();
+    const h = host();
+    const id = await finished(h, w.wt);
+    const { run: base, calls } = runner(ghNoPr);
+    const run: Run = async (cmd, args, opts) =>
+      cmd === "git" && args.includes("push") ? { code: 124, stdout: "", stderr: "git push took longer than 60s and was stopped" } : base(cmd, args, opts);
+    const e = await refused(new PushPr(h, { run }).push(id, { branch: w.branch, head: w.head, title: "T" }));
+    expect(e.status).toBe(502);
+    expect(e.detail?.refusal).toBe("push-unknown");
+    expect(e.message).toContain("not known whether");
+    expect(calls.some((c) => c[0] === "gh" && c[2] === "create")).toBe(false);
+  });
+
   test("the last summary is the last result Claude Code sent, else none", () => {
     const line = (seq: number, message: unknown, from: "sdk" | "host" = "sdk") => ({ seq, at: "t", from, message });
     expect(lastSummary([line(1, done("first")), line(2, { type: "assistant" }), line(3, done("second"))])).toBe("second");

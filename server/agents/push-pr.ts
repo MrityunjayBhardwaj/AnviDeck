@@ -17,7 +17,8 @@
 import { COMMITS_SHOWN, type PushAnswer, type PushCommit, type PushPlan, type PushPlanAnswer } from "../../shared/push-pr-types";
 import { LIVE_STATUSES, type TranscriptLine } from "./registry";
 import { HostError, type AgentHost, type AgentView } from "./host";
-import { githubRepoOf, spawnRun, type Run } from "./worktree";
+import { githubRepoOf, type Run } from "./worktree";
+import { timedRun } from "../readers/work";
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
 /** A branch name as git allows it, kept narrow: no spaces, control characters or ref syntax. */
@@ -61,7 +62,8 @@ export class PushPr {
     private readonly host: AgentHost,
     deps: PushPrDeps = {},
   ) {
-    this.run = deps.run ?? spawnRun;
+    // A time limit on every git and gh call: a stalled network or SSH must not leave the card waiting forever.
+    this.run = deps.run ?? timedRun(60_000);
   }
 
   private async git(cwd: string, args: string[]) {
@@ -184,6 +186,10 @@ export class PushPr {
       if (s.head !== shownHead) throw new Refused("head-moved", `${s.branch} is at ${s.head.slice(0, 7)} now, not ${shownHead.slice(0, 7)} as the card showed; nothing was pushed. Look again`);
       // The commit by name, to the branch's own name: no "+", so git refuses to drop commits on origin.
       const p = await this.git(s.cwd, ["push", "--porcelain", "origin", `${s.head}:refs/heads/${s.branch}`]);
+      if (p.code === 124) {
+        // Stopped by the time limit: origin may or may not have taken it.
+        throw new Refused("push-unknown", `not known whether ${s.branch} was pushed: ${said(p)}. Check origin (git ls-remote origin ${s.branch}) before pressing again`, 502);
+      }
       if (p.code !== 0) {
         const why = said(p);
         if (/non-fast-forward|fetch first|rejected/i.test(why)) throw new Refused("not-fast-forward", `origin's ${s.branch} has commits this one does not; nothing was pushed, and AnviDeck never force-pushes. ${why}`);
