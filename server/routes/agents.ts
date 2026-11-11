@@ -79,7 +79,7 @@ export function agentRoutes(host: AgentHost, login: () => Promise<LoginStatus>, 
 
   r.post("/", async (c) => {
     const b = await body(c);
-    return c.json(host.start({ cwd: b.cwd, prompt: b.prompt, issue: b.issue, mode: b.mode, confirm: b.confirm }), 201);
+    return c.json(host.start({ cwd: b.cwd, prompt: b.prompt, issue: b.issue, mode: b.mode, confirm: b.confirm, githubAccess: b.githubAccess }), 201);
   });
   // Start an agent from an issue, in its own worktree (#78). The GET says what it would do, or
   // why it would refuse, without making anything; the POST does it.
