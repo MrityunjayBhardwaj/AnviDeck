@@ -19,6 +19,7 @@ AnviDeck started as an observability dashboard that only read the framework's fi
 **What AnviDeck will write once the workspace lands** (none of this is on `main` yet):
 - Agent actions: start an agent (#75), in its own worktree and branch for an issue (#78, on main: `POST /api/agents/from-issue`); stop and resume it; answer its permission requests (#77); send it messages and diff comments (#79).
 - Merge a PR, only when you press **Merge**, and only the head you reviewed (#85).
+- Push an agent's branch and open its PR, only when you press **Push and open the PR** on its card (offered for agents under Agent GitHub access None, which cannot push): only the branch and commit the card showed, to the branch's own name on origin, never `main` or origin's base branch, never with force, never while the agent runs; then `gh pr create` on your login, or the PR already open from it (#268; `server/agents/push-pr.ts`, `tests/push-pr.test.ts`).
 - Edit a file from the Code screen, only one no running agent is touching, and never a catalogue, a Ground Truth doc or Claude Code's configuration (#88, #244; `server/code-edit.ts`; only from the desktop app's window).
 - Its own records, in AnviDeck's own folder in the store: the action log (#76), your calls on blocked edits (#86: recorded from the Agents screen's refusal card, Design's trial record and History into `calls.jsonl`; Design (#87) and History's timeline (#90) show them), the agent registry (#75), and settings such as Agent GitHub access (`settings.json`, #147; changed only from the desktop app's window).
 

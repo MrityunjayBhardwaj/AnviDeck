@@ -6,6 +6,7 @@ import { loginOnlyEnv, readLogin, resolveClaude, type LoginStatus } from "../age
 import { sameOriginWrites } from "../guard";
 import { replayFromEnv } from "../agents/replay";
 import { FromIssue } from "../agents/from-issue";
+import { PushPr } from "../agents/push-pr";
 import { modesOffered } from "../../shared/agent-modes";
 import { writeGithubAccess } from "../agents/github-access";
 import { GITHUB_ACCESS, githubAccessInfo, isGithubAccess, unavailable } from "../../shared/github-access";
@@ -16,7 +17,7 @@ import { GITHUB_ACCESS, githubAccessInfo, isGithubAccess, unavailable } from "..
 export { sameOriginWrites };
 
 /** The /api/agents routes over one host. Exported as a factory so tests drive a fake query(). */
-export function agentRoutes(host: AgentHost, login: () => Promise<LoginStatus>, fromIssue: FromIssue = new FromIssue(host)): Hono {
+export function agentRoutes(host: AgentHost, login: () => Promise<LoginStatus>, fromIssue: FromIssue = new FromIssue(host), pushPr: PushPr = new PushPr(host)): Hono {
   const r = new Hono();
   r.use("/*", sameOriginWrites);
 
@@ -84,6 +85,10 @@ export function agentRoutes(host: AgentHost, login: () => Promise<LoginStatus>, 
   // Start an agent from an issue, in its own worktree (#78). The GET says what it would do, or
   // why it would refuse, without making anything; the POST does it.
   r.get("/from-issue/plan", async (c) => c.json(await fromIssue.plan(c.req.query())));
+  // Push and open the PR for an agent (#268): what pressing would do (a read), then the write,
+  // which pushes only the branch and commit the card showed.
+  r.get("/:id/push-pr", async (c) => c.json(await pushPr.plan(c.req.param("id"))));
+  r.post("/:id/push-pr", async (c) => c.json(await pushPr.push(c.req.param("id"), await body(c)), 201));
   r.post("/from-issue", async (c) => c.json(await fromIssue.start(await body(c)), 201));
   r.post("/:id/stop", (c) => c.json(host.stop(c.req.param("id"))));
   r.post("/:id/resume", async (c) => {
