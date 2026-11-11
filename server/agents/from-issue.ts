@@ -214,7 +214,7 @@ export class FromIssue {
   async start(body: Record<string, unknown>): Promise<Started> {
     const note = typeof body.note === "string" ? body.note : undefined;
     // Checked before anything is made, like the cap below: a refused mode leaves no worktree (#249).
-    const mode = this.host.checkStartMode(body.mode, body.confirm);
+    const mode = this.host.checkStartMode(body.mode, body.confirm, body.githubAccess);
     // The host would refuse anyway; asking first means nothing is made for an agent that cannot run.
     if (this.host.running >= this.host.cap) {
       throw new HostError(429, `${this.host.running} agents are running, the most allowed at once is ${this.host.cap}; stop one first`);
@@ -224,13 +224,13 @@ export class FromIssue {
     if (this.inFlight.has(key)) throw refuse(409, "worktree-exists", `issue #${p.issue.number} is being started right now`);
     this.inFlight.add(key);
     try {
-      return await this.make(p, note, mode, body.confirm);
+      return await this.make(p, note, mode, body.confirm, body.githubAccess);
     } finally {
       this.inFlight.delete(key);
     }
   }
 
-  private async make(p: Plan, note: string | undefined, mode: AgentMode, confirm: unknown): Promise<Started> {
+  private async make(p: Plan, note: string | undefined, mode: AgentMode, confirm: unknown, githubAccess: unknown): Promise<Started> {
     const add = await this.run("git", ["-C", p.main, "worktree", "add", "-b", p.branch, p.worktree, p.baseSha]);
     if (add.code !== 0) {
       throw refuse(409, "worktree-exists", `git could not make the worktree: ${(add.stderr || add.stdout).trim().slice(0, 300)}`);
@@ -255,7 +255,7 @@ export class FromIssue {
         links: links.map(describeLink),
         note,
       });
-      agent = this.host.start({ cwd: p.worktree, prompt, issue: p.issue.number, mode, confirm });
+      agent = this.host.start({ cwd: p.worktree, prompt, issue: p.issue.number, mode, confirm, githubAccess });
     } catch (e) {
       // Nothing was committed in it yet: take the worktree and its branch away again.
       await this.run("git", ["-C", p.main, "worktree", "remove", "--force", p.worktree]);

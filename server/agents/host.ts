@@ -12,7 +12,7 @@ import { explainStartFailure, loginOnlyEnv, resolveClaude, type AgentEnv, type C
 import { messagesIn, parseMessageRequest, renderForAgent, type SentMessage } from "../../shared/agent-messages";
 import { parsePermissionAnswer, type PendingPermission } from "../../shared/permission-requests";
 import { elsewhereText, type RunsElsewhere } from "../../shared/agent-elsewhere";
-import { checkMode, DEFAULT_MODE, FULL_ACCESS_CONFIRM, isAgentMode, MODE_CAP_ENV, modeCapFrom, modeInfo, rank, type AgentMode, type ModeCap } from "../../shared/agent-modes";
+import { checkMode, DEFAULT_MODE, FULL_ACCESS_CONFIRM, fullAccessGithubChanged, isAgentMode, MODE_CAP_ENV, modeCapFrom, modeInfo, rank, type AgentMode, type ModeCap } from "../../shared/agent-modes";
 import { githubAccessInfo, unavailable, type GithubAccess, type GithubAccessRead } from "../../shared/github-access";
 import { emptyGhConfigDir, readGithubAccess, withGithubAccess } from "./github-access";
 import type { CheckpointStore } from "./checkpoints";
@@ -498,12 +498,19 @@ export class AgentHost {
 
   /**
    * The permission mode a start asks for, checked against this machine's cap (#249): 400 for a
-   * mode that is not one, or Full access without its confirmation; 403 for one above the cap.
+   * mode that is not one, or Full access without its confirmation; 403 for one above the cap; 409
+   * for Full access confirmed for another Agent GitHub access than the setting now (#270).
    * Enforced here, on the server; the dialogs only show it.
    */
-  checkStartMode(mode: unknown, confirm?: unknown): AgentMode {
+  checkStartMode(mode: unknown, confirm?: unknown, githubConfirmed?: unknown, when: "start" | "resume" = "start"): AgentMode {
     const c = checkMode(mode, this.modeCap, confirm);
     if (!c.ok) throw new HostError(c.status, c.error, { modeCap: this.modeCap.cap });
+    // Full access is confirmed for one Agent GitHub access (#270): a run under any other is refused.
+    if (c.mode === "bypassPermissions") {
+      const now = this.requireGithubAccess();
+      const changed = fullAccessGithubChanged(githubConfirmed, now, when);
+      if (changed) throw new HostError(409, changed, { githubAccess: now });
+    }
     return c.mode;
   }
 
@@ -525,7 +532,7 @@ export class AgentHost {
   }
 
   /** Start an agent in `cwd` with `prompt`. Refused, not queued, when the cap is reached. */
-  start(req: { cwd: unknown; prompt: unknown; issue?: unknown; mode?: unknown; confirm?: unknown }): AgentView {
+  start(req: { cwd: unknown; prompt: unknown; issue?: unknown; mode?: unknown; confirm?: unknown; githubAccess?: unknown }): AgentView {
     const cwd = typeof req.cwd === "string" ? req.cwd.trim() : "";
     const prompt = typeof req.prompt === "string" ? req.prompt.trim() : "";
     if (!cwd || !isAbsolute(cwd)) throw new HostError(400, "folder must be an absolute path");
@@ -542,7 +549,7 @@ export class AgentHost {
       issue = Number(req.issue);
       if (!Number.isInteger(issue) || issue <= 0) throw new HostError(400, "issue must be a positive whole number");
     }
-    const mode = this.checkStartMode(req.mode, req.confirm);
+    const mode = this.checkStartMode(req.mode, req.confirm, req.githubAccess);
     this.refuseHeld(null, cwd);
     this.checkCap();
     const github = this.requireGithubAccess();
@@ -577,8 +584,8 @@ export class AgentHost {
     if (!found.sessionId) throw new HostError(409, "agent never reached Claude Code, so there is no session to resume; start a new one");
     const prompt = typeof promptIn === "string" && promptIn.trim() ? promptIn.trim() : "Continue.";
     // A resume keeps the mode it was started in, and is refused if the cap has been lowered since.
-    // Its Full access was confirmed when it started.
-    this.checkStartMode(found.mode ?? DEFAULT_MODE, FULL_ACCESS_CONFIRM);
+    // Its Full access was confirmed when it started, for the GitHub access it started with (#270).
+    this.checkStartMode(found.mode ?? DEFAULT_MODE, FULL_ACCESS_CONFIRM, found.githubAccess, "resume");
     this.checkCap();
     // A resume gets the setting as it is now, not as it was when the agent started.
     const github = this.requireGithubAccess();

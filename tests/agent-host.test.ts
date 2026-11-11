@@ -9,6 +9,7 @@ import { explainStartFailure, loginOnlyEnv, parseAuthStatus, type ClaudeBinary }
 import { agentRoutes, createAgentHost, sameOriginWrites } from "../server/routes/agents";
 import { Hono } from "hono";
 import { FULL_ACCESS_CONFIRM, MODES, modeCapFrom, type AgentMode } from "../shared/agent-modes";
+import { writeGithubAccess } from "../server/agents/github-access";
 
 const dirs: string[] = [];
 const scratch = () => {
@@ -376,7 +377,7 @@ describe("permission modes (#249)", () => {
   test("every mode the cap allows reaches query() unchanged; only Full access carries the SDK's extra flag", async () => {
     const { host, calls } = makeHost(echo, { modeCap: "bypassPermissions", cap: 10 });
     for (const m of MODES) {
-      const a = host.start({ cwd: scratch(), prompt: "x", mode: m.mode, confirm: m.mode === "bypassPermissions" ? FULL_ACCESS_CONFIRM : undefined });
+      const a = host.start({ cwd: scratch(), prompt: "x", mode: m.mode, confirm: m.mode === "bypassPermissions" ? FULL_ACCESS_CONFIRM : undefined, githubAccess: "your-login" });
       await until(() => host.get(a.id).status === "done");
       expect(host.get(a.id)).toMatchObject({ mode: m.mode, permissionMode: m.mode });
     }
@@ -412,6 +413,25 @@ describe("permission modes (#249)", () => {
     expect(calls).toHaveLength(0);
   });
 
+  test("over the route, Full access's confirmed GitHub access reaches the host (#270): 201 for the setting, 409 for another", async () => {
+    const { host, calls } = makeHost(echo, { modeCap: "bypassPermissions", cap: 10 });
+    const app = new Hono();
+    app.route("/api/agents", agentRoutes(host, async () => ({ ok: true, authMethod: "claude.ai", plan: "max" })));
+    const post = (githubAccess: string) =>
+      app.request("http://localhost:4475/api/agents", {
+        method: "POST",
+        headers: { "content-type": "application/json", host: "localhost:4475", origin: "http://localhost:4475" },
+        body: JSON.stringify({ cwd: scratch(), prompt: "x", mode: "bypassPermissions", confirm: FULL_ACCESS_CONFIRM, githubAccess }),
+      });
+    const wrong = await post("none");
+    expect(wrong.status).toBe(409);
+    expect(((await wrong.json()) as { githubAccess: string }).githubAccess).toBe("your-login");
+    expect(calls).toHaveLength(0);
+    expect((await post("your-login")).status).toBe(201);
+    await until(() => calls.length === 1 && host.running === 0);
+    host.stopAll("test over");
+  });
+
   test("a cap that is not a mode falls back to the default and says so, never to Full access", () => {
     expect(modeCapFrom("everything")).toMatchObject({ cap: "acceptEdits", invalid: "everything" });
     expect(modeCapFrom(undefined).cap).toBe("acceptEdits");
@@ -421,7 +441,7 @@ describe("permission modes (#249)", () => {
   test("a resume keeps the mode, and is refused once the cap no longer allows it", async () => {
     const dir = scratch();
     const first = makeHost(echo, { dir, modeCap: "bypassPermissions" });
-    const a = first.host.start({ cwd: scratch(), prompt: "x", mode: "bypassPermissions", confirm: FULL_ACCESS_CONFIRM });
+    const a = first.host.start({ cwd: scratch(), prompt: "x", mode: "bypassPermissions", confirm: FULL_ACCESS_CONFIRM, githubAccess: "your-login" });
     await until(() => first.host.get(a.id).status === "done" && first.host.running === 0);
     first.host.resume(a.id, "go on");
     await until(() => first.calls.length === 2 && first.host.get(a.id).status === "done" && first.host.running === 0);
@@ -431,6 +451,46 @@ describe("permission modes (#249)", () => {
     const later = makeHost(echo, { dir });
     expect(refusedWith(() => later.host.resume(a.id, "go on")).status).toBe(403);
     expect(later.calls).toHaveLength(0);
+  });
+
+  test("Full access runs only under the Agent GitHub access its confirm named (#270)", () => {
+    const dir = scratch();
+    const { host, calls } = makeHost(echo, { dir, modeCap: "bypassPermissions", cap: 10 });
+    const full = (githubAccess?: unknown) => refusedWith(() => host.start({ cwd: scratch(), prompt: "x", mode: "bypassPermissions", confirm: FULL_ACCESS_CONFIRM, githubAccess }));
+    // Not said: refused, naming the setting it would get.
+    let e = full(undefined);
+    expect(e.status).toBe(409);
+    expect(e.message).toContain("must say which Agent GitHub access");
+    // Confirmed for None, but the setting is Your login.
+    e = full("none");
+    expect(e.status).toBe(409);
+    expect(e.message).toContain("confirmed for Agent GitHub access None, but it is now Your login");
+    // And the other way round, once the setting is None.
+    writeGithubAccess(dir, "none");
+    expect(full("your-login").message).toContain("confirmed for Agent GitHub access Your login, but it is now None");
+    expect(calls).toHaveLength(0);
+    expect(host.list()).toHaveLength(0);
+    // Narrower modes never ask for it.
+    expect(host.start({ cwd: scratch(), prompt: "x", mode: "acceptEdits" }).mode).toBe("acceptEdits");
+  });
+
+  test("a Full access resume is refused once Agent GitHub access has changed since it started (#270)", async () => {
+    const dir = scratch();
+    writeGithubAccess(dir, "none");
+    const { host, calls } = makeHost(echo, { dir, modeCap: "bypassPermissions" });
+    const a = host.start({ cwd: scratch(), prompt: "x", mode: "bypassPermissions", confirm: FULL_ACCESS_CONFIRM, githubAccess: "none" });
+    await until(() => host.get(a.id).status === "done" && host.running === 0);
+    expect(host.get(a.id).githubAccess).toBe("none");
+    writeGithubAccess(dir, "your-login");
+    const e = refusedWith(() => host.resume(a.id, "go on"));
+    expect(e.status).toBe(409);
+    expect(e.message).toContain("confirmed with None, and Agent GitHub access is now Your login; start a new agent");
+    expect(calls).toHaveLength(1);
+    // Back to None, the same agent resumes.
+    writeGithubAccess(dir, "none");
+    host.resume(a.id, "go on");
+    await until(() => calls.length === 2 && host.running === 0);
+    expect(calls[1].options.permissionMode).toBe("bypassPermissions");
   });
 
   test("Claude Code reporting a wider mode than chosen stops the agent at once; a narrower one runs and is shown", async () => {
@@ -447,7 +507,7 @@ describe("permission modes (#249)", () => {
       yield init("none", "sess-1", "default");
       yield result();
     }, { modeCap: "bypassPermissions" });
-    const b = narrower.host.start({ cwd: scratch(), prompt: "x", mode: "bypassPermissions", confirm: FULL_ACCESS_CONFIRM });
+    const b = narrower.host.start({ cwd: scratch(), prompt: "x", mode: "bypassPermissions", confirm: FULL_ACCESS_CONFIRM, githubAccess: "your-login" });
     await until(() => narrower.host.get(b.id).status === "done");
     expect(narrower.host.get(b.id)).toMatchObject({ mode: "bypassPermissions", permissionMode: "default" });
 

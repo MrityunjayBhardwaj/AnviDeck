@@ -1,10 +1,12 @@
 /**
  * The permission-mode picker in the start dialogs (#249). It reads what this machine offers from
  * GET /api/agents (each mode, and why one is above the cap), shows what the picked mode lets the
- * agent do, and for Full access asks for a box to be ticked that says it plainly. What it sends
+ * agent do, and for Full access asks for a box to be ticked that says it plainly, naming the Agent
+ * GitHub access the agent would get (#270). What it sends
  * comes from startModeBody; the server checks the mode and the cap again.
  */
-import { DEFAULT_MODE, FULL_ACCESS_CONFIRM, MODES, modeInfo, startModeBody, type OfferedMode } from "../../shared/agent-modes";
+import { DEFAULT_MODE, FULL_ACCESS_CONFIRM, fullAccessOnGithub, MODES, modeInfo, startModeBody, type OfferedMode } from "../../shared/agent-modes";
+import type { GithubAccess, GithubAccessRead } from "../../shared/github-access";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Record<string, string> = {}, ...kids: (Node | string)[]): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -25,9 +27,12 @@ export function createModePicker(idPrefix: string): ModePicker {
   const select = el("select", { id: `${idPrefix}-mode`, "aria-label": "Permission mode" });
   const what = el("div", { id: `${idPrefix}-mode-what`, class: "sh-dim" });
   const tick = el("input", { type: "checkbox", id: `${idPrefix}-mode-confirm` });
-  const confirm = el("label", { id: `${idPrefix}-mode-confirm-row`, class: "sh-sa-err", hidden: "" }, tick, ` ${FULL_ACCESS_CONFIRM}: it can run any command, change any file, and push or merge on GitHub as you.`);
+  const confirmText = el("span", { id: `${idPrefix}-mode-confirm-text` });
+  const confirm = el("label", { id: `${idPrefix}-mode-confirm-row`, class: "sh-sa-err", hidden: "" }, tick, confirmText);
   const note = el("div", { id: `${idPrefix}-mode-note`, class: "sh-dim" });
   let offered: OfferedMode[] | null = null;
+  // The Agent GitHub access Full access is confirmed for (#270): undefined until read, null when it could not be.
+  let github: GithubAccess | null | undefined = undefined;
 
   const fill = (list: readonly OfferedMode[]) => {
     const keep = select.value || DEFAULT_MODE;
@@ -40,8 +45,16 @@ export function createModePicker(idPrefix: string): ModePicker {
   };
   const show = () => {
     const m = MODES.find((x) => x.mode === select.value);
-    what.textContent = m ? `${m.label}: ${m.behaviour}.` : "";
     const full = select.value === "bypassPermissions";
+    const onGithub = github === undefined ? "Agent GitHub access has not been read yet" : fullAccessOnGithub(github);
+    what.textContent = m ? `${m.label}: ${m.behaviour}.` : "";
+    // Changing what the box names unticks it: a tick confirms the words it was given beside.
+    const words = ` ${FULL_ACCESS_CONFIRM}. ${onGithub}.`;
+    if (confirmText.textContent !== words) {
+      confirmText.textContent = words;
+      tick.checked = false;
+    }
+    confirm.dataset.github = github === undefined ? "not-read-yet" : (github ?? "unreadable");
     confirm.hidden = !full;
     if (!full) tick.checked = false;
   };
@@ -54,8 +67,10 @@ export function createModePicker(idPrefix: string): ModePicker {
     async load() {
       try {
         const res = await fetch("/api/agents");
-        const j = (await res.json()) as { modes?: { cap: string; from: string; invalid?: string; offered: OfferedMode[] } };
+        const j = (await res.json()) as { modes?: { cap: string; from: string; invalid?: string; offered: OfferedMode[] }; githubAccess?: { setting: GithubAccessRead } };
         if (!res.ok || !j.modes) throw new Error(`status ${res.status}`);
+        const g = j.githubAccess?.setting;
+        github = g?.status === "ok" ? g.access : null;
         offered = j.modes.offered;
         fill(offered);
         const capped = offered.filter((m) => !m.allowed);
@@ -65,6 +80,7 @@ export function createModePicker(idPrefix: string): ModePicker {
         note.className = j.modes.invalid ? "sh-sa-err" : "sh-dim";
       } catch (e) {
         // Could not read what is offered: only Ask me, said as such, never a guess at the cap.
+        github = null;
         offered = MODES.map((m) => ({ ...m, allowed: m.mode === DEFAULT_MODE, ...(m.mode === DEFAULT_MODE ? {} : { why: "not known: the modes on offer could not be read" }) }));
         fill(offered);
         note.textContent = `Could not read the modes this machine allows (${(e as Error).message}), so only Ask me is offered.`;
@@ -72,6 +88,6 @@ export function createModePicker(idPrefix: string): ModePicker {
       }
       show();
     },
-    body: () => startModeBody(select.value, tick.checked, offered),
+    body: () => startModeBody(select.value, tick.checked, offered, github ?? null),
   };
 }

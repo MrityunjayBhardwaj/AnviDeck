@@ -13,6 +13,7 @@ import { buildIssuePrompt } from "../server/agents/issue-prompt";
 import { moveToInProgress } from "../server/agents/board";
 import { PR_SECTIONS_INSTRUCTIONS } from "../shared/pr-evidence";
 import { agentRoutes } from "../server/routes/agents";
+import { FULL_ACCESS_CONFIRM, modeCapFrom, type AgentMode } from "../shared/agent-modes";
 
 const dirs: string[] = [];
 const scratch = (p = "from-issue-") => {
@@ -83,7 +84,7 @@ function runner(issues: Issue[], gh: (args: string[]) => { code: number; stdout:
 const CLAUDE: ClaudeBinary = { path: "/fake/bin/claude", realPath: "/fake/lib/claude", fileId: "1:1:1" };
 const init = { type: "system", subtype: "init", apiKeySource: "none", session_id: "s1", claude_code_version: "2", model: "m", cwd: "/x", tools: [], mcp_servers: [], permissionMode: "default", slash_commands: [], output_style: "default", uuid: "u" } as unknown as SDKMessage;
 
-function host(opts: { cap?: number; claude?: ClaudeBinary | null } = {}) {
+function host(opts: { cap?: number; claude?: ClaudeBinary | null; modeCap?: AgentMode } = {}) {
   const started: { options: Options }[] = [];
   const query: QueryFn = ({ options }) => {
     started.push({ options });
@@ -98,6 +99,7 @@ function host(opts: { cap?: number; claude?: ClaudeBinary | null } = {}) {
     resolveClaude: () => (opts.claude === undefined ? CLAUDE : opts.claude),
     env: () => loginOnlyEnv({ PATH: "/usr/bin" }),
     cap: opts.cap ?? 3,
+    ...(opts.modeCap ? { modeCap: modeCapFrom(opts.modeCap) } : {}),
   });
   return { h, started };
 }
@@ -106,10 +108,10 @@ const OPEN: Issue = { number: 7, title: "Workspace: start the widget from an iss
 const noBoard: FromIssueDeps["board"] = async () => ({ state: "no board", reason: "no project board is linked to acme/widget" });
 const noCheck: FromIssueDeps["linkCheck"] = async () => ({ state: "not checked", reason: "test", missing: [], differs: [] });
 
-async function setup(o: { ref?: "tracked" | "linked" | "none"; ignoreAnvi?: boolean; issues?: Issue[]; cap?: number; claude?: ClaudeBinary | null } = {}) {
+async function setup(o: { ref?: "tracked" | "linked" | "none"; ignoreAnvi?: boolean; issues?: Issue[]; cap?: number; claude?: ClaudeBinary | null; modeCap?: AgentMode } = {}) {
   const r = await repo(o);
   const { run, calls } = runner(o.issues ?? [OPEN, { number: 8, title: "Old thing", body: "", state: "CLOSED" }]);
-  const { h, started } = host({ cap: o.cap, claude: o.claude });
+  const { h, started } = host({ cap: o.cap, claude: o.claude, modeCap: o.modeCap });
   const fi = new FromIssue(h, { run, projects: () => [{ name: "widget", path: r.main }], board: noBoard, linkCheck: noCheck });
   return { ...r, run, calls, h, started, fi };
 }
@@ -128,6 +130,23 @@ test("the mode chosen reaches the agent started from an issue (#249)", async () 
   const r = await s.fi.start({ project: "widget", issue: "7", mode: "plan" });
   expect(s.started[0]!.options.permissionMode).toBe("plan");
   expect(s.h.get(r.agent.id).mode).toBe("plan");
+  s.h.stopAll("test over");
+});
+
+test("Full access confirmed for another Agent GitHub access is refused before anything is made (#270)", async () => {
+  const s = await setup({ modeCap: "bypassPermissions" });
+  const e = await refusal(s.fi.start({ project: "widget", issue: "7", mode: "bypassPermissions", confirm: FULL_ACCESS_CONFIRM, githubAccess: "none" }));
+  expect(e.status).toBe(409);
+  expect(e.message).toContain("confirmed for Agent GitHub access None, but it is now Your login");
+  expect(s.calls).toEqual([]);
+  expect(s.started).toHaveLength(0);
+});
+
+test("Full access confirmed for the GitHub access it gets reaches the agent started from an issue (#270)", async () => {
+  const s = await setup({ modeCap: "bypassPermissions" });
+  const r = await s.fi.start({ project: "widget", issue: "7", mode: "bypassPermissions", confirm: FULL_ACCESS_CONFIRM, githubAccess: "your-login" });
+  expect(s.started[0]!.options.permissionMode).toBe("bypassPermissions");
+  expect(s.h.get(r.agent.id)).toMatchObject({ mode: "bypassPermissions", githubAccess: "your-login" });
   s.h.stopAll("test over");
 });
 
