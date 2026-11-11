@@ -607,6 +607,8 @@ export interface HostAgent {
   /** The GitHub access its last run had (#147). */
   githubAccess?: string;
   costEstimateUsd?: number;
+  /** How many runs it has had (start, then each resume). */
+  runs?: number;
   pendingPermissions: { requestId: string; toolName: string; input: Record<string, unknown>; askedAt: string; decisionReason?: string; blockedPath?: string }[];
 }
 

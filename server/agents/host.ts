@@ -1,5 +1,5 @@
 import { randomUUID, type UUID } from "node:crypto";
-import { statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import type {
   Options,
@@ -15,6 +15,7 @@ import { elsewhereText, type RunsElsewhere } from "../../shared/agent-elsewhere"
 import { checkMode, DEFAULT_MODE, FULL_ACCESS_CONFIRM, isAgentMode, MODE_CAP_ENV, modeCapFrom, modeInfo, rank, type AgentMode, type ModeCap } from "../../shared/agent-modes";
 import { githubAccessInfo, unavailable, type GithubAccess, type GithubAccessRead } from "../../shared/github-access";
 import { emptyGhConfigDir, readGithubAccess, withGithubAccess } from "./github-access";
+import type { CheckpointStore } from "./checkpoints";
 
 export type { PendingPermission };
 
@@ -143,6 +144,10 @@ interface Live {
    * nothing is left undelivered.
    */
   turnOver?: { status: "done" | "failed"; reason?: string };
+  /** A turn has started and its result has not come yet: a checkpoint is owed when it ends (#248). */
+  turnOpen: boolean;
+  /** How many turns this run has started; a checkpoint compares it to see if the next began meanwhile. */
+  turnsStarted: number;
 }
 
 export type HostEvent =
@@ -180,6 +185,11 @@ export interface HostDeps {
   githubAccess?: () => GithubAccessRead;
   /** Where the empty folders "none" points each agent's gh configuration at go (tests use their own). Default: emptyGhConfigDir. */
   ghConfigDir?: (agentId: string) => string;
+  /**
+   * Checkpoints per turn (#248): a snapshot of the agent's folder before each run and after each
+   * turn, kept in AnviDeck's own folder. Off (null) unless given; the real app gives one.
+   */
+  checkpoints?: CheckpointStore | null;
 }
 
 export const DEFAULT_CAP = 3;
@@ -225,6 +235,10 @@ export class AgentHost {
   /** The start-up sweep found the registry locked and is still to be done. */
   private sweepPending = false;
   private readonly retryMs: number;
+  /** Checkpoints per turn (#248), or null when this host takes none. */
+  readonly checkpoints: CheckpointStore | null;
+  /** Agents an Undo is putting back right now (#248), with what: no resume or start in their folder until it is done. */
+  private readonly holds = new Map<string, { cwd: string; what: string }>();
 
   constructor(deps: HostDeps & { query: QueryFn }) {
     this.registry = deps.registry ?? new AgentRegistry();
@@ -246,6 +260,7 @@ export class AgentHost {
     };
     this.ownerAlive = deps.ownerAlive ?? ((o) => this.ownerAliveDefault(o));
     this.retryMs = deps.retryMs ?? RETRY_MS;
+    this.checkpoints = deps.checkpoints ?? null;
     try {
       this.sweep();
     } catch (e) {
@@ -255,6 +270,48 @@ export class AgentHost {
       console.error(`[agents] start-up sweep postponed: ${e.message}`);
       this.sweepPending = true;
       this.scheduleRetry();
+    }
+    this.clearGoneFolders();
+  }
+
+  /**
+   * Snapshots go with the agent's folder (#248): an agent whose folder no longer exists (its
+   * worktree was removed) has its snapshots cleared, and the record says why. Its record is kept.
+   */
+  private clearGoneFolders(): void {
+    const store = this.checkpoints;
+    if (!store) return;
+    let agents: AgentRecord[];
+    try {
+      agents = this.registry.load();
+    } catch {
+      return;
+    }
+    for (const a of agents) {
+      if (LIVE_STATUSES.has(a.status) || !store.kept(a.id) || existsSync(a.cwd)) continue;
+      void store.clear(a.id, `the agent's folder ${a.cwd} no longer exists (its worktree was removed)`).catch((e) =>
+        console.error(`[checkpoints] ${a.id}: could not clear: ${(e as Error).message}`),
+      );
+    }
+  }
+
+  /**
+   * Hold an agent while an Undo puts its folder back (#248): resume, and a start in the same folder,
+   * are refused until `release`. Refused if it is held already.
+   */
+  hold(id: string, cwd: string, what: string): void {
+    const held = this.holds.get(id);
+    if (held) throw new HostError(409, `agent ${id} is busy: ${held.what}`, { refusal: "busy" });
+    this.holds.set(id, { cwd, what });
+  }
+
+  release(id: string): void {
+    this.holds.delete(id);
+  }
+
+  private refuseHeld(id: string | null, cwd: string): void {
+    for (const [hid, h] of this.holds) {
+      if (hid === id || h.cwd === cwd) throw new HostError(409, `${hid === id ? "this agent" : `agent ${hid}, in the same folder,`} is busy: ${h.what}; try again when it is done`, { refusal: "busy" });
     }
   }
 
@@ -479,6 +536,7 @@ export class AgentHost {
       if (!Number.isInteger(issue) || issue <= 0) throw new HostError(400, "issue must be a positive whole number");
     }
     const mode = this.checkStartMode(req.mode, req.confirm);
+    this.refuseHeld(null, cwd);
     this.checkCap();
     const github = this.requireGithubAccess();
     const claude = this.requireClaude();
@@ -508,6 +566,7 @@ export class AgentHost {
     if (!found) throw new HostError(404, `no agent ${id}`);
     if (this.live.has(id)) throw new HostError(409, "agent is still running");
     this.refuseElsewhere(found, "resume it");
+    this.refuseHeld(id, found.cwd);
     if (!found.sessionId) throw new HostError(409, "agent never reached Claude Code, so there is no session to resume; start a new one");
     const prompt = typeof promptIn === "string" && promptIn.trim() ? promptIn.trim() : "Continue.";
     // A resume keeps the mode it was started in, and is refused if the cap has been lowered since.
@@ -692,6 +751,8 @@ export class AgentHost {
       pending: new Map(),
       stderrTail: "",
       undelivered: new Set(),
+      turnOpen: true,
+      turnsStarted: 1,
     };
     // Registered before any await, so two starts in one tick cannot both pass the cap.
     this.live.set(rec.id, live);
@@ -737,15 +798,37 @@ export class AgentHost {
         live.stderrTail = (live.stderrTail + d).slice(-2000);
       },
     };
-    let q: ReturnType<QueryFn>;
-    try {
-      q = this.queryFn({ prompt: input, options });
-    } catch (e) {
-      this.finish(rec, live, e);
-      return;
-    }
-    live.close = q.close?.bind(q);
-    void this.consume(rec, live, q);
+    const go = () => {
+      let q: ReturnType<QueryFn>;
+      try {
+        q = this.queryFn({ prompt: input, options });
+      } catch (e) {
+        this.finish(rec, live, e);
+        return;
+      }
+      live.close = q.close?.bind(q);
+      void this.consume(rec, live, q);
+    };
+    const store = this.checkpoints;
+    if (!store) return go();
+    // The checkpoint before the run is taken before Claude Code starts, so nothing the agent does
+    // is in it (#248). A snapshot that fails is recorded as failed and the run starts anyway.
+    void store.capture(rec.id, rec.cwd, { when: "before-run", run: rec.runs }).then(() => {
+      // Stopped while the snapshot was taken: the run never starts.
+      if (live.ending) this.finish(rec, live, undefined);
+      else go();
+    });
+  }
+
+  /** A turn ended: take its checkpoint (#248), noting if the next turn began before it was done. */
+  private checkpointTurn(rec: AgentRecord, live: Live, when: "after-turn" | "run-ended"): void {
+    const store = this.checkpoints;
+    if (!store || !live.turnOpen) return;
+    live.turnOpen = false;
+    const started = live.turnsStarted;
+    void store.capture(rec.id, rec.cwd, { when, run: rec.runs, ...(when === "run-ended" && rec.reason ? { reason: rec.reason } : {}) }, () =>
+      live.turnsStarted !== started ? { mayIncludeNext: true } : {},
+    );
   }
 
   private async consume(rec: AgentRecord, live: Live, q: AsyncIterable<SDKMessage>): Promise<void> {
@@ -807,6 +890,7 @@ export class AgentHost {
         const detail = m.subtype === "success" ? m.result : (m.errors ?? []).join("; ");
         live.turnOver = { status: "failed", reason: `Claude Code reported ${m.subtype}${detail ? `: ${String(detail).slice(0, 300)}` : ""}` };
       }
+      this.checkpointTurn(rec, live, "after-turn");
       if (!this.maybeEndTurn(rec, live)) this.changed(rec);
     }
   }
@@ -834,6 +918,10 @@ export class AgentHost {
       const by = (m as { type?: string }).type === "command_lifecycle" ? "started" : String((m as { type?: string }).type);
       this.record(rec.id, "host", { event: "message-delivered", messageId: u, by });
       // A message that starts its own turn after the last result reopens the run.
+      if (live.turnOver) {
+        live.turnOpen = true;
+        live.turnsStarted += 1;
+      }
       live.turnOver = undefined;
     }
     for (const r of refused) {
@@ -927,6 +1015,9 @@ export class AgentHost {
       rec.status = "failed";
       rec.reason = rec.reason ?? "Claude Code exited without a result";
     }
+    // A run that ended mid-turn (stopped, failed) still gets the turn's checkpoint, if Claude Code
+    // ever started on it: before init the agent has done nothing in the folder.
+    if (live.sawInit) this.checkpointTurn(rec, live, "run-ended");
     this.changed(rec);
   }
 

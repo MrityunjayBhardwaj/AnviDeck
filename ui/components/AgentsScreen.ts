@@ -25,6 +25,7 @@ import type { AgentsRead } from "../shell/activity";
 import type { AgentSessionResponse } from "../../shared/agents-screen-types";
 import type { ReplaySessionsResponse } from "../../shared/replay-types";
 import type { AskingAgent } from "../../shared/permission-requests";
+import type { CheckpointEntry, CheckpointsAnswer, FileChange, TurnRecordLine, UndoAnswer, UndoPlan } from "../../shared/checkpoint-types";
 import {
   agentLabel,
   agentTabs,
@@ -96,6 +97,10 @@ const S = {
   tails: new Map<string, number>(),
   /** The field the owner was typing in, and where the cursor was: given back after a repaint. */
   focus: null as SavedFocus | null,
+  /** Checkpoints per turn (#248) by agent id, with the agent state they were read at. */
+  turns: new Map<string, { key: string; load: Load<CheckpointsAnswer> }>(),
+  /** An open Undo preview by agent id: the checkpoint, what it would discard, and what came of pressing. */
+  undo: new Map<string, { n: number; plan: Load<UndoPlan>; said?: { ok: boolean; text: string } }>(),
 };
 
 const TAB_ROW_TERMINALS = 6;
@@ -646,6 +651,7 @@ function hostDetail(a: HostAgent): HTMLElement {
         ["started", a.createdAt.replace("T", " ").slice(0, 19) + " UTC"],
         ["usage estimate", a.costEstimateUsd !== undefined ? `$${a.costEstimateUsd.toFixed(2)} (Claude Code's estimate, not a bill)` : "not reported yet"],
       ])),
+    turnsCard(a),
     tl ? planCard(tl) : el("div", "aw-card aw-note", "Plan: reading…"),
     tl ? hooksCard(tl) : el("div", ""),
     sourcesCard([
@@ -759,6 +765,209 @@ function planBlock(tl: Timeline, compact: boolean): HTMLElement {
     box.append(ol);
   }
   return box;
+}
+
+// ── checkpoints per turn (#248) ─────────────────────────────────────────────────────────────
+
+function loadTurns(id: string, key: string): void {
+  const had = S.turns.get(id);
+  S.turns.set(id, { key, load: had?.load.state === "ok" ? had.load : { state: "loading" } });
+  getJson<CheckpointsAnswer>(`/api/agents/${encodeURIComponent(id)}/checkpoints`).then(
+    (r) => S.turns.set(id, { key, load: { state: "ok", data: r, readAt: new Date().toISOString() } }),
+    (e: Error) => S.turns.set(id, { key, load: { state: "error", error: e.message } }),
+  ).finally(paint);
+}
+
+/** Read again when the agent's run or status changes, and once more a moment later: a turn's checkpoint is taken after its result. */
+function turnsFor(a: HostAgent): Load<CheckpointsAnswer> {
+  const key = `${a.status}|${a.runs}|${a.running}`;
+  const t = S.turns.get(a.id);
+  if (!t || t.key !== key) {
+    loadTurns(a.id, key);
+    setTimeout(() => loadTurns(a.id, key), 3000);
+  }
+  return S.turns.get(a.id)!.load;
+}
+
+const WHEN: Record<CheckpointEntry["when"], string> = {
+  "before-run": "before the run",
+  "after-turn": "turn ended",
+  "run-ended": "run ended mid-turn",
+  "before-undo": "before an Undo",
+  "after-undo": "Undo",
+};
+
+function changeLine(f: FileChange): HTMLElement {
+  const counts = f.added === null ? "binary" : `+${f.added} −${f.removed}`;
+  const row = el("div", "aw-turn-file", el("span", `aw-turn-st ${f.status}`, f.status), el("span", "", f.path), el("span", "aw-note", counts));
+  return row;
+}
+
+function changesBlock(changes: FileChange[], count: number, what: string): HTMLElement {
+  const sum = changes.reduce((n, f) => ({ a: n.a + (f.added ?? 0), r: n.r + (f.removed ?? 0) }), { a: 0, r: 0 });
+  const box = el("details", "aw-turn-files");
+  box.append(el("summary", "", `${count} file${count === 1 ? "" : "s"} ${what} (+${sum.a} −${sum.r}${count > changes.length ? `, lines of the first ${changes.length}` : ""})`));
+  for (const f of changes) box.append(changeLine(f));
+  if (count > changes.length) box.append(el("div", "aw-note", `${count - changes.length} more not kept in the record (it keeps ${changes.length}).`));
+  return box;
+}
+
+/**
+ * The Undo button on a checkpoint's row undoes that row's changes: it puts the folder back to the
+ * checkpoint before it (so "Undo this turn" on a turn, "Undo these changes" on changes made outside
+ * the agent). Every checkpoint but the newest is reachable that way, and the newest is the folder now.
+ */
+function undoLabel(r: CheckpointEntry, latest: boolean): string {
+  const after = latest ? "" : " and everything after";
+  if (r.when === "after-turn" || r.when === "run-ended") return `Undo this turn${after}…`;
+  if (r.when === "after-undo") return `Undo this Undo${after}…`;
+  return `Undo these changes${after}…`;
+}
+
+/** What one checkpoint says: when it was taken and what changed since the one before. */
+function turnRow(a: HostAgent, r: TurnRecordLine, undoable: Set<number>, canUndo: boolean, latest: number): HTMLElement {
+  if (r.kind === "cleared") return el("div", "aw-turn aw-note", `${hhmm(r.at)} · snapshots cleared: ${r.reason}. Earlier checkpoints cannot be undone to; what they changed is still listed.`);
+  if (r.kind === "checkpoint-failed") return el("div", "aw-turn aw-err", `${hhmm(r.at)} · no checkpoint (${WHEN[r.when]}, run ${r.run}): ${r.reason}`);
+  const row = el("div", "aw-turn");
+  row.dataset.checkpoint = String(r.n);
+  const head = el("div", "aw-turn-head", el("b", "", `#${r.n}`), stamp(r.at),
+    el("span", "", r.when === "after-undo" ? `Undo to #${r.undoTo}` : r.when === "before-run" ? `before run ${r.run}` : WHEN[r.when]),
+    r.head ? el("span", "aw-note", `${r.head.branch ?? "detached"} @ ${r.head.sha.slice(0, 7)}`) : el("span", "aw-note", "not a git checkout"));
+  if (canUndo && r.changeCount && undoable.has(r.n) && undoable.has(r.n - 1)) {
+    const b = el("button", "aw-btn sm", undoLabel(r, r.n === latest));
+    b.dataset.act = "undo-preview";
+    b.dataset.to = String(r.n - 1);
+    b.title = `Puts the folder back to checkpoint #${r.n - 1}. Shows what would be discarded first; nothing changes until you press again`;
+    b.onclick = () => openUndo(a.id, r.n - 1);
+    head.append(el("span", "r", b));
+  }
+  row.append(head);
+  const what =
+    r.when === "after-turn" ? "changed in this turn"
+    : r.when === "run-ended" ? "changed before the run ended"
+    : r.when === "after-undo" ? "changed by the Undo"
+    : r.n === 1 ? ""
+    : "changed outside the agent since the checkpoint before";
+  if (r.n > 1 || r.changeCount) {
+    if (r.changeCount) row.append(changesBlock(r.changes, r.changeCount, what));
+    else if (what) row.append(el("div", "aw-note", `nothing ${what}`));
+  } else row.append(el("div", "aw-note", "the first checkpoint: the folder as it was before the agent started"));
+  if (r.mayIncludeNext) row.append(el("div", "aw-note aw-warn", "A message started the next turn before this snapshot was done, so it may include the start of that turn."));
+  if (r.reason) row.append(el("div", "aw-note", r.reason));
+  return row;
+}
+
+function openUndo(id: string, n: number): void {
+  S.undo.set(id, { n, plan: { state: "loading" } });
+  paint();
+  getJson<UndoPlan>(`/api/agents/${encodeURIComponent(id)}/checkpoints/${n}/undo`).then(
+    (p) => {
+      const u = S.undo.get(id);
+      if (u?.n === n) u.plan = { state: "ok", data: p, readAt: new Date().toISOString() };
+    },
+    (e: Error) => {
+      const u = S.undo.get(id);
+      if (u?.n === n) u.plan = { state: "error", error: e.message };
+    },
+  ).finally(paint);
+}
+
+function undoPanel(a: HostAgent): HTMLElement | null {
+  const u = S.undo.get(a.id);
+  if (!u) return null;
+  const box = el("div", "aw-undo");
+  box.id = "aw-undo";
+  const close = el("button", "aw-btn sm", "Close");
+  close.onclick = () => {
+    S.undo.delete(a.id);
+    paint();
+  };
+  box.append(el("div", "aw-turn-head", el("b", "", `Put the folder back to checkpoint #${u.n}`), el("span", "r", close)));
+  if (u.said) box.append(el("div", u.said.ok ? "aw-ok" : "aw-err", u.said.text));
+  if (u.plan.state === "loading") box.append(el("div", "aw-note", "reading the folder as it is now…"));
+  else if (u.plan.state === "error") box.append(el("div", "aw-err", `Undo is not offered: ${u.plan.error}`));
+  else if (!u.said?.ok) {
+    const p = u.plan.data;
+    box.append(el("div", "aw-note", `${a.cwd}`));
+    if (!p.discardedCount) box.append(el("div", "aw-note", "The folder is already as it was at this checkpoint: nothing would change."));
+    else box.append(changesBlock(p.discarded, p.discardedCount, `changed since checkpoint #${p.to}, by the agent or anyone else: Undo discards these changes`));
+    box.append(el("div", "aw-note", "Files your .gitignore leaves out were never captured and stay as they are."));
+    const then = p.head.then, now = p.head.now;
+    if (then && now && then.sha !== now.sha)
+      box.append(el("div", "aw-warn", `The branch has moved since (${then.sha.slice(0, 7)} → ${now.sha.slice(0, 7)}${now.branch ? ` on ${now.branch}` : ""}). Undo puts files back only, never the branch: its commits stay, and the files will show as changes against them.`));
+    const go = el("button", "aw-btn bad", p.discardedCount ? `Discard ${p.discardedCount} change${p.discardedCount === 1 ? "" : "s"} and put the folder back` : "Put the folder back");
+    go.dataset.act = "undo-confirm";
+    go.onclick = async () => {
+      go.disabled = true;
+      try {
+        const r = await write<UndoAnswer>("POST", `/api/agents/${encodeURIComponent(a.id)}/checkpoints/${u.n}/undo`, { current: p.current });
+        u.said = { ok: true, text: `Done: the folder is as it was at #${r.to}. Checkpoint #${r.before} keeps what it was just before, so this Undo can be undone too.` };
+      } catch (e) {
+        u.said = { ok: false, text: `Undo refused: ${(e as Error).message}` };
+        go.disabled = false;
+      }
+      loadTurns(a.id, S.turns.get(a.id)?.key ?? "");
+    };
+    box.append(el("div", "", go));
+  }
+  return box;
+}
+
+function turnsCard(a: HostAgent): HTMLElement {
+  const c = el("div", "aw-card");
+  c.id = "aw-turns";
+  c.append(el("h3", "", "Turns · checkpoints"));
+  const t = turnsFor(a);
+  if (t.state === "loading") {
+    c.append(el("div", "aw-note", "reading its checkpoints…"));
+    return c;
+  }
+  if (t.state === "error") {
+    c.append(el("div", "aw-err", `Could not read its checkpoints: ${t.error}`));
+    return c;
+  }
+  const d = t.data;
+  if (!d.records.length) c.append(el("div", "aw-note", "No checkpoints yet. One is taken before each run and after each turn (since checkpoints were added)."));
+  if (d.unreadable) c.append(el("div", "aw-err", `${d.unreadable} line${d.unreadable === 1 ? "" : "s"} of its record could not be read.`));
+  if (d.records.length) {
+    c.append(el("div", "aw-note",
+      !d.undoable.length ? "No snapshot is kept on this machine, so nothing can be undone; what each turn changed is still listed."
+      : d.undo.ok ? "Undo puts the whole folder back to a checkpoint; it shows what it would discard first."
+      : `Undo is not offered now: ${d.undo.why}`));
+  }
+  const panel = undoPanel(a);
+  if (panel) c.append(panel);
+  const undoable = new Set(d.undoable);
+  const list = el("div", "aw-turns");
+  const latest = Math.max(0, ...d.records.map((r) => (r.kind === "checkpoint" ? r.n : 0)));
+  for (const r of [...d.records].reverse()) list.append(turnRow(a, r, undoable, d.undo.ok, latest));
+  c.append(list);
+  if (d.kept) {
+    const clear = el("button", "aw-btn sm", d.folderGone ? "Clear its snapshots (folder gone)" : "Clear its snapshots");
+    clear.dataset.act = "checkpoints-clear";
+    clear.title = "Removes the snapshots on this machine; the list of what each turn changed is kept";
+    const out = el("span", "aw-note");
+    clear.onclick = async () => {
+      if (clear.dataset.armed !== "1") {
+        clear.dataset.armed = "1";
+        clear.textContent = "Press again: no turn can be undone after this";
+        return;
+      }
+      clear.disabled = true;
+      try {
+        await write("POST", `/api/agents/${encodeURIComponent(a.id)}/checkpoints/clear`);
+        S.undo.delete(a.id);
+        loadTurns(a.id, S.turns.get(a.id)?.key ?? "");
+      } catch (e) {
+        out.className = "aw-err";
+        out.textContent = ` Clear refused: ${(e as Error).message}`;
+        clear.disabled = false;
+      }
+    };
+    c.append(el("div", "", clear, out));
+  }
+  c.append(el("div", "aw-note", "Snapshots stay on this machine (AnviDeck's checkpoints folder, never backed up); the list above is backed up with the action log."));
+  return c;
 }
 
 function planCard(tl: Timeline): HTMLElement {
