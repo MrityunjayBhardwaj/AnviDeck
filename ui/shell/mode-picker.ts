@@ -31,8 +31,8 @@ export function createModePicker(idPrefix: string): ModePicker {
   const confirm = el("label", { id: `${idPrefix}-mode-confirm-row`, class: "sh-sa-err", hidden: "" }, tick, confirmText);
   const note = el("div", { id: `${idPrefix}-mode-note`, class: "sh-dim" });
   let offered: OfferedMode[] | null = null;
-  // The Agent GitHub access Full access is confirmed for (#270); null until read, or when it cannot be.
-  let github: GithubAccess | null = null;
+  // The Agent GitHub access Full access is confirmed for (#270): undefined until read, null when it could not be.
+  let github: GithubAccess | null | undefined = undefined;
 
   const fill = (list: readonly OfferedMode[]) => {
     const keep = select.value || DEFAULT_MODE;
@@ -46,15 +46,15 @@ export function createModePicker(idPrefix: string): ModePicker {
   const show = () => {
     const m = MODES.find((x) => x.mode === select.value);
     const full = select.value === "bypassPermissions";
-    const onGithub = fullAccessOnGithub(github);
-    what.textContent = m ? `${m.label}: ${m.behaviour}.${full ? ` ${onGithub}.` : ""}` : "";
+    const onGithub = github === undefined ? "Agent GitHub access has not been read yet" : fullAccessOnGithub(github);
+    what.textContent = m ? `${m.label}: ${m.behaviour}.` : "";
     // Changing what the box names unticks it: a tick confirms the words it was given beside.
-    const words = ` ${FULL_ACCESS_CONFIRM}: it can run any command and change any file. ${onGithub}.`;
+    const words = ` ${FULL_ACCESS_CONFIRM}. ${onGithub}.`;
     if (confirmText.textContent !== words) {
       confirmText.textContent = words;
       tick.checked = false;
     }
-    confirm.dataset.github = github ?? "unreadable";
+    confirm.dataset.github = github === undefined ? "not-read-yet" : (github ?? "unreadable");
     confirm.hidden = !full;
     if (!full) tick.checked = false;
   };
@@ -88,6 +88,6 @@ export function createModePicker(idPrefix: string): ModePicker {
       }
       show();
     },
-    body: () => startModeBody(select.value, tick.checked, offered, github),
+    body: () => startModeBody(select.value, tick.checked, offered, github ?? null),
   };
 }
