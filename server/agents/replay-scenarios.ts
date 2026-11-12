@@ -70,4 +70,27 @@ export const SCENARIOS: Scenario[] = [
       return until(host, id, (a) => ENDED.has(a.status) && a.runs === 2, "the end of the resumed run", t);
     },
   },
+  {
+    // A subagent asks (#267): its request reaches the parent's callback carrying the subagent's id.
+    // Every ask is allowed (the Agent call itself may ask too); the run must include one from a subagent.
+    name: "subagent",
+    prompt:
+      "Use the Agent tool once, with subagent_type general-purpose and the description: write hello. Its prompt: Use the Write tool to create a file named hello.txt in the current folder containing the single word hi, then reply with the single word: done. When it returns, reply with the single word: done. Do nothing else.",
+    async drive(host, cwd, opts) {
+      const t = opts?.timeoutMs ?? 180_000;
+      const { id } = host.start({ cwd, prompt: this.prompt });
+      let fromSubagent = 0;
+      for (;;) {
+        const a = await until(host, id, (x) => x.pendingPermissions.length > 0 || ENDED.has(x.status), "a permission request or the end", t, true);
+        if (ENDED.has(a.status)) {
+          if (!fromSubagent) throw new Error("the run ended without a permission request from a subagent");
+          return a;
+        }
+        const req = a.pendingPermissions[0];
+        if (req.subagent) fromSubagent++;
+        host.answer(id, req.requestId, { decision: "allow" });
+        await until(host, id, (x) => !x.pendingPermissions.some((p) => p.requestId === req.requestId), "the answer to land", t, true);
+      }
+    },
+  },
 ];

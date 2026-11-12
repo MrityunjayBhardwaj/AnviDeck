@@ -9,10 +9,11 @@ import { CWD, HOME, type ReplayStep } from "./replay";
  *
  * Kept: what the agent host and the screens read (session, model, Claude Code version, the
  * credential source, built-in tool names, hook event and outcome, the conversation itself).
- * Emptied: the lists above. Swapped: the scratch folder and home folder for placeholders.
+ * Emptied: the lists above. Swapped: the scratch folder and home folder for placeholders, both as
+ * paths and in Claude Code's dash-encoded folder-name form (#277).
  *
- * Fails closed: if the home folder, the user name or an email address is still anywhere in the
- * cleaned text, it throws and nothing is written.
+ * Fails closed: if the home folder, the user name, an email address or a system temp folder
+ * (/var/folders, in either form) is still anywhere in the cleaned text, it throws and nothing is written.
  */
 
 type Msg = Record<string, unknown>;
@@ -44,6 +45,11 @@ function cleanMessage(m: Msg): Msg {
   return m;
 }
 
+/** A path the way Claude Code turns it into a folder name: every character but a letter or digit is "-". */
+export function encoded(path: string): string {
+  return path.replace(/[^A-Za-z0-9]/g, "-");
+}
+
 export function cleanRecording(steps: ReplayStep[], where: { cwd: string; home: string; user?: string }): ReplayStep[] {
   const cleaned = steps.map((s) => (s.k === "sdk" ? { ...s, m: cleanMessage(s.m as unknown as Msg) as unknown as SDKMessage } : s));
   let text = JSON.stringify(cleaned);
@@ -53,6 +59,10 @@ export function cleanRecording(steps: ReplayStep[], where: { cwd: string; home: 
     if (!from) continue;
     swaps.push([from, to]);
     if (from.startsWith("/private/")) swaps.push([from.slice("/private".length), to]);
+    // Claude Code names folders after a path with every other character as "-" (its temp and
+    // project folders, e.g. a subagent's output_file); that form is swapped too (#277).
+    swaps.push([encoded(from), encoded(to)]);
+    if (from.startsWith("/private/")) swaps.push([encoded(from.slice("/private".length)), encoded(to)]);
   }
   for (const [from, to] of swaps) text = text.split(from).join(to);
   const user = where.user ?? (where.home ? where.home.split("/").filter(Boolean).pop() : undefined);
@@ -61,6 +71,7 @@ export function cleanRecording(steps: ReplayStep[], where: { cwd: string; home: 
   if (user && user.length >= 3 && new RegExp(`\\b${user.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text)) leaks.push(`the user name "${user}"`);
   if (/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/.test(text)) leaks.push("an email address");
   if (/\/Users\/|\/home\/[a-z]/.test(text)) leaks.push("a home folder path");
+  if (/[/-]var[/-]folders[/-]/.test(text)) leaks.push("a system temp folder");
   if (leaks.length) throw new Error(`the cleaned recording still contains ${leaks.join(", ")}; not written`);
   return JSON.parse(text) as ReplayStep[];
 }

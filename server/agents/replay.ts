@@ -26,7 +26,7 @@ export type ReplayStep =
   | { k: "meta"; name: string; recordedAt: string; claudeCode: string | null; sdk: string | null; prompt: string }
   | { k: "input" }
   | { k: "sdk"; m: SDKMessage }
-  | { k: "ask"; toolName: string; input: Record<string, unknown>; decisionReason?: string; blockedPath?: string }
+  | { k: "ask"; toolName: string; input: Record<string, unknown>; decisionReason?: string; blockedPath?: string; toolUseID?: string; agentID?: string }
   | { k: "answer"; behavior: "allow" | "deny" | "none" }
   | { k: "end"; error?: string };
 
@@ -78,7 +78,7 @@ export function recordingQuery(real: QueryFn, sink: (step: ReplayStep) => void):
       ...(canUseTool
         ? {
             canUseTool: async (toolName: string, input: Record<string, unknown>, o: Parameters<NonNullable<typeof canUseTool>>[2]) => {
-              sink({ k: "ask", toolName, input, decisionReason: o.decisionReason, blockedPath: o.blockedPath });
+              sink({ k: "ask", toolName, input, decisionReason: o.decisionReason, blockedPath: o.blockedPath, toolUseID: o.toolUseID, ...(o.agentID ? { agentID: o.agentID } : {}) });
               const r = await canUseTool(toolName, input, o);
               sink({ k: "answer", behavior: r?.behavior ?? "none" });
               return r;
@@ -142,7 +142,12 @@ export function replayQuery(recordings: Recording[], opts: { paceMs?: number } =
             const ctl = new AbortController();
             abort?.addEventListener("abort", () => ctl.abort(), { once: true });
             const r: PermissionResult | null = await Promise.race([
-              options.canUseTool(s.toolName, s.input, { signal: ctl.signal, decisionReason: s.decisionReason, blockedPath: s.blockedPath } as Parameters<NonNullable<typeof options.canUseTool>>[2]),
+              options.canUseTool(s.toolName, s.input, {
+                signal: ctl.signal, decisionReason: s.decisionReason, blockedPath: s.blockedPath,
+                // Recordings made before #267 have neither id: the ask then plays as the agent's own.
+                ...(s.toolUseID ? { toolUseID: s.toolUseID } : {}),
+                ...(s.agentID ? { agentID: s.agentID } : {}),
+              } as Parameters<NonNullable<typeof options.canUseTool>>[2]),
               aborted(),
             ]);
             const got = r?.behavior ?? "none";
@@ -186,7 +191,7 @@ export function replayShape(rec: Recording): string[] {
   for (const s of rec) {
     if (s.k === "meta") continue;
     if (s.k !== "sdk") {
-      out.push(s.k === "ask" ? `ask ${s.toolName}` : s.k === "answer" ? `answer ${s.behavior}` : s.k === "end" ? `end${s.error ? " (error)" : ""}` : s.k);
+      out.push(s.k === "ask" ? `ask ${s.toolName}${s.agentID ? " (subagent)" : ""}` : s.k === "answer" ? `answer ${s.behavior}` : s.k === "end" ? `end${s.error ? " (error)" : ""}` : s.k);
       continue;
     }
     const m = s.m as unknown as Record<string, unknown>;

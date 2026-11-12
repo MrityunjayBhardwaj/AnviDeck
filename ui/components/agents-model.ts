@@ -333,12 +333,16 @@ export function buildTimeline(input: TimelineInput): Timeline {
           comment: str(c.file) ? `${str(c.file)}:${c.line}` : undefined,
         });
       } else if (ev === "permission-asked") {
-        // The host parks the request without the call's id: it belongs to the newest open call of
-        // that tool with exactly that input; otherwise it is shown on its own line.
+        // The call's own id when the host recorded it (#267), and then only that call: a known id
+        // never falls back to a guess. Before #267, the newest open call of that tool with exactly
+        // that input. Otherwise it is shown on its own line.
         const json = JSON.stringify(m.input ?? {});
-        const t = [...tools].reverse().find((x) => !x.result && !x.permission && x.name === str(m.toolName) && JSON.stringify(x.input) === json);
-        if (t) t.permission = { requestId: str(m.requestId) };
-        else items.push({ kind: "event", at: l.at, text: `asked permission for ${str(m.toolName)}`, tone: "warn" });
+        const useId = str(m.toolUseId);
+        const t = useId ? byId.get(useId) : [...tools].reverse().find((x) => !x.result && !x.permission && x.name === str(m.toolName) && JSON.stringify(x.input) === json);
+        const sub = obj(m.subagent);
+        const who = str(sub.id) ? (str(sub.type) ? `${str(sub.type)} (subagent) ` : "a subagent ") : "";
+        if (t && !t.permission) t.permission = { requestId: str(m.requestId) };
+        else items.push({ kind: "event", at: l.at, text: `${who}asked permission for ${str(m.toolName)}`, tone: "warn" });
       } else if (ev === "permission-answered" || ev === "permission-withdrawn") {
         const t = tools.find((x) => x.permission?.requestId === str(m.requestId));
         const answer = ev === "permission-withdrawn" ? "withdrawn" : str(m.behavior) === "allow" ? "allow" : "deny";
@@ -609,7 +613,7 @@ export interface HostAgent {
   costEstimateUsd?: number;
   /** How many runs it has had (start, then each resume). */
   runs?: number;
-  pendingPermissions: { requestId: string; toolName: string; input: Record<string, unknown>; askedAt: string; decisionReason?: string; blockedPath?: string }[];
+  pendingPermissions: { requestId: string; toolName: string; input: Record<string, unknown>; askedAt: string; decisionReason?: string; blockedPath?: string; toolUseId?: string; subagent?: { id: string; type?: string; description?: string } }[];
 }
 
 /** A session started in a terminal, listed by the replay reader (GET /api/replay/sessions). */

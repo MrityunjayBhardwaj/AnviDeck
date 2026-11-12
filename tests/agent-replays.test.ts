@@ -3,9 +3,11 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentHost } from "../server/agents/host";
+import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { AgentRegistry } from "../server/agents/registry";
 import { loginOnlyEnv } from "../server/agents/login";
-import { parseRecording, replayQuery, replayShape, type Recording } from "../server/agents/replay";
+import { parseRecording, recordingQuery, replayQuery, replayShape, type Recording, type ReplayStep } from "../server/agents/replay";
+import type { QueryFn } from "../server/agents/host";
 import { cleanRecording } from "../server/agents/replay-clean";
 import { SCENARIOS } from "../server/agents/replay-scenarios";
 
@@ -83,6 +85,24 @@ describe("replayed agent runs, through the real agent host (#242)", () => {
     expect(events(host, a.id)).toEqual(expect.arrayContaining(["started", "permission-asked", "resumed"]));
   });
 
+  test("subagent: a real subagent's Write request is parked on the parent, named, and Allow lets it run (#267)", async () => {
+    const { host } = hostFor("subagent");
+    const seen: string[] = [];
+    const origAnswer = host.answer.bind(host);
+    host.answer = ((id: string, requestId: string, ans: Parameters<AgentHost["answer"]>[2]) => {
+      const p = host.get(id).pendingPermissions.find((x) => x.requestId === requestId)!;
+      seen.push(JSON.stringify({ tool: p.toolName, subagent: p.subagent, toolUseId: p.toolUseId }));
+      return origAnswer(id, requestId, ans);
+    }) as AgentHost["answer"];
+    const a = await scenario("subagent").drive(host, scratch(), { timeoutMs: 5000 });
+    expect(a.status).toBe("done");
+    // The ids are the recorded run's: agentID equals the task_id of its task_started.
+    expect(seen.map((s) => JSON.parse(s))).toEqual([
+      { tool: "Write", subagent: { id: "a3283fa411d781c72", type: "general-purpose", description: "write hello" }, toolUseId: "toolu_01TrF7JWQAiNXWZRkZNdCqzP" },
+    ]);
+    expect(transcriptText(host, a.id)).toContain("File created successfully");
+  });
+
   test("an answer the recording did not give stops the replay with the reason, never a made-up run", async () => {
     const { host } = hostFor("allow");
     // Drive the allow recording, but answer Deny.
@@ -124,6 +144,41 @@ describe("the recordings in the repo", () => {
     expect(() => cleanRecording(other, { cwd: "", home: "/Users/someone" })).toThrow("a home folder path");
     const mail: Recording = [{ k: "meta", name: "x", recordedAt: "t", claudeCode: "1.0.0", sdk: "1.0.0", prompt: "mail a@b.co" }];
     expect(() => cleanRecording(mail, { cwd: "", home: "/h/x" })).toThrow("an email address");
+  });
+
+  test("a folder in Claude Code's dash-encoded form is swapped too; a temp folder it cannot place is refused (#277)", () => {
+    const cwd = "/private/var/folders/4h/ab_cd/T/anvideck-replay-xY1";
+    const out: Recording = [
+      { k: "meta", name: "x", recordedAt: "t", claudeCode: "1.0.0", sdk: "1.0.0", prompt: "p" },
+      { k: "sdk", m: { type: "system", subtype: "task_notification", output_file: "/private/tmp/claude-1/-private-var-folders-4h-ab-cd-T-anvideck-replay-xY1/s/tasks/a.output" } as unknown as SDKMessage },
+    ];
+    const cleaned = JSON.stringify(cleanRecording(out, { cwd, home: "/h/x" }));
+    expect(cleaned).toContain("/private/tmp/claude-1/-cwd-/s/tasks/a.output");
+    expect(cleaned).not.toContain("ab-cd");
+    // The same path from another run's folder is not the recorder's cwd: refused, not kept.
+    expect(() => cleanRecording(out, { cwd: "/private/var/folders/4h/ab_cd/T/other", home: "/h/x" })).toThrow("a system temp folder");
+  });
+});
+
+describe("recording a run (#267)", () => {
+  test("an ask keeps the call's id, and the subagent's id when a subagent asks; the agent's own ask has none", async () => {
+    const real = (({ options }: Parameters<QueryFn>[0]) =>
+      (async function* () {
+        const sig = new AbortController().signal;
+        await options.canUseTool!("Write", { file_path: "/x" }, { signal: sig, toolUseID: "tu-1", agentID: "sub-9" } as never);
+        await options.canUseTool!("Bash", { command: "ls" }, { signal: sig, toolUseID: "tu-2" } as never);
+      })()) as unknown as QueryFn;
+    const steps: ReplayStep[] = [];
+    const q = recordingQuery(real, (st) => steps.push(st))({
+      prompt: (async function* () {})() as never,
+      options: { canUseTool: async () => ({ behavior: "allow", updatedInput: {} }) } as never,
+    });
+    for await (const _ of q) { /* drain */ }
+    const asks = steps.filter((st) => st.k === "ask");
+    expect(asks).toEqual([
+      { k: "ask", toolName: "Write", input: { file_path: "/x" }, decisionReason: undefined, blockedPath: undefined, toolUseID: "tu-1", agentID: "sub-9" },
+      { k: "ask", toolName: "Bash", input: { command: "ls" }, decisionReason: undefined, blockedPath: undefined, toolUseID: "tu-2" },
+    ]);
   });
 });
 

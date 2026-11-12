@@ -10,7 +10,7 @@
  */
 import { write, WriteError } from "../write";
 import type { AgentsRead } from "../shell/activity";
-import { askSummary, permissionQueue, type AskingAgent, type PendingPermission, requestInputText } from "../../shared/permission-requests";
+import { askerOf, askSummary, permissionQueue, subagentDetail, type AskingAgent, type PendingPermission, requestInputText } from "../../shared/permission-requests";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -39,7 +39,7 @@ export function keepCardsOf(agents: AskingAgent[]): void {
 /** The card for one parked request, reused across renders. */
 export function requestCard(agent: AskingAgent, p: PendingPermission): HTMLElement {
   const had = cards.get(p.requestId);
-  if (had) return had;
+  if (had) return refreshAsker(had, p);
   const card = el("div", "perm-card");
   card.dataset.request = p.requestId;
   card.dataset.agent = agent.id;
@@ -47,14 +47,19 @@ export function requestCard(agent: AskingAgent, p: PendingPermission): HTMLEleme
   card.addEventListener("click", (ev) => ev.stopPropagation());
 
   const what = el("div", "perm-what");
-  what.append("An agent asks to ", el("b", "", askSummary(p.toolName, p.input)));
+  const asker = el("span", "perm-asker", askerOf(p));
+  what.append(asker, " asks to ", el("b", "", askSummary(p.toolName, p.input)));
   const meta = el("div", "perm-meta",
     `${p.toolName} · agent ${agent.id}${agent.issue ? ` · #${agent.issue}` : ""} · ${agent.cwd} · asked ${new Date(p.askedAt).toLocaleTimeString()}`);
+  // A subagent's ask (#267): named on its parent's card. The card is built once per request, so the
+  // name is refreshed in place when it arrives after the request (see refreshAsker).
+  const sub = el("div", "perm-meta perm-sub", subagentDetail(p));
+  sub.hidden = !p.subagent;
   // The full input, never cut: Allow runs exactly this. Long inputs scroll, and say how long they are.
   const shown = requestInputText(p.input);
   const input = el("pre", "perm-input", shown.text);
   input.title = `${shown.chars} characters; scroll to read all of it`;
-  card.append(what, meta);
+  card.append(what, meta, sub);
   if (p.decisionReason) card.append(el("div", "perm-meta", `Why it asks: ${p.decisionReason}`));
   card.append(input);
   if (shown.chars > 600) card.append(el("div", "perm-meta", `Input is ${shown.chars} characters: scroll the box to read all of it before you answer.`));
@@ -92,6 +97,22 @@ export function requestCard(agent: AskingAgent, p: PendingPermission): HTMLEleme
   allow.onclick = () => void send({ decision: "allow" });
   deny.onclick = () => void send({ decision: "deny", message: msg.value });
   cards.set(p.requestId, card);
+  return card;
+}
+
+/**
+ * A subagent's name can arrive after its request (#267): the kept card takes the current one.
+ * Only these two text nodes change, so a deny message being typed is left alone.
+ */
+function refreshAsker(card: HTMLElement, p: PendingPermission): HTMLElement {
+  const asker = card.querySelector<HTMLElement>(".perm-asker");
+  const sub = card.querySelector<HTMLElement>(".perm-sub");
+  if (asker && asker.textContent !== askerOf(p)) asker.textContent = askerOf(p);
+  if (sub) {
+    const d = subagentDetail(p);
+    if (sub.textContent !== d) sub.textContent = d;
+    sub.hidden = !p.subagent;
+  }
   return card;
 }
 
