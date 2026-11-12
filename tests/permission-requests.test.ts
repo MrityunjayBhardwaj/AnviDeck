@@ -14,12 +14,14 @@ import { installGuard } from "../server/guard";
 import { dispatch, isFromApp } from "../server/desktop";
 import { ActionLog, type ActionRecord } from "../server/action-log";
 import {
+  askerOf,
   askSummary,
   DEFAULT_DENY_MESSAGE,
   parsePermissionAnswer,
   permissionQueue,
   type AskingAgent,
   requestInputText,
+  subagentDetail,
 } from "../shared/permission-requests";
 
 const dirs: string[] = [];
@@ -250,5 +252,89 @@ describe("the card shows the whole input that Allow would run", () => {
     expect(src).toMatch(/el\("pre", "perm-input", shown\.text\)/);
     expect(src).not.toMatch(/perm-input[^\n]*\.slice\(/);
     expect(src).not.toMatch(/shown\.text\.slice|shown\.text\.substring/);
+  });
+});
+
+describe("a subagent's request, on its parent's card (#267)", () => {
+  const taskStarted = (id: string) =>
+    ({ type: "system", subtype: "task_started", task_id: id, tool_use_id: "tu-agent", description: "look around", subagent_type: "Explore", session_id: "s1", uuid: "ts" }) as unknown as SDKMessage;
+
+  /** A fake Claude Code whose subagent asks before its task_started has arrived (the name comes later). */
+  function subagentAsking(opts: { agentID?: string; nameAfter: boolean }) {
+    const answers: PermissionResult[] = [];
+    let release!: () => void;
+    const named = new Promise<void>((r) => (release = r));
+    const query: QueryFn = ({ options }: { options: Options }) =>
+      (async function* () {
+        yield init;
+        if (!opts.nameAfter && opts.agentID) yield taskStarted(opts.agentID);
+        const asked = options.canUseTool!("Bash", { command: "ls" }, { signal: new AbortController().signal, toolUseID: "tu-bash", ...(opts.agentID ? { agentID: opts.agentID } : {}) } as never);
+        if (opts.nameAfter && opts.agentID) {
+          await named;
+          yield taskStarted(opts.agentID);
+        }
+        answers.push(await asked);
+        yield result;
+      })() as unknown as ReturnType<QueryFn>;
+    const host = new AgentHost({
+      registry: new AgentRegistry(scratch()),
+      query,
+      resolveClaude: () => ({ path: "/fake/claude", realPath: "/fake/claude-2", fileId: "1:1:1" }),
+      env: () => loginOnlyEnv({ PATH: "/usr/bin" }),
+      emit: () => {},
+    });
+    const events = (id: string) => host.transcript(id).lines.filter((l) => l.from === "host").map((l) => l.message as Record<string, unknown>);
+    return { host, answers, events, release };
+  }
+
+  test("named from its task_started; the transcript keeps who asked and the call's id; Allow settles it", async () => {
+    const h = subagentAsking({ agentID: "sub-1", nameAfter: false });
+    const a = h.host.start({ cwd: scratch(), prompt: "p" });
+    await until(() => h.host.get(a.id).pendingPermissions.length === 1);
+    const p = h.host.get(a.id).pendingPermissions[0];
+    expect(p.subagent).toEqual({ id: "sub-1", type: "Explore", description: "look around" });
+    expect(p.toolUseId).toBe("tu-bash");
+    expect(askerOf(p)).toBe("Explore (subagent)");
+    expect(h.events(a.id).find((e) => e.event === "permission-asked")).toMatchObject({ toolUseId: "tu-bash", subagent: { id: "sub-1", type: "Explore", description: "look around" } });
+    h.host.answer(a.id, p.requestId, { decision: "allow" });
+    await until(() => h.host.get(a.id).status === "done");
+    expect(h.answers).toEqual([{ behavior: "allow", updatedInput: { command: "ls" } }]);
+  });
+
+  test("a name that arrives after the request reaches the parked request; until then it reads as a subagent", async () => {
+    const h = subagentAsking({ agentID: "sub-2", nameAfter: true });
+    const a = h.host.start({ cwd: scratch(), prompt: "p" });
+    await until(() => h.host.get(a.id).pendingPermissions.length === 1);
+    const before = h.host.get(a.id).pendingPermissions[0];
+    expect(before.subagent).toEqual({ id: "sub-2" });
+    expect(askerOf(before)).toBe("A subagent");
+    h.release();
+    await until(() => h.host.get(a.id).pendingPermissions[0]?.subagent?.type === "Explore");
+    expect(askerOf(h.host.get(a.id).pendingPermissions[0])).toBe("Explore (subagent)");
+    h.host.answer(a.id, before.requestId, { decision: "deny", message: "no" });
+    await until(() => h.host.get(a.id).status === "done");
+    expect(h.answers).toEqual([{ behavior: "deny", message: "no" }]);
+  });
+
+  test("the agent's own request has no subagent field and reads as before", async () => {
+    const h = subagentAsking({ nameAfter: false });
+    const a = h.host.start({ cwd: scratch(), prompt: "p" });
+    await until(() => h.host.get(a.id).pendingPermissions.length === 1);
+    const p = h.host.get(a.id).pendingPermissions[0];
+    expect("subagent" in p).toBe(false);
+    expect(askerOf(p)).toBe("An agent");
+    expect(subagentDetail(p)).toBe("");
+    expect("subagent" in h.events(a.id).find((e) => e.event === "permission-asked")!).toBe(false);
+  });
+
+  test("the wording, and a subagent field the page cannot read makes the row unreadable, never the agent's own", () => {
+    expect(subagentDetail({ subagent: { id: "x9", type: "Explore", description: "find  the\nconfig" } })).toBe('subagent Explore, "find the config", id x9');
+    expect(subagentDetail({ subagent: { id: "x9" } })).toBe("subagent (name not known yet), id x9");
+    const ag = (ps: unknown[]): AskingAgent => ({ id: "a", cwd: "/c", prompt: "p", pendingPermissions: ps });
+    const req = { requestId: "r1", toolName: "Bash", input: {}, askedAt: "2026-11-12T10:00:00Z" };
+    expect(permissionQueue([ag([{ ...req, subagent: { id: "s" } }])]).requests).toHaveLength(1);
+    const bad = permissionQueue([ag([{ ...req, subagent: "Explore" }, { ...req, requestId: "r2", subagent: {} }])]);
+    expect(bad.requests).toHaveLength(0);
+    expect(bad.unreadable).toBe(2);
   });
 });

@@ -148,6 +148,12 @@ interface Live {
   turnOpen: boolean;
   /** How many turns this run has started; a checkpoint compares it to see if the next began meanwhile. */
   turnsStarted: number;
+  /**
+   * The subagents this run has started, by id (#267): from each `task_started` message, and from
+   * a subagent's own messages (their `agent_id`, `subagent_type`, `task_description`). A request a
+   * subagent parks carries only this id; the card names it from here.
+   */
+  subagents: Map<string, { type?: string; description?: string }>;
 }
 
 export type HostEvent =
@@ -733,7 +739,7 @@ export class AgentHost {
   private view(a: AgentRecord): AgentView {
     const live = this.live.get(a.id);
     const pendingPermissions = live
-      ? [...live.pending.values()].map(({ resolve: _r, ...p }) => p)
+      ? [...live.pending.values()].map(({ resolve: _r, ...p }) => (p.subagent ? { ...p, subagent: { ...live.subagents.get(p.subagent.id), id: p.subagent.id } } : p))
       : [];
     if (!live) {
       const where = this.elsewhere(a);
@@ -767,6 +773,7 @@ export class AgentHost {
       undelivered: new Set(),
       turnOpen: true,
       turnsStarted: 1,
+      subagents: new Map(),
     };
     // Registered before any await, so two starts in one tick cannot both pass the cap.
     this.live.set(rec.id, live);
@@ -862,6 +869,7 @@ export class AgentHost {
   /** What each SDK message means for the agent's status. */
   private ingest(rec: AgentRecord, live: Live, m: SDKMessage): void {
     if (live.undelivered.size) this.noteDelivery(rec, live, m);
+    if (this.noteSubagent(live, m) && live.pending.size) this.changed(rec);
     if (m.type === "system" && m.subtype === "init") {
       live.sawInit = true;
       rec.sessionId = m.session_id;
@@ -910,6 +918,30 @@ export class AgentHost {
   }
 
   /**
+   * Learn a subagent's type and description (#267). True when something new was learnt. The
+   * `task_started` message is the authority; a subagent's own message fills in only what is missing.
+   */
+  private noteSubagent(live: Live, m: SDKMessage): boolean {
+    const o = m as unknown as Record<string, unknown>;
+    const text = (v: unknown) => (typeof v === "string" && v.trim() ? v : undefined);
+    let id: string | undefined;
+    let got: { type?: string; description?: string };
+    if (o.type === "system" && o.subtype === "task_started") {
+      id = text(o.task_id);
+      got = { type: text(o.subagent_type), description: text(o.description) };
+    } else if (o.type === "assistant" || o.type === "user") {
+      id = text(o.agent_id);
+      got = { type: text(o.subagent_type), description: text(o.task_description) };
+    } else return false;
+    if (!id || (!got.type && !got.description)) return false;
+    const had = live.subagents.get(id) ?? {};
+    const next = o.type === "system" ? { type: got.type ?? had.type, description: got.description ?? had.description } : { type: had.type ?? got.type, description: had.description ?? got.description };
+    if (next.type === had.type && next.description === had.description) return false;
+    live.subagents.set(id, next);
+    return true;
+  }
+
+  /**
    * The turn is over and nothing sent is still waiting: close the prompt stream so the process
    * exits (see header), and take the turn's status. True when it did.
    */
@@ -951,7 +983,7 @@ export class AgentHost {
     live: Live,
     toolName: string,
     input: Record<string, unknown>,
-    opts: { signal: AbortSignal; decisionReason?: string; blockedPath?: string },
+    opts: { signal: AbortSignal; decisionReason?: string; blockedPath?: string; toolUseID?: string; agentID?: string },
   ): Promise<PermissionResult> {
     if (live.ending) return Promise.resolve({ behavior: "deny", message: live.ending.reason, interrupt: true });
     return new Promise((resolve) => {
@@ -963,6 +995,9 @@ export class AgentHost {
         decisionReason: opts.decisionReason,
         blockedPath: opts.blockedPath,
         askedAt: new Date().toISOString(),
+        ...(opts.toolUseID ? { toolUseId: opts.toolUseID } : {}),
+        // A subagent's ask (#267): its id now; its name is looked up each time the card is drawn.
+        ...(opts.agentID ? { subagent: { id: opts.agentID } } : {}),
         resolve,
       };
       live.pending.set(requestId, p);
@@ -975,7 +1010,12 @@ export class AgentHost {
           else this.changed(rec);
         }
       });
-      this.record(id, "host", { event: "permission-asked", requestId, toolName, input, decisionReason: opts.decisionReason });
+      const sub = opts.agentID ? { id: opts.agentID, ...live.subagents.get(opts.agentID) } : undefined;
+      this.record(id, "host", {
+        event: "permission-asked", requestId, toolName, input, decisionReason: opts.decisionReason,
+        ...(opts.toolUseID ? { toolUseId: opts.toolUseID } : {}),
+        ...(sub ? { subagent: sub } : {}),
+      });
       this.setStatus(this.agents.get(id)!, "waiting");
     });
   }

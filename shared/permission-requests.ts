@@ -5,12 +5,24 @@
  * A request is parked by the host when Claude Code asks about a tool call the owner's own
  * permission rules did not settle. It stays parked until one of three things happens, each
  * written into the agent's transcript as a host event:
- *   { event: "permission-asked", requestId, toolName, input, decisionReason? }
+ *   { event: "permission-asked", requestId, toolName, input, decisionReason?, toolUseId?, subagent? }
  *   { event: "permission-answered", requestId, behavior: "allow" | "deny", message? }  you answered
  *   { event: "permission-withdrawn", requestId, reason }   the agent stopped or the call was cancelled
  * Nothing else settles a request: there is no timeout, so a request nobody answers keeps waiting
  * and is never allowed by default.
  */
+
+/**
+ * The subagent a request comes from (#267). Claude Code's permission callback carries only the
+ * subagent's id (`agentID`, the same id as the `task_id` of its `task_started` message); its type
+ * and description come from that message, so they are missing until it has arrived. The
+ * description is the model's own words: shown as text, never trusted.
+ */
+export interface AskingSubagent {
+  id: string;
+  type?: string;
+  description?: string;
+}
 
 /** A parked request as the host shows it (AgentView.pendingPermissions). */
 export interface PendingPermission {
@@ -20,6 +32,10 @@ export interface PendingPermission {
   decisionReason?: string;
   blockedPath?: string;
   askedAt: string;
+  /** The tool call's own id, when Claude Code gave one. */
+  toolUseId?: string;
+  /** Set when a subagent of the agent asks, not the agent itself. */
+  subagent?: AskingSubagent;
 }
 
 export type PermissionAnswer = { decision: "allow" } | { decision: "deny"; message: string };
@@ -78,6 +94,24 @@ export function askSummary(toolName: string, input: Record<string, unknown>): st
   }
 }
 
+/**
+ * Who asks, as the start of a sentence: "An agent", "Explore (subagent)", or "A subagent" when its
+ * name has not arrived yet. A subagent's request is answered on its parent's card like any other.
+ */
+export function askerOf(p: Pick<PendingPermission, "subagent">): string {
+  if (!p.subagent) return "An agent";
+  const type = p.subagent.type?.trim();
+  return type ? `${clip(type, 60)} (subagent)` : "A subagent";
+}
+
+/** "subagent Explore, "Find the config", id a1b2c3": the subagent in a line of detail, or "". */
+export function subagentDetail(p: Pick<PendingPermission, "subagent">): string {
+  const s = p.subagent;
+  if (!s) return "";
+  const desc = s.description?.trim();
+  return `subagent ${s.type?.trim() ? clip(s.type.trim(), 60) : "(name not known yet)"}${desc ? `, "${clip(desc.replace(/\s+/g, " "), 100)}"` : ""}, id ${s.id}`;
+}
+
 /** The agent fields a request row needs (a subset of the host's AgentView). */
 export interface AskingAgent {
   id: string;
@@ -95,6 +129,9 @@ export interface QueuedRequest {
 function isPending(p: unknown): p is PendingPermission {
   if (!p || typeof p !== "object") return false;
   const o = p as Record<string, unknown>;
+  // A subagent field the page cannot read makes the row unreadable: it must never pass as the agent's own ask.
+  const sub = o.subagent;
+  if (sub !== undefined && (!sub || typeof sub !== "object" || typeof (sub as Record<string, unknown>).id !== "string")) return false;
   return typeof o.requestId === "string" && typeof o.toolName === "string" && typeof o.askedAt === "string" && !!o.input && typeof o.input === "object";
 }
 

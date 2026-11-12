@@ -16,7 +16,7 @@
 import type { HomeAgent, HomeMetric, HomeResponse, MetricState, QueueItem } from "../../shared/home-types";
 import type { ProjectSummary } from "../../shared/types";
 import type { AgentsRead, StripAgent } from "../shell/activity";
-import { askSummary, permissionQueue, type AskingAgent } from "../../shared/permission-requests";
+import { askerOf, askSummary, permissionQueue, subagentDetail, type AskingAgent } from "../../shared/permission-requests";
 import type { ReadyAnswer } from "../../shared/pr-ready";
 import { GUARDS, guardsLabel, type Guard } from "../shell/guards";
 
@@ -188,8 +188,8 @@ export function queueRows(home: HomeResponse | null, host: AgentsRead, ready: Re
       rows.push({
         key: `ask:${p.requestId}`,
         kind: "answer",
-        title: `An agent asks to ${askSummary(p.toolName, p.input)}`,
-        why: `Agent ${agent.id}${agent.issue ? ` on #${agent.issue}` : ""} in ${base(agent.cwd)} is paused until you answer.`,
+        title: `${askerOf(p)} asks to ${askSummary(p.toolName, p.input)}`,
+        why: `Agent ${agent.id}${agent.issue ? ` on #${agent.issue}` : ""} in ${base(agent.cwd)} is paused until you answer.${p.subagent ? ` Asked by its ${subagentDetail(p)}.` : ""}`,
         when: "agent waiting",
         tone: "warn",
         action: { type: "answer", label: "Answer", agentId: agent.id, requestId: p.requestId },

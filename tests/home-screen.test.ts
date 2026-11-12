@@ -240,6 +240,12 @@ describe("the queue's rows are the count's things, one each", () => {
     expect(rows[1]!.action).toEqual({ type: "hash", label: "Open session", hash: "#agents?project=anvi&sid=s1" });
     expect(rows[2]!.action).toEqual({ type: "hash", label: "Open on Map", hash: "#map?project=stave" });
   });
+  test("a subagent's ask is its parent's row, named as the subagent's (#267)", () => {
+    const sub = { ...ask("r1", "2026-11-05T09:00:00Z"), subagent: { id: "s9", type: "Explore", description: "find it" } };
+    const { rows } = queueRows(homeOf([]), { state: "ok", agents: [hostAgent("a1", [sub])] }, READY_NONE);
+    expect(rows[0]).toMatchObject({ kind: "answer", title: "Explore (subagent) asks to run `echo r1`", action: { type: "answer", agentId: "a1", requestId: "r1" } });
+    expect(rows[0]!.why).toBe('Agent a1 in a1 is paused until you answer. Asked by its subagent Explore, "find it", id s9.');
+  });
 });
 
 describe("a PR row: Review, or Merge when it is ready", () => {

@@ -181,6 +181,23 @@ describe("timeline: tool calls, their results and their state", () => {
     expect(lone.items).toHaveLength(1);
     expect(lone.items[0].kind).toBe("event");
   });
+
+  test("a request that carries its call's id joins that call, even when another open call has the same input (#267)", () => {
+    const input = { command: "ls" };
+    const tl = buildTimeline({
+      lines: [
+        use(1, "b1", "Bash", input),
+        use(2, "b2", "Bash", input),
+        host(3, { event: "permission-asked", requestId: "r1", toolName: "Bash", input, toolUseId: "b1", subagent: { id: "s1", type: "Explore" } }),
+      ],
+    });
+    // By input alone the newest (b2) would have been chosen.
+    expect(tool(tl, "b1").permission).toEqual({ requestId: "r1" });
+    expect(tool(tl, "b2").permission).toBeUndefined();
+    // With no call to join, a subagent's request says whose it is.
+    const lone = buildTimeline({ lines: [host(1, { event: "permission-asked", requestId: "r9", toolName: "Bash", input, toolUseId: "gone", subagent: { id: "s1", type: "Explore" } })] });
+    expect(lone.items.map((i) => (i.kind === "event" ? i.text : i.kind))).toEqual(["Explore (subagent) asked permission for Bash"]);
+  });
 });
 
 describe("what anvi did at each call: three sources, each joined its own way", () => {
