@@ -333,13 +333,14 @@ export function buildTimeline(input: TimelineInput): Timeline {
           comment: str(c.file) ? `${str(c.file)}:${c.line}` : undefined,
         });
       } else if (ev === "permission-asked") {
-        // The call's own id when the host recorded it (#267); before that, the newest open call of
-        // that tool with exactly that input. Otherwise it is shown on its own line.
+        // The call's own id when the host recorded it (#267), and then only that call: a known id
+        // never falls back to a guess. Before #267, the newest open call of that tool with exactly
+        // that input. Otherwise it is shown on its own line.
         const json = JSON.stringify(m.input ?? {});
         const useId = str(m.toolUseId);
-        const t = (useId ? byId.get(useId) : undefined) ?? [...tools].reverse().find((x) => !x.result && !x.permission && x.name === str(m.toolName) && JSON.stringify(x.input) === json);
+        const t = useId ? byId.get(useId) : [...tools].reverse().find((x) => !x.result && !x.permission && x.name === str(m.toolName) && JSON.stringify(x.input) === json);
         const sub = obj(m.subagent);
-        const who = str(sub.id) ? `${str(sub.type) || "a subagent"} (subagent) ` : "";
+        const who = str(sub.id) ? (str(sub.type) ? `${str(sub.type)} (subagent) ` : "a subagent ") : "";
         if (t && !t.permission) t.permission = { requestId: str(m.requestId) };
         else items.push({ kind: "event", at: l.at, text: `${who}asked permission for ${str(m.toolName)}`, tone: "warn" });
       } else if (ev === "permission-answered" || ev === "permission-withdrawn") {

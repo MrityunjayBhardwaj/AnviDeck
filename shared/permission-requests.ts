@@ -130,8 +130,9 @@ function isPending(p: unknown): p is PendingPermission {
   if (!p || typeof p !== "object") return false;
   const o = p as Record<string, unknown>;
   // A subagent field the page cannot read makes the row unreadable: it must never pass as the agent's own ask.
-  const sub = o.subagent;
-  if (sub !== undefined && (!sub || typeof sub !== "object" || typeof (sub as Record<string, unknown>).id !== "string")) return false;
+  const sub = o.subagent as Record<string, unknown> | undefined;
+  const optText = (v: unknown) => v === undefined || typeof v === "string";
+  if (sub !== undefined && (!sub || typeof sub !== "object" || typeof sub.id !== "string" || !optText(sub.type) || !optText(sub.description))) return false;
   return typeof o.requestId === "string" && typeof o.toolName === "string" && typeof o.askedAt === "string" && !!o.input && typeof o.input === "object";
 }
 

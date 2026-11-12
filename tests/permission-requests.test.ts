@@ -333,8 +333,8 @@ describe("a subagent's request, on its parent's card (#267)", () => {
     const ag = (ps: unknown[]): AskingAgent => ({ id: "a", cwd: "/c", prompt: "p", pendingPermissions: ps });
     const req = { requestId: "r1", toolName: "Bash", input: {}, askedAt: "2026-11-12T10:00:00Z" };
     expect(permissionQueue([ag([{ ...req, subagent: { id: "s" } }])]).requests).toHaveLength(1);
-    const bad = permissionQueue([ag([{ ...req, subagent: "Explore" }, { ...req, requestId: "r2", subagent: {} }])]);
+    const bad = permissionQueue([ag([{ ...req, subagent: "Explore" }, { ...req, requestId: "r2", subagent: {} }, { ...req, requestId: "r3", subagent: { id: "s", type: 7 } }, { ...req, requestId: "r4", subagent: { id: "s", description: {} } }])]);
     expect(bad.requests).toHaveLength(0);
-    expect(bad.unreadable).toBe(2);
+    expect(bad.unreadable).toBe(4);
   });
 });

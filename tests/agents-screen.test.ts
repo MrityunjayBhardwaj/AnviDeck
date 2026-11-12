@@ -197,6 +197,10 @@ describe("timeline: tool calls, their results and their state", () => {
     // With no call to join, a subagent's request says whose it is.
     const lone = buildTimeline({ lines: [host(1, { event: "permission-asked", requestId: "r9", toolName: "Bash", input, toolUseId: "gone", subagent: { id: "s1", type: "Explore" } })] });
     expect(lone.items.map((i) => (i.kind === "event" ? i.text : i.kind))).toEqual(["Explore (subagent) asked permission for Bash"]);
+    // A known id whose call is not in the timeline is never joined by input to another call.
+    const elsewhere = buildTimeline({ lines: [use(1, "b1", "Bash", input), host(2, { event: "permission-asked", requestId: "r2", toolName: "Bash", input, toolUseId: "b-gone", subagent: { id: "s2" } })] });
+    expect(tool(elsewhere, "b1").permission).toBeUndefined();
+    expect(elsewhere.items.filter((i) => i.kind === "event").map((i) => (i.kind === "event" ? i.text : ""))).toEqual(["a subagent asked permission for Bash"]);
   });
 });
 
