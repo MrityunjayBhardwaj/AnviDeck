@@ -129,10 +129,8 @@ describe.skipIf(!controlPath)("stave control session 811b15d0, 2026-10-30 00:00â
   test("PR #2271: 24 files, 10 under packages/editor/src, 14 under dist/ (measured with gh 2026-10-30)", () => {
     const pr = r.prs.find((p) => p.number === 2271);
     expect(pr).toBeDefined();
-    if (pr!.read.status !== "ok") {
-      console.warn(`SKIP PR counts: gh could not read PR #2271 (${pr!.read.detail})`);
-      return;
-    }
+    if (githubRateLimited(r, 2271)) return;
+    expect(pr!.read.status).toBe("ok");
     expect(pr!.headRefOid!.startsWith("2b25412e")).toBe(true);
     expect(pr!.changedFiles).toBe(24);
     const files = r.changes.files.filter((f) => f.pr === 2271);
