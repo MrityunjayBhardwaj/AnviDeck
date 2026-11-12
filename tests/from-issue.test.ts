@@ -328,7 +328,10 @@ describe("refusals: each says why and makes nothing", () => {
     expect(e.status).toBe(503);
     expect(existsSync(join(s.main, ".claude", "worktrees", "issue-7"))).toBe(false);
     expect(await branches(s.main)).toBe("main");
-    expect(await sh(s.main, "worktree", "list", "--porcelain")).not.toContain("issue-7");
+    // Git's own list holds only the main checkout. Compared by path, not by the text "issue-7",
+    // which the random scratch folder's name can contain (from-issue-7…, #265).
+    const listed = (await sh(s.main, "worktree", "list", "--porcelain")).split("\n").filter((l) => l.startsWith("worktree ")).map((l) => l.slice(9));
+    expect(listed).toEqual([s.main]);
   });
 });
 
