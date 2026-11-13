@@ -12,6 +12,7 @@
  * working on another checkout, and refusing on it would turn Undo off whenever you have the
  * project open in a terminal. It can still edit here; the preview says so.
  */
+import { spawnSync } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
 import { sep } from "node:path";
 import { AgentHost, HostError, type AgentView } from "./host";
@@ -109,6 +110,7 @@ export class AgentTurns {
       undo: why ? { ok: false, why } : { ok: true, warnings: b.warnings },
       folderGone,
       kept,
+      prefix: folderGone ? null : gitPrefix(a.cwd),
     };
   }
 
@@ -178,6 +180,12 @@ export class AgentTurns {
     }
     return { agentId: id, cleared: true };
   }
+}
+
+/** The folder's place in its git checkout ("" at the top), or null when git cannot say (#275). */
+function gitPrefix(cwd: string): string | null {
+  const r = spawnSync("git", ["-C", cwd, "rev-parse", "--show-prefix"], { encoding: "utf8", timeout: 5000 });
+  return r.status === 0 ? r.stdout.trim() : null;
 }
 
 function existsDir(p: string): boolean {

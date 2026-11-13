@@ -88,6 +88,13 @@ export interface CheckpointsAnswer {
   folderGone: boolean;
   /** Snapshots are kept for this agent on this machine. */
   kept: boolean;
+  /**
+   * The agent's folder inside its git checkout, as `git rev-parse --show-prefix` says ("" at the
+   * checkout's top, else "sub/dir/"). Each change's path is relative to the agent's folder; this
+   * puts it in the repository's terms, as a PR names its files (#275). Null when the folder is
+   * gone, is not in a git checkout, or git could not say: then the paths cannot be joined to a PR's.
+   */
+  prefix: string | null;
 }
 
 /** GET /api/agents/:id/checkpoints/:n/undo: what pressing Undo would do, read just now. */

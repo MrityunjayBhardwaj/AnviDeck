@@ -343,7 +343,10 @@ describe("tabs and the 2×2 grid", () => {
 
   test("the hash: session and agent open a tab, grid=1 the grid; the replay view's own hashes still open it", () => {
     const p = (s: string) => parseAgentsScreenParams(new URLSearchParams(s));
-    expect(p("agent=a1")).toEqual({ agent: "a1", session: undefined, grid: false, replay: false });
+    expect(p("agent=a1")).toEqual({ agent: "a1", session: undefined, grid: false, replay: false, turn: undefined });
+    // A checkpoint linked from Changes (#275): a positive whole number, else ignored.
+    expect(p("agent=a1&turn=12").turn).toBe(12);
+    for (const bad of ["0", "-1", "1.5", "x", "", "01"]) expect(p(`agent=a1&turn=${bad}`).turn).toBeUndefined();
     expect(p("grid=1").grid).toBe(true);
     expect(p("session=s1").replay).toBe(false);
     expect(p("project=stave&sid=811b15d0").replay).toBe(true);

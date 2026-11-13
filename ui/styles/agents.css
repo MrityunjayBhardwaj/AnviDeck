@@ -103,6 +103,7 @@
 /* Checkpoints per turn (#248) */
 .aw-turns { display: flex; flex-direction: column; gap: 6px; max-height: 420px; overflow: auto; }
 .aw-turn { border-top: 1px solid var(--sh-line); padding-top: 6px; display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.aw-turn.on { background: var(--sh-accent-soft); border-radius: 5px; }
 .aw-turn-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .aw-turn-head .r { margin-left: auto; }
 .aw-turn-files summary { cursor: pointer; }

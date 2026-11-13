@@ -443,3 +443,39 @@ describe("Undo through the routes' side (AgentTurns)", () => {
     expect(next.store.read(id).records.at(-1)).toMatchObject({ kind: "cleared", reason: expect.stringContaining("no longer exists") });
   });
 });
+
+describe("the answer places the agent's folder in its checkout (#275)", () => {
+  async function ranIn(cwd: string) {
+    const h = hostWith(async function* (o) {
+      yield init;
+      writeFileSync(join(o.cwd!, "b.txt"), "the turn's\n");
+      yield result;
+    });
+    const a = h.host.start({ cwd, prompt: "go" });
+    await until(() => whens(h.store, a.id).length === 2 && !h.host.get(a.id).running);
+    return { ...h, id: a.id };
+  }
+
+  test("at the checkout's top the prefix is empty; in a folder inside it, that folder; paths stay the folder's own", async () => {
+    const p = project();
+    const top = await ranIn(p);
+    expect(top.turns.list(top.id).prefix).toBe("");
+    mkdirSync(join(p, "pkg", "sub"), { recursive: true });
+    const inner = await ranIn(join(p, "pkg", "sub"));
+    const ans = inner.turns.list(inner.id);
+    expect(ans.prefix).toBe("pkg/sub/");
+    const after = ans.records.find((r) => r.kind === "checkpoint" && r.when === "after-turn");
+    expect(after).toMatchObject({ changes: [{ path: "b.txt", status: "A" }] });
+  });
+
+  test("a folder outside any git checkout, or one that is gone: null, so its paths are not joined to a PR's", async () => {
+    const plain = join(scratch(), "plain");
+    mkdirSync(plain);
+    const h = await ranIn(plain);
+    expect(h.turns.list(h.id).prefix).toBeNull();
+    const p = project();
+    const g = await ranIn(p);
+    rmSync(p, { recursive: true, force: true });
+    expect(g.turns.list(g.id)).toMatchObject({ folderGone: true, prefix: null });
+  });
+});
