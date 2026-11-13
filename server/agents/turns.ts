@@ -111,6 +111,7 @@ export class AgentTurns {
       folderGone,
       kept,
       prefix: folderGone ? null : gitPrefix(a.cwd),
+      diskBytes: kept ? store.diskUse(id) : 0,
     };
   }
 

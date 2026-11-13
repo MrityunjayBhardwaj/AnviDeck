@@ -17,16 +17,24 @@
  * folder's .gitignore (or the checkout's info/exclude, or your global excludes) leaves out are not
  * in it, and Undo leaves them as they are.
  *
+ * Limits (#276): a snapshot copies into AnviDeck's folder every file the checkout does not already
+ * hold (untracked or changed). Measured on this machine's projects: 0.9 GB with 50 MB of those
+ * took 2 s and 35 MB; 2.8 GB of untracked media took 47 s and 2.1 GB. So before `git add` the
+ * snapshot adds up those files' sizes, and over the limit (ANVIDECK_CHECKPOINT_MAX_MB, default
+ * 200) it is not taken: the record says why, and the run starts at once. And a snapshot has one
+ * time limit for all its git steps together, not one per step.
+ *
  * Undo: `read-tree -m -u <now> <checkpoint>`, git's own two-tree switch: files added since are
  * removed, changed ones put back, and it refuses rather than overwrite a file that changed after
  * the snapshot it compares with. It never moves the branch or touches the project's index.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { readProcess, outputNeverEnded } from "../child-output";
-import type { Run, RunResult } from "../readers/repo";
+import type { RunResult } from "../readers/repo";
 import {
   FILES_KEPT,
+  sizeText,
   type CheckpointEntry,
   type CheckpointWhen,
   type ClearedEntry,
@@ -34,8 +42,22 @@ import {
   type TurnRecordLine,
 } from "../../shared/checkpoint-types";
 
-/** How long one git step of a snapshot may take before it is given up (the run then starts without one). */
-export const SNAPSHOT_STEP_MS = 60_000;
+/** How long a whole snapshot may take, all its git steps together, before it is given up (#276). */
+export const SNAPSHOT_MS = 60_000;
+
+/** The default most a snapshot may copy in: files untracked or changed, in MB (#276). */
+export const DEFAULT_MAX_MB = 200;
+
+/** The limit in bytes: ANVIDECK_CHECKPOINT_MAX_MB when it is a positive number, else the default. */
+export function maxCopyBytes(env: Record<string, string | undefined> = process.env): number {
+  const v = Number(env.ANVIDECK_CHECKPOINT_MAX_MB);
+  return (env.ANVIDECK_CHECKPOINT_MAX_MB && Number.isFinite(v) && v > 0 ? v : DEFAULT_MAX_MB) * 1_000_000;
+}
+
+const mb = sizeText;
+
+/** A git runner whose time limit a call can set (`timeoutMs`), else its own. */
+export type TimedRun = (cmd: string, args: string[], opts?: { cwd?: string; timeoutMs?: number }) => Promise<RunResult>;
 
 /** What `.gitignore` in `checkpoints/` says: everything in the folder, itself included. */
 export const IGNORE_ALL = "# AnviDeck's checkpoint snapshots stay on this machine (#248): never commit them.\n*\n";
@@ -44,8 +66,9 @@ export const IGNORE_ALL = "# AnviDeck's checkpoint snapshots stay on this machin
  * Runs git outside any inherited git context: every GIT_* variable is dropped, so a server started
  * from inside a git hook cannot point a snapshot at another repository. Time-limited (code 124).
  */
-export function gitRunner(ms: number): Run {
+export function gitRunner(defaultMs: number): TimedRun {
   return async (cmd, args, opts) => {
+    const ms = opts?.timeoutMs ?? defaultMs;
     try {
       const env: Record<string, string> = {};
       for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith("GIT_")) env[k] = v;
@@ -57,7 +80,7 @@ export function gitRunner(ms: number): Run {
       }, ms);
       const { stdout, stderr, code, ended } = await readProcess(p, cmd);
       clearTimeout(timer);
-      if (timedOut) return { code: 124, stdout, stderr: `git ${args.find((a) => !a.startsWith("-")) ?? ""} took longer than ${ms / 1000}s and was stopped` };
+      if (timedOut) return { code: 124, stdout, stderr: `git ${args.find((a) => !a.startsWith("-")) ?? ""} was stopped at its time limit (${(ms / 1000).toFixed(1)} s)` };
       if (!ended) return { code: 125, stdout: "", stderr: outputNeverEnded(`git ${args[0] ?? ""}`) };
       return { code, stdout, stderr };
     } catch (e) {
@@ -94,18 +117,48 @@ export class CheckpointStore {
   readonly root: string;
   /** The per-turn record, one file per agent; backed up. */
   readonly recordDir: string;
-  private readonly run: Run;
+  private readonly run: TimedRun;
+  /** All git steps of one snapshot together may take this long. */
+  private readonly snapshotMs: number;
+  /** A snapshot that would copy in more than this many bytes is not taken. */
+  private readonly maxBytes: number;
   /** One snapshot or Undo at a time per agent, in the order asked. */
   private readonly chains = new Map<string, Promise<unknown>>();
 
   /** How old an index.lock must be to count as left behind by a stopped git step. */
   private readonly lockStaleMs: number;
 
-  constructor(agentDir: string, opts: { run?: Run; lockStaleMs?: number } = {}) {
+  constructor(agentDir: string, opts: { run?: TimedRun; lockStaleMs?: number; snapshotMs?: number; maxBytes?: number } = {}) {
     this.root = join(agentDir, "checkpoints");
     this.recordDir = join(agentDir, "turns");
-    this.run = opts.run ?? gitRunner(SNAPSHOT_STEP_MS);
-    this.lockStaleMs = opts.lockStaleMs ?? SNAPSHOT_STEP_MS;
+    this.run = opts.run ?? gitRunner(SNAPSHOT_MS);
+    this.snapshotMs = opts.snapshotMs ?? SNAPSHOT_MS;
+    this.lockStaleMs = opts.lockStaleMs ?? this.snapshotMs;
+    this.maxBytes = opts.maxBytes ?? maxCopyBytes();
+  }
+
+  /** The disk an agent's snapshot repository uses on this machine, in bytes; 0 when none is kept (#276). */
+  diskUse(id: string): number {
+    const walk = (dir: string): number => {
+      let n = 0;
+      let names: string[];
+      try {
+        names = readdirSync(dir);
+      } catch {
+        return 0;
+      }
+      for (const name of names) {
+        const p = join(dir, name);
+        try {
+          const st = lstatSync(p);
+          n += st.isDirectory() ? walk(p) : st.size;
+        } catch {
+          /* gone meanwhile */
+        }
+      }
+      return n;
+    };
+    return walk(this.repoOf(id));
   }
 
   repoOf(id: string): string {
@@ -152,28 +205,28 @@ export class CheckpointStore {
     return next;
   }
 
-  private async git(repo: string, cwd: string, args: string[]): Promise<RunResult> {
-    return this.run("git", [...QUIET, `--git-dir=${repo}`, `--work-tree=${cwd}`, ...args], { cwd });
+  private async git(repo: string, cwd: string, args: string[], timeoutMs?: number): Promise<RunResult> {
+    return this.run("git", [...QUIET, `--git-dir=${repo}`, `--work-tree=${cwd}`, ...args], { cwd, ...(timeoutMs !== undefined ? { timeoutMs } : {}) });
   }
 
-  private async must(repo: string, cwd: string, args: string[], what: string): Promise<string> {
-    const r = await this.git(repo, cwd, args);
+  private async must(repo: string, cwd: string, args: string[], what: string, timeoutMs?: number): Promise<string> {
+    const r = await this.git(repo, cwd, args, timeoutMs);
     if (r.code !== 0) throw new Error(`${what}: ${said(r)}`);
     return r.stdout;
   }
 
   /** The snapshot repository for an agent, made if missing, pointed at the folder's checkout objects. */
-  private async prepare(id: string, cwd: string): Promise<string> {
+  private async prepare(id: string, cwd: string, left: () => number): Promise<string> {
     this.ensureIgnored();
     const repo = this.repoOf(id);
     if (!existsSync(join(repo, "HEAD"))) {
-      const r = await this.run("git", ["init", "-q", "--bare", repo], { cwd: this.root });
+      const r = await this.run("git", ["init", "-q", "--bare", repo], { cwd: this.root, timeoutMs: left() });
       if (r.code !== 0) throw new Error(`the snapshot repository could not be made: ${said(r)}`);
       // A git dir used with a work tree: not bare, so --work-tree is taken as given.
-      await this.must(repo, cwd, ["config", "core.bare", "false"], "the snapshot repository could not be set up");
+      await this.must(repo, cwd, ["config", "core.bare", "false"], "the snapshot repository could not be set up", left());
     }
     // Borrow the checkout's objects (read-only) and its local excludes, if the folder is in one.
-    const common = await this.run("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd });
+    const common = await this.run("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, timeoutMs: left() });
     if (common.code === 0 && common.stdout.trim()) {
       const objects = join(common.stdout.trim(), "objects");
       const alt = join(repo, "objects", "info", "alternates");
@@ -203,22 +256,68 @@ export class CheckpointStore {
     }
   }
 
-  /** The folder as it is now, as a tree in the agent's snapshot repository. Records nothing. */
+  /**
+   * The folder as it is now, as a tree in the agent's snapshot repository. Records nothing. Not
+   * taken (409, too-large) when it would copy in more than the limit; given up when all its git steps together
+   * pass the time limit (#276).
+   */
   async snapshot(id: string, cwd: string): Promise<Snapshot> {
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new CheckpointError(409, `the agent's folder ${cwd} no longer exists`, "folder-gone");
-    const repo = await this.prepare(id, cwd);
+    const deadline = Date.now() + this.snapshotMs;
+    const total = `${Math.round(this.snapshotMs / 1000)} s`;
+    const left = () => {
+      const ms = deadline - Date.now();
+      if (ms <= 0) throw new Error(`the snapshot was given up: it took longer than its time limit (${total} for all its steps)`);
+      return ms;
+    };
+    const repo = await this.prepare(id, cwd, left);
     this.dropStaleLock(repo);
-    await this.must(repo, cwd, ["add", "-A", "."], "the folder could not be read into a snapshot");
-    const tree = (await this.must(repo, cwd, ["write-tree"], "the snapshot could not be written")).trim();
+    const copy = await this.toCopy(repo, cwd, left());
+    if (copy.bytes > this.maxBytes)
+      throw new CheckpointError(
+        409,
+        `not taken: ${copy.files} file${copy.files === 1 ? "" : "s"} in the folder ${copy.files === 1 ? "is" : "are"} untracked or changed, ${
+          copy.counted < copy.files ? `and the first ${copy.counted} alone come to` : `${mb(copy.bytes)} in all,`
+        } more than the ${mb(this.maxBytes)} a snapshot may copy into AnviDeck's folder (ANVIDECK_CHECKPOINT_MAX_MB). The run goes on without it, so this point cannot be undone to`,
+        "too-large",
+      );
+    await this.must(repo, cwd, ["add", "-A", "."], "the folder could not be read into a snapshot", left());
+    const tree = (await this.must(repo, cwd, ["write-tree"], "the snapshot could not be written", left())).trim();
     if (!SHA.test(tree)) throw new Error(`the snapshot named no tree (${tree.slice(0, 80)})`);
-    return { tree, head: await this.headOf(cwd) };
+    return { tree, head: await this.headOf(cwd, left) };
   }
 
-  private async headOf(cwd: string): Promise<CheckpointEntry["head"]> {
-    const sha = await this.run("git", ["rev-parse", "--verify", "-q", "HEAD"], { cwd });
+  /**
+   * What a snapshot would have to copy in: files untracked or changed, as the folder's own checkout
+   * sees them (the checkout already holds the rest, borrowed read-only). A folder outside any
+   * checkout: as the snapshot repository sees it. Sizes are added up only until past the limit.
+   */
+  private async toCopy(repo: string, cwd: string, timeoutMs: number): Promise<{ bytes: number; files: number; counted: number }> {
+    const LIST = ["ls-files", "-z", "--others", "--modified", "--exclude-standard"];
+    let r = await this.run("git", [...QUIET, ...LIST], { cwd, timeoutMs });
+    if (r.code !== 0) r = await this.git(repo, cwd, LIST, timeoutMs);
+    if (r.code !== 0) throw new Error(`what the snapshot would copy in could not be listed: ${said(r)}`);
+    const names = [...new Set(r.stdout.split("\0").filter((f) => f !== ""))];
+    let bytes = 0;
+    let counted = 0;
+    for (const f of names) {
+      counted++;
+      try {
+        const st = lstatSync(join(cwd, f));
+        if (st.isFile()) bytes += st.size;
+      } catch {
+        /* deleted: nothing to copy */
+      }
+      if (bytes > this.maxBytes) break;
+    }
+    return { bytes, files: names.length, counted };
+  }
+
+  private async headOf(cwd: string, left: () => number): Promise<CheckpointEntry["head"]> {
+    const sha = await this.run("git", ["rev-parse", "--verify", "-q", "HEAD"], { cwd, timeoutMs: left() });
     if (sha.code !== 0 || !SHA.test(sha.stdout.trim())) return null;
-    const br = await this.run("git", ["symbolic-ref", "--short", "-q", "HEAD"], { cwd });
-    const pre = await this.run("git", ["rev-parse", "--show-prefix"], { cwd });
+    const br = await this.run("git", ["symbolic-ref", "--short", "-q", "HEAD"], { cwd, timeoutMs: left() });
+    const pre = await this.run("git", ["rev-parse", "--show-prefix"], { cwd, timeoutMs: left() });
     const head: NonNullable<CheckpointEntry["head"]> = { sha: sha.stdout.trim(), branch: br.code === 0 && br.stdout.trim() ? br.stdout.trim() : null };
     if (pre.code === 0) head.prefix = pre.stdout.trim();
     return head;

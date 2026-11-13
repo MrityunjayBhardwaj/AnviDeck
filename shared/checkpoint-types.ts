@@ -31,6 +31,9 @@ export interface FileChange {
   removed: number | null;
 }
 
+/** Bytes in words: GB with one decimal, else whole MB, else KB (rounded up, so never "0"), #276. */
+export const sizeText = (b: number) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b >= 1e6 ? `${Math.round(b / 1e6)} MB` : `${Math.ceil(b / 1e3)} KB`);
+
 /** At most this many changed files are kept per checkpoint in the record; changeCount says how many there were. */
 export const FILES_KEPT = 200;
 
@@ -97,6 +100,8 @@ export interface CheckpointsAnswer {
   folderGone: boolean;
   /** Snapshots are kept for this agent on this machine. */
   kept: boolean;
+  /** The disk its snapshots use on this machine, in bytes (0 when none is kept), #276. */
+  diskBytes: number;
   /**
    * The agent's folder inside its git checkout, as `git rev-parse --show-prefix` says ("" at the
    * checkout's top, else "sub/dir/"). Each change's path is relative to the agent's folder; this

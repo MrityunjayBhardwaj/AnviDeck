@@ -12,7 +12,7 @@ import type { Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-a
 import { AgentHost, HostError, type QueryFn } from "../server/agents/host";
 import { AgentRegistry } from "../server/agents/registry";
 import { loginOnlyEnv, type ClaudeBinary } from "../server/agents/login";
-import { CheckpointStore, IGNORE_ALL } from "../server/agents/checkpoints";
+import { CheckpointStore, IGNORE_ALL, gitRunner, maxCopyBytes, DEFAULT_MAX_MB } from "../server/agents/checkpoints";
 import { AgentTurns } from "../server/agents/turns";
 import type { CheckpointEntry } from "../shared/checkpoint-types";
 
@@ -482,5 +482,118 @@ describe("the answer places the agent's folder in its checkout (#275)", () => {
     const g = await ranIn(p);
     rmSync(p, { recursive: true, force: true });
     expect(g.turns.list(g.id)).toMatchObject({ folderGone: true, prefix: null });
+  });
+});
+
+
+describe("limits on a snapshot (#276)", () => {
+  const big = (p: string, name: string, kb: number) => writeFileSync(join(p, name), "x".repeat(kb * 1000));
+
+  test("over the limit: not taken, the record says why, with the size and the setting; under it: taken", async () => {
+    const p = project();
+    big(p, "render.mov", 50); // untracked, not ignored: a snapshot would copy it in
+    const store = new CheckpointStore(join(scratch(), "agentdir"), { maxBytes: 20_000 });
+    expect(await store.capture("ag1", p, { when: "before-run", run: 1 })).toBeNull();
+    const failed = store.read("ag1").records.at(-1)!;
+    expect(failed).toMatchObject({ kind: "checkpoint-failed", when: "before-run" });
+    expect((failed as { reason: string }).reason).toBe(
+      "not taken: 2 files in the folder are untracked or changed, and the first 1 alone come to more than the 20 KB a snapshot may copy into AnviDeck's folder (ANVIDECK_CHECKPOINT_MAX_MB). The run goes on without it, so this point cannot be undone to",
+    );
+    // Nothing was copied in: the snapshot repository holds no objects of its own.
+    expect(sh(["git", `--git-dir=${store.repoOf("ag1")}`, "count-objects"], p).out.trim()).toMatch(/^0 objects/);
+    rmSync(join(p, "render.mov"));
+    expect(await store.capture("ag1", p, { when: "after-turn", run: 1 })).toMatchObject({ kind: "checkpoint", n: 1 });
+  });
+
+  test("tracked files the checkout already holds do not count; a tracked file changed does", async () => {
+    const p = project();
+    big(p, "data.bin", 50);
+    sh(["git", "add", "data.bin"], p);
+    sh(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "data"], p);
+    const store = new CheckpointStore(join(scratch(), "agentdir"), { maxBytes: 20_000 });
+    expect(await store.capture("ag1", p, { when: "before-run", run: 1 })).toMatchObject({ kind: "checkpoint" });
+    big(p, "data.bin", 51);
+    expect(await store.capture("ag1", p, { when: "after-turn", run: 1 })).toBeNull();
+    expect(store.read("ag1").records.at(-1)).toMatchObject({ kind: "checkpoint-failed", reason: expect.stringContaining("2 files in the folder are untracked or changed, 52 KB in all, more than the 20 KB") });
+  });
+
+  test("a folder outside any checkout counts every file it would copy in", async () => {
+    const plain = join(scratch(), "plain");
+    mkdirSync(plain);
+    big(plain, "a.txt", 30);
+    const store = new CheckpointStore(join(scratch(), "agentdir"), { maxBytes: 20_000 });
+    expect(await store.capture("ag1", plain, { when: "before-run", run: 1 })).toBeNull();
+    expect(store.read("ag1").records.at(-1)).toMatchObject({ reason: expect.stringContaining("1 file in the folder is untracked or changed, 30 KB in all, more than the 20 KB") });
+    const roomy = new CheckpointStore(join(scratch(), "agentdir"), { maxBytes: 40_000 });
+    expect(await roomy.capture("ag1", plain, { when: "before-run", run: 1 })).toMatchObject({ kind: "checkpoint" });
+  });
+
+  test("one time limit for all of a snapshot's git steps: each step gets what is left, and past it the snapshot is given up", async () => {
+    const p = project();
+    const real = gitRunner(60_000);
+    const given: number[] = [];
+    const slow = async (cmd: string, args: string[], opts?: { cwd?: string; timeoutMs?: number }) => {
+      given.push(opts?.timeoutMs ?? -1);
+      await tick(40);
+      return real(cmd, args, opts);
+    };
+    const store = new CheckpointStore(join(scratch(), "agentdir"), { run: slow, snapshotMs: 150 });
+    expect(await store.capture("ag1", p, { when: "before-run", run: 1 })).toBeNull();
+    expect(store.read("ag1").records.at(-1)).toMatchObject({ kind: "checkpoint-failed", reason: expect.stringContaining("took longer than its time limit (0 s for all its steps)") });
+    // Every step was handed a limit, never more than the whole, and less each time.
+    expect(given.length).toBeGreaterThan(1);
+    expect(given.every((ms) => ms > 0 && ms <= 150)).toBe(true);
+    expect(given).toEqual([...given].sort((a, b) => b - a));
+    // With time enough, every step of a whole snapshot (add and write-tree too) is handed what is left.
+    given.length = 0;
+    const roomy = new CheckpointStore(join(scratch(), "agentdir"), { run: slow, snapshotMs: 20_000 });
+    expect(await roomy.capture("ag1", p, { when: "before-run", run: 1 })).toMatchObject({ kind: "checkpoint" });
+    const steps = given.slice(0, given.length);
+    expect(steps.length).toBeGreaterThanOrEqual(8); // init, config, rev-parse, ls-files, add, write-tree, three for the head
+    // The snapshot's own steps come first; the record's steps after it (diff-tree, update-ref) have no snapshot limit.
+    const snap = steps.filter((ms) => ms !== -1);
+    console.log(`  steps handed a limit: ${snap.length} of ${steps.length}`);
+    expect(snap.length).toBe(9);
+    expect(snap.every((ms) => ms > 0 && ms <= 20_000)).toBe(true);
+  });
+
+  test("an agent over the limit starts at once, and its Turns card says why its checkpoints are missing", async () => {
+    const p = project();
+    big(p, "render.mov", 50);
+    const was = process.env.ANVIDECK_CHECKPOINT_MAX_MB;
+    process.env.ANVIDECK_CHECKPOINT_MAX_MB = "0.02";
+    try {
+      const h = hostWith(async function* () {
+        yield init;
+        yield result;
+      });
+      const a = h.host.start({ cwd: p, prompt: "go" });
+      await until(() => !h.host.get(a.id).running && h.store.read(a.id).records.length === 2);
+      expect(h.host.get(a.id).status).toBe("done");
+      expect(h.store.read(a.id).records.map((r) => [r.kind, r.when])).toEqual([["checkpoint-failed", "before-run"], ["checkpoint-failed", "after-turn"]]);
+      expect(h.turns.list(a.id)).toMatchObject({ kept: true, diskBytes: expect.any(Number) });
+    } finally {
+      if (was === undefined) delete process.env.ANVIDECK_CHECKPOINT_MAX_MB;
+      else process.env.ANVIDECK_CHECKPOINT_MAX_MB = was;
+    }
+  });
+
+  test("the limit setting: a positive number of MB, else the default", () => {
+    expect(maxCopyBytes({})).toBe(DEFAULT_MAX_MB * 1_000_000);
+    expect(maxCopyBytes({ ANVIDECK_CHECKPOINT_MAX_MB: "1000" })).toBe(1_000_000_000);
+    for (const bad of ["0", "-5", "lots", ""]) expect(maxCopyBytes({ ANVIDECK_CHECKPOINT_MAX_MB: bad })).toBe(DEFAULT_MAX_MB * 1_000_000);
+  });
+
+  test("the disk an agent's snapshots use: counted from its repository, 0 when none is kept", async () => {
+    const p = project();
+    // Random bytes do not compress, so the snapshot's object is at least as large as the file.
+    writeFileSync(join(p, "noise.bin"), crypto.getRandomValues(new Uint8Array(60_000)));
+    const store = new CheckpointStore(join(scratch(), "agentdir"));
+    expect(store.diskUse("ag1")).toBe(0);
+    await store.capture("ag1", p, { when: "before-run", run: 1 });
+    const used = store.diskUse("ag1");
+    expect(used).toBeGreaterThan(60_000);
+    await store.clear("ag1", "test");
+    expect(store.diskUse("ag1")).toBe(0);
   });
 });

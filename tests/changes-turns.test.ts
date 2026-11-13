@@ -32,7 +32,7 @@ function cp(over: Partial<CheckpointEntry> & { files?: string[] }): CheckpointEn
   };
 }
 function answer(records: TurnRecordLine[], over: Partial<CheckpointsAnswer> = {}): TurnsLoad {
-  return { state: "ok", data: { agentId: "ag1", cwd: "/w/issue-7", records, unreadable: 0, undoable: [], undo: { ok: true, warnings: [] }, folderGone: false, kept: true, prefix: "", ...over } };
+  return { state: "ok", data: { agentId: "ag1", cwd: "/w/issue-7", records, unreadable: 0, undoable: [], undo: { ok: true, warnings: [] }, folderGone: false, kept: true, prefix: "", diskBytes: 0, ...over } };
 }
 const one = (load: TurnsLoad) => new Map([["ag1", load]]);
 const AGENT = [session({ agentId: "ag1" })];
