@@ -5,7 +5,9 @@
 // that has neither. Nothing here writes into stave: the guard measures a commit through a
 // temporary `git archive` under TMP_ROOT and removes it.
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   GUARD_PATH,
@@ -22,6 +24,7 @@ import {
   GUARD_CONCURRENCY,
 } from "../server/readers/structure";
 import type { StructureMeasured } from "../shared/structure-types";
+import { typescriptMissing } from "./support/stave-typescript";
 
 const STAVE = "/Users/mrityunjaybhardwaj/Documents/projects/stave";
 const STAVE_PKG = `${STAVE}/packages/editor`;
@@ -42,6 +45,10 @@ if (!existsSync(GUARD_PATH)) missing.push(`the guard ${GUARD_PATH}`);
 const why = missing.length ? `SKIPPED — not on this machine: ${missing.join(", ")}` : "";
 if (why) console.log(`structure controls: ${why}`);
 const control = missing.length ? test.skip : test;
+// The controls that run the guard on stave also need TypeScript resolvable from its package (#281).
+const noTs = missing.length ? null : typescriptMissing(STAVE_PKG);
+if (noTs) console.log(`structure controls that run the guard: SKIPPED — not on this machine: ${noTs}`);
+const measures = missing.length || noTs ? test.skip : test;
 
 const hasCommit = (sha: string) =>
   spawnSync("git", ["-C", STAVE, "cat-file", "-t", sha], { encoding: "utf8" }).stdout.trim() === "commit";
@@ -76,7 +83,7 @@ async function measured(ref: string, entry?: { baseline: string; design?: string
 }
 
 describe("structure map controls (stave/packages/editor)", () => {
-  control("the lock's baseline: the reader counts the keys the file holds", async () => {
+  measures("the lock's baseline: the reader counts the keys the file holds", async () => {
     const entry = readRegistry().packages.find((e) => e.dir === STAVE_PKG)!;
     expect(entry.source).toBe("locked");
     const keys = JSON.parse(readFileSync(entry.baseline, "utf8")).rules.divergence.length;
@@ -96,7 +103,7 @@ describe("structure map controls (stave/packages/editor)", () => {
     expect(b.rules.divergence).toContain(PITCH_KEY);
   });
 
-  control("origin/main: modules, edges and verdicts equal the guard CLI's", async () => {
+  measures("origin/main: modules, edges and verdicts equal the guard CLI's", async () => {
     const entry = readRegistry().packages.find((e) => e.dir === STAVE_PKG)!;
     const r = await measured("origin/main");
     const cli = guardCli(entry.baseline, r.measuredAt.sha);
@@ -114,7 +121,7 @@ describe("structure map controls (stave/packages/editor)", () => {
     expect(c.internal + c.allowed + c.grandfathered + c.new + c.unmapped).toBe(r.counts.edges);
   }, 180_000);
 
-  control("PR #2271's head against the 2026-10-14 baseline: 17 grandfathered, 0 NEW, 1 fixed (pitch.ts), as the guard says", async () => {
+  measures("PR #2271's head against the 2026-10-14 baseline: 17 grandfathered, 0 NEW, 1 fixed (pitch.ts), as the guard says", async () => {
     if (!hasCommit(PR_2271_HEAD)) return console.log(`  SKIPPED — ${PR_2271_HEAD} is not in ${STAVE}; this test never fetches`);
     if (!existsSync(OCT14_BASELINE)) return console.log(`  SKIPPED — ${OCT14_BASELINE} not present`);
     if (!existsSync(OCT14_DESIGN)) return console.log(`  SKIPPED — ${OCT14_DESIGN} not present`);
@@ -130,7 +137,7 @@ describe("structure map controls (stave/packages/editor)", () => {
     expect(r.counts.byClass.grandfathered).toBe(17);
   }, 180_000);
 
-  control("PR #2271's head against the lock in force: the repair is already locked in (0 fixed)", async () => {
+  measures("PR #2271's head against the lock in force: the repair is already locked in (0 fixed)", async () => {
     if (!hasCommit(PR_2271_HEAD)) return console.log(`  SKIPPED — ${PR_2271_HEAD} is not in ${STAVE}`);
     const entry = readRegistry().packages.find((e) => e.dir === STAVE_PKG)!;
     const cli = guardCli(entry.baseline, PR_2271_HEAD);
@@ -139,7 +146,7 @@ describe("structure map controls (stave/packages/editor)", () => {
       .toEqual([cli.grandfathered, cli.fresh, cli.fixed]);
   }, 180_000);
 
-  control("a second read of the same commit, design and baseline is served from the cache", async () => {
+  measures("a second read of the same commit, design and baseline is served from the cache", async () => {
     const a = await readStructure("stave", { ref: "origin/main" });
     const b = await readStructure("stave", { ref: "origin/main" });
     expect(b.status).toBe("measured");
@@ -170,7 +177,7 @@ describe("a project with several registered packages", () => {
   const user = `${dir}/structure-guard.json`;
   const registry = { locked: `${dir}/no-lock.json`, user };
   const OTHER = `${STAVE}/packages/other-for-test`;
-  control("names none: NOT MEASURED, listing the packages — never the first one silently", async () => {
+  measures("names none: NOT MEASURED, listing the packages — never the first one silently", async () => {
     const entry = readRegistry().packages.find((e) => e.dir === STAVE_PKG)!;
     mkdirSync(dir, { recursive: true });
     writeFileSync(user, JSON.stringify({ packages: [
@@ -242,7 +249,7 @@ describe("projects that share a folder name", () => {
 
 // #23: guard runs queue at GUARD_CONCURRENCY; requests for several refs at once must not all start.
 describe("guard runs are limited", () => {
-  control(`three refs at once: at most ${GUARD_CONCURRENCY} run together, the rest wait and say so`, async () => {
+  measures(`three refs at once: at most ${GUARD_CONCURRENCY} run together, the rest wait and say so`, async () => {
     clearStructureCache();
     resetGuardRunStats();
     const rs = await Promise.all(["origin/main", "origin/main~1", "origin/main~2"].map((ref) => readStructure("stave", { ref })));
@@ -251,4 +258,17 @@ describe("guard runs are limited", () => {
     expect(guardRunStats().queued).toBe(3 - GUARD_CONCURRENCY);
     expect(rs.some((r: any) => r.timing.queuedMs > 0)).toBe(true);
   }, 300_000);
+});
+
+describe("the pre-check for the guard's TypeScript (#281)", () => {
+  test("resolves where TypeScript is installed, and names what is missing where it is not", () => {
+    // This repository has TypeScript installed; an empty folder outside any checkout has none.
+    expect(typescriptMissing(join(import.meta.dir, ".."))).toBeNull();
+    const empty = mkdtempSync(join(tmpdir(), "no-ts-"));
+    try {
+      expect(typescriptMissing(empty)).toBe(`TypeScript, which the guard resolves from ${empty} (its installed packages are not there)`);
+    } finally {
+      rmSync(empty, { recursive: true, force: true });
+    }
+  });
 });
