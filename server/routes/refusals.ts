@@ -41,7 +41,7 @@ export function onlyFile(r: RefusalsResponse, file: string | null): RefusalsResp
  *        (#179; server/call-project.ts). A key that a measured answer of the edited file's package
  *        should list and does not is refused (400); with no answer to check it against, the call is
  *        recorded marked `unverified` (#178). A write: the guard installed on the whole app admits it
- *        only from AnviDeck's own pages with this server's token, and the action log records it either way.
+ *        only from the desktop app's window, over its private channel (#241; never HTTP), and the action log records it either way.
  */
 export function refusalRoutes(deps: {
   store?: CallStore;

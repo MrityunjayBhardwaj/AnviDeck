@@ -12,7 +12,7 @@ import { knownFromRegistry, locateProject, type ProjectPick } from "./call-proje
  * (server/readers/calls.ts) takes the last one as the call.
  *
  * Reached only through POST /api/refusals/:key/call, which the write guard admits only from
- * AnviDeck's own pages with this server's token, and which the action log records either way.
+ * the desktop app's window, over its private channel (#241; never HTTP), and which the action log records either way.
  */
 
 /** A request the route answers with a status and this reason (the caller can branch on `status`). */
