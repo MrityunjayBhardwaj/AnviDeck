@@ -578,6 +578,31 @@ describe("limits on a snapshot (#276)", () => {
     }
   });
 
+  test("Undo while the folder has grown past the limit: refused with why, in Undo's terms, and nothing is put back", async () => {
+    const p = project();
+    const was = process.env.ANVIDECK_CHECKPOINT_MAX_MB;
+    process.env.ANVIDECK_CHECKPOINT_MAX_MB = "0.02";
+    try {
+      const h = hostWith(async function* (o) {
+        yield init;
+        writeFileSync(join(o.cwd!, "a.txt"), "the turn's\n");
+        yield result;
+      });
+      const a = h.host.start({ cwd: p, prompt: "go" });
+      await until(() => !h.host.get(a.id).running && h.store.read(a.id).records.length === 2);
+      expect(h.store.read(a.id).records.map((r) => r.kind)).toEqual(["checkpoint", "checkpoint"]);
+      big(p, "render.mov", 50);
+      const e = await h.turns.plan(a.id, "1").catch((x) => x);
+      expect(e).toMatchObject({ status: 409, detail: { refusal: "too-large" } });
+      expect(e.message).toStartWith("Undo is not offered: the folder as it is now cannot be snapshotted");
+      expect(e.message).not.toContain("The run goes on");
+      expect(readFileSync(join(p, "a.txt"), "utf8")).toBe("the turn's\n");
+    } finally {
+      if (was === undefined) delete process.env.ANVIDECK_CHECKPOINT_MAX_MB;
+      else process.env.ANVIDECK_CHECKPOINT_MAX_MB = was;
+    }
+  });
+
   test("the limit setting: a positive number of MB, else the default", () => {
     expect(maxCopyBytes({})).toBe(DEFAULT_MAX_MB * 1_000_000);
     expect(maxCopyBytes({ ANVIDECK_CHECKPOINT_MAX_MB: "1000" })).toBe(1_000_000_000);

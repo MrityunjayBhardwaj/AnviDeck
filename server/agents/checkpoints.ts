@@ -278,7 +278,7 @@ export class CheckpointStore {
         409,
         `not taken: ${copy.files} file${copy.files === 1 ? "" : "s"} in the folder ${copy.files === 1 ? "is" : "are"} untracked or changed, ${
           copy.counted < copy.files ? `and the first ${copy.counted} alone come to` : `${mb(copy.bytes)} in all,`
-        } more than the ${mb(this.maxBytes)} a snapshot may copy into AnviDeck's folder (ANVIDECK_CHECKPOINT_MAX_MB). The run goes on without it, so this point cannot be undone to`,
+        } more than the ${mb(this.maxBytes)} a snapshot may copy into AnviDeck's folder (ANVIDECK_CHECKPOINT_MAX_MB)`,
         "too-large",
       );
     await this.must(repo, cwd, ["add", "-A", "."], "the folder could not be read into a snapshot", left());
@@ -440,7 +440,8 @@ export class CheckpointStore {
       this.append(id, entry);
       return entry;
     } catch (e) {
-      const reason = (e as Error).message;
+      const tooLarge = e instanceof CheckpointError && e.refusal === "too-large";
+      const reason = tooLarge ? `${(e as Error).message}. The run goes on without it, so this point cannot be undone to` : (e as Error).message;
       console.error(`[checkpoints] ${id} ${what.when}: ${reason}`);
       try {
         this.append(id, { kind: "checkpoint-failed", at: new Date().toISOString(), when: what.when, run: what.run, reason });
