@@ -27,6 +27,7 @@ import type { AgentSessionResponse } from "../../shared/agents-screen-types";
 import type { ReplaySessionsResponse } from "../../shared/replay-types";
 import type { AskingAgent } from "../../shared/permission-requests";
 import type { CheckpointEntry, CheckpointsAnswer, FileChange, TurnRecordLine, UndoAnswer, UndoPlan } from "../../shared/checkpoint-types";
+import { sizeText } from "../../shared/checkpoint-types";
 import {
   agentLabel,
   agentTabs,
@@ -1062,7 +1063,7 @@ function turnsCard(a: HostAgent): HTMLElement {
     };
     c.append(el("div", "", clear, out));
   }
-  c.append(el("div", "aw-note", "Snapshots stay on this machine (AnviDeck's checkpoints folder, never backed up); the list above is backed up with the action log."));
+  c.append(el("div", "aw-note", `Snapshots stay on this machine (AnviDeck's checkpoints folder, never backed up)${d.kept ? `, and use ${sizeText(d.diskBytes)} of disk` : ""}; the list above is backed up with the action log.`));
   return c;
 }
 

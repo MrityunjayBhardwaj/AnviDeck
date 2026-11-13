@@ -111,6 +111,7 @@ export class AgentTurns {
       folderGone,
       kept,
       prefix: folderGone ? null : gitPrefix(a.cwd),
+      diskBytes: kept ? store.diskUse(id) : 0,
     };
   }
 
@@ -121,6 +122,9 @@ export class AgentTurns {
   }
 
   private refused(e: unknown): never {
+    if (e instanceof CheckpointError && e.refusal === "too-large")
+      // Undo snapshots the folder as it is first (to keep what it would discard): over the limit it cannot (#276).
+      throw new HostError(409, `Undo is not offered: the folder as it is now cannot be snapshotted, and Undo keeps such a snapshot of what it would discard. The snapshot was ${e.message}`, { refusal: e.refusal });
     if (e instanceof CheckpointError) throw new HostError(e.status, e.message, { refusal: e.refusal });
     throw e;
   }
