@@ -29,6 +29,11 @@ const PR_2271_HEAD = "2b25412e329d548de9188e2c7903c583df3908ad";
 const PITCH_KEY = "src/codeView/notation/pitch.ts -> src/engine/noteToMidi.ts";
 // The baseline in force before the pitch.ts repair was locked in (18 keys, pitch.ts among them).
 const OCT14_BASELINE = `${process.env.HOME}/.anvideck/projects/anvi/instances/stave-structure-baseline-graph-2026-10-14.json`;
+// The design that baseline was measured under (design cffdf7d00026). Stave's lock moves on to newer
+// designs, and the guard gives no verdict across two designs, so the 2026-10-14 control reads this
+// saved copy rather than the lock's design (#264).
+const OCT14_DESIGN = `${process.env.HOME}/.anvideck/projects/anvi/instances/stave-design-graph-2026-10-14.json`;
+const OCT14_DESIGN_ID = "cffdf7d00026";
 
 const missing: string[] = [];
 if (!existsSync(STAVE_PKG)) missing.push(`stave package ${STAVE_PKG}`);
@@ -42,12 +47,12 @@ const hasCommit = (sha: string) =>
   spawnSync("git", ["-C", STAVE, "cat-file", "-t", sha], { encoding: "utf8" }).stdout.trim() === "commit";
 
 /** The guard CLI's own verdict: the reference answer, read off the lines it prints. */
-function guardCli(baseline: string, ref: string) {
+function guardCli(baseline: string, ref: string, design?: string) {
   const entry = readRegistry().packages.find((e) => e.dir === STAVE_PKG)!;
   mkdirSync(TMP_ROOT, { recursive: true });
   const r = spawnSync(
     "node",
-    [GUARD_PATH, "--package", STAVE_PKG, "--design", entry.design, "--baseline", baseline, "--ref", ref],
+    [GUARD_PATH, "--package", STAVE_PKG, "--design", design ?? entry.design, "--baseline", baseline, "--ref", ref],
     { encoding: "utf8", env: { ...process.env, TMPDIR: TMP_ROOT } },
   );
   const out = r.stdout;
@@ -64,8 +69,8 @@ function guardCli(baseline: string, ref: string) {
   };
 }
 
-async function measured(ref: string, baseline?: string): Promise<StructureMeasured> {
-  const r = await readStructure("stave", { ref, entry: baseline ? { baseline } : undefined });
+async function measured(ref: string, entry?: { baseline: string; design?: string; designId?: string }): Promise<StructureMeasured> {
+  const r = await readStructure("stave", { ref, entry });
   if (r.status !== "measured") throw new Error(`not measured: ${JSON.stringify(r)}`);
   return r;
 }
@@ -74,17 +79,19 @@ describe("structure map controls (stave/packages/editor)", () => {
   control("the lock's baseline: the reader counts the keys the file holds", async () => {
     const entry = readRegistry().packages.find((e) => e.dir === STAVE_PKG)!;
     expect(entry.source).toBe("locked");
-    expect(entry.designId).toBe("cffdf7d00026");
     const keys = JSON.parse(readFileSync(entry.baseline, "utf8")).rules.divergence.length;
     const r = await measured("origin/main");
-    console.log(`  locked baseline ${entry.baseline}: ${keys} divergence keys (issue claimed 18)`);
+    console.log(`  locked baseline ${entry.baseline} under design ${entry.designId}: ${keys} divergence keys (issue claimed 18)`);
+    // The lock's design moves as stave's work goes on (#264); what must hold is that the reader
+    // measured under the design the lock names, and counts the keys the lock's baseline holds.
+    expect(r.designId).toBe(entry.designId!);
     expect(r.counts.baselineKeys.divergence).toBe(keys);
   }, 180_000);
 
   control("the 18 rule breaks the issue names are the 2026-10-14 baseline's", () => {
     if (!existsSync(OCT14_BASELINE)) return console.log(`  SKIPPED — ${OCT14_BASELINE} not present`);
     const b = JSON.parse(readFileSync(OCT14_BASELINE, "utf8"));
-    expect(b.designId).toBe("cffdf7d00026");
+    expect(b.designId).toBe(OCT14_DESIGN_ID);
     expect(b.rules.divergence.length).toBe(18);
     expect(b.rules.divergence).toContain(PITCH_KEY);
   });
@@ -110,8 +117,10 @@ describe("structure map controls (stave/packages/editor)", () => {
   control("PR #2271's head against the 2026-10-14 baseline: 17 grandfathered, 0 NEW, 1 fixed (pitch.ts), as the guard says", async () => {
     if (!hasCommit(PR_2271_HEAD)) return console.log(`  SKIPPED — ${PR_2271_HEAD} is not in ${STAVE}; this test never fetches`);
     if (!existsSync(OCT14_BASELINE)) return console.log(`  SKIPPED — ${OCT14_BASELINE} not present`);
-    const cli = guardCli(OCT14_BASELINE, PR_2271_HEAD);
-    const r = await measured(PR_2271_HEAD, OCT14_BASELINE);
+    if (!existsSync(OCT14_DESIGN)) return console.log(`  SKIPPED — ${OCT14_DESIGN} not present`);
+    const cli = guardCli(OCT14_BASELINE, PR_2271_HEAD, OCT14_DESIGN);
+    expect(cli.designId).toBe(OCT14_DESIGN_ID);
+    const r = await measured(PR_2271_HEAD, { baseline: OCT14_BASELINE, design: OCT14_DESIGN, designId: OCT14_DESIGN_ID });
     console.log(`  guard: ${cli.grandfathered} grandfathered, ${cli.fresh} NEW, ${cli.fixed} fixed ${JSON.stringify(cli.fixedKeys)}; ` +
       `reader: ${r.counts.divergence.grandfathered} / ${r.counts.divergence.new} / ${r.counts.divergence.fixed} ${JSON.stringify(r.rules.divergence.fixed)}`);
     expect([cli.grandfathered, cli.fresh, cli.fixed]).toEqual([17, 0, 1]);

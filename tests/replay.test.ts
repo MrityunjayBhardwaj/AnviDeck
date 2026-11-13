@@ -2,7 +2,7 @@ import { describe, test, expect, beforeAll } from "bun:test";
 import { findTranscript, readReplay, shellWriteReason, shellWriteScope, listReplaySessions, mergeEvidence, repoFileKey, joinMeter, judgementRowFor, removedWorktree, GIT_COMMIT_RUN_RE, attributeCommits, githubRepoOf } from "../server/readers/replay";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import replayRoutes from "../server/routes/replay";
 import type { ReplayResponse } from "../shared/replay-types";
@@ -19,6 +19,18 @@ const WINDOW = { from: "2026-10-30T00:00:00Z", to: "2026-10-30T12:00:00Z" };
 const NO_NOTES_SID = "2113ccbd-f123-4d6f-8dbe-f318bf254881";
 
 const hms = (ts: string | null) => (ts ? ts.slice(11, 19) : null);
+
+/**
+ * GitHub's GraphQL quota is shared with every tool and agent on this account. When gh answered
+ * that it is used up, a test that needs GitHub's answer says so and stops, rather than fail for
+ * a reason no code caused (#235). Only a rate limit: any other failure to read still fails.
+ */
+function githubRateLimited(r: ReplayResponse, pr: number): boolean {
+  const read = r.prs.find((p) => p.number === pr)?.read;
+  if (!read || read.status === "ok" || !/rate limit/i.test(read.detail ?? "")) return false;
+  console.warn(`  SKIPPED â€” GitHub rate limit: gh could not read PR #${pr} (${read.detail})`);
+  return true;
+}
 
 const controlPath = findTranscript(CONTROL_SID);
 if (!controlPath) console.warn(`SKIP control: transcript ${CONTROL_SID}.jsonl not found under ~/.claude/projects`);
@@ -76,6 +88,7 @@ describe.skipIf(!controlPath)("stave control session 811b15d0, 2026-10-30 00:00â
 
   test("a second replay reuses the merged PRs' GitHub answers (#28)", async () => {
     const again = await readReplay(CONTROL_SID, WINDOW);
+    if (githubRateLimited(again, 2271)) return;
     expect(again.sources.github.detail).toMatch(/^2 of 2 PR answer\(s\) from cache/);
     expect(again.prs.find((p) => p.number === 2271)?.changedFiles).toBe(24);
   }, 60000);
@@ -99,17 +112,25 @@ describe.skipIf(!controlPath)("stave control session 811b15d0, 2026-10-30 00:00â
   test("the session's commit 2b25412e is attributed from git, labelled 'commit'", () => {
     const c = r.commits.find((x) => x.sha.startsWith("2b25412e"));
     expect(c).toBeDefined();
-    expect(c!.repoDir).toMatch(/stave-wt-2264$/);
+    // The session committed in the worktree stave-wt-2264. While it exists, the commit is read
+    // there. Once it is removed, the reader does not guess where a sibling folder came from (only
+    // Claude Code's .claude/worktrees layout is trusted, #65): it says the folder is gone and the
+    // commit is attributed from the stave checkout that still holds it (#264).
+    const WT = `${process.env.HOME}/Documents/projects/stave-wt-2264`;
+    if (existsSync(WT)) expect(c!.repoDir).toBe(WT);
+    else {
+      console.log(`  ${WT} is gone: expecting the commit from the stave checkout`);
+      expect(c!.repoDir).toBe(`${process.env.HOME}/Documents/projects/stave`);
+      expect(r.sources.git.dirs?.find((d) => d.dir === WT)?.status).toBe("not-found");
+    }
     expect(r.steps.find((s) => s.kind === "commit" && s.sha === c!.sha)?.source).toBe("commit");
   });
 
   test("PR #2271: 24 files, 10 under packages/editor/src, 14 under dist/ (measured with gh 2026-10-30)", () => {
     const pr = r.prs.find((p) => p.number === 2271);
     expect(pr).toBeDefined();
-    if (pr!.read.status !== "ok") {
-      console.warn(`SKIP PR counts: gh could not read PR #2271 (${pr!.read.detail})`);
-      return;
-    }
+    if (githubRateLimited(r, 2271)) return;
+    expect(pr!.read.status).toBe("ok");
     expect(pr!.headRefOid!.startsWith("2b25412e")).toBe(true);
     expect(pr!.changedFiles).toBe(24);
     const files = r.changes.files.filter((f) => f.pr === 2271);
@@ -119,6 +140,8 @@ describe.skipIf(!controlPath)("stave control session 811b15d0, 2026-10-30 00:00â
   });
 
   test("shell-only files carry the two gaps as separate labels", async () => {
+    // The file is known from PR #2271's file list, which only GitHub has.
+    if (githubRateLimited(r, 2271)) return;
     const f = r.changes.files.find((x) => x.path.endsWith("packages/editor/src/engine/HapStream.ts"));
     expect(f).toBeDefined();
     expect(f!.viaShell).toBe(true);
