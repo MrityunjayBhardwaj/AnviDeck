@@ -58,6 +58,8 @@ export interface PrTurnsAgent {
   otherBranch: number;
   /** Checkpoints on the PR's branch with nothing changed since the one before (the first is not counted). */
   unchanged: number;
+  /** Checkpoints whose folder could not be placed in a checkout: their files are not matched to the PR's. */
+  unplaced: number;
 }
 
 export type PrTurnsView =
@@ -103,7 +105,7 @@ export function prTurns(sessions: SessionsRead, pr: { headRefName: string; files
 }
 
 function agentTurns(agentId: string, load: TurnsLoad, branch: string, inPr: Set<string>): PrTurnsAgent {
-  const base = { agentId, notes: [] as string[], turns: [] as PrTurn[], otherBranch: 0, unchanged: 0 };
+  const base = { agentId, notes: [] as string[], turns: [] as PrTurn[], otherBranch: 0, unchanged: 0, unplaced: 0 };
   if (load.state === "loading") return { ...base, state: "loading", notes: ["reading its checkpoints…"] };
   if (load.state === "error") {
     if (load.status === 503) return { ...base, state: "off", notes: [`This AnviDeck server takes no checkpoints, so it cannot read the agent's turn record (${load.error}).`] };
@@ -116,10 +118,16 @@ function agentTurns(agentId: string, load: TurnsLoad, branch: string, inPr: Set<
   for (const f of d.records) if (f.kind === "checkpoint-failed") notes.push(`No checkpoint at ${f.at} (${f.when}, run ${f.run}): ${f.reason}. Its changes are counted in the next checkpoint.`);
   if (!checkpoints.length)
     return { ...base, state: "no-record", notes: [...notes, "No checkpoint is recorded for this agent: it ran before AnviDeck took checkpoints per turn (#248), so which turn changed what is not known. This is not \"no changes\"."] };
-  if (d.prefix === null)
-    return { ...base, state: "paths-unknown", notes: [...notes, `Its folder ${d.cwd} could not be placed in a git checkout, so its turns' files cannot be matched to the PR's.`] };
-  const out: PrTurnsAgent = { ...base, state: "listed", notes };
-  for (const c of checkpoints) {
+  // Where the folder sat in its checkout: as recorded with each checkpoint (#275), else as git says
+  // now. A folder that is gone (an issue worktree removed after the merge) keeps the recorded one.
+  const prefixOf = (c: CheckpointEntry) => c.head?.prefix ?? d.prefix;
+  const placed = checkpoints.filter((c) => prefixOf(c) !== null);
+  if (!placed.length)
+    return { ...base, state: "paths-unknown", notes: [...notes, `Its folder ${d.cwd} could not be placed in a git checkout${d.folderGone ? " (it is gone, and its record is from before checkpoints noted the place)" : ""}, so its turns' files cannot be matched to the PR's.`] };
+  const unplaced = checkpoints.length - placed.length;
+  const out: PrTurnsAgent = { ...base, state: "listed", notes, unplaced };
+  if (unplaced) notes.push(`${unplaced} checkpoint${unplaced === 1 ? "" : "s"} could not be placed in a git checkout, so ${unplaced === 1 ? "its" : "their"} files are not matched to the PR's.`);
+  for (const c of placed) {
     if (c.head?.branch && c.head.branch !== branch) {
       out.otherBranch++;
       continue;
@@ -136,7 +144,7 @@ function agentTurns(agentId: string, load: TurnsLoad, branch: string, inPr: Set<
       label: label(c),
       branch: c.head?.branch ?? null,
       files: c.changes.map((f) => {
-        const path = d.prefix + f.path;
+        const path = prefixOf(c)! + f.path;
         return { ...f, path, inPr: inPr.has(path) };
       }),
       changeCount: c.changeCount,
@@ -170,6 +178,7 @@ export function turnsForFile(view: PrTurnsView, path: string): FileTurns {
       continue;
     }
     listed++;
+    if (a.unplaced) gaps.push(`agent ${a.agentId} has ${a.unplaced} checkpoint${a.unplaced === 1 ? "" : "s"} whose files could not be matched to the PR's`);
     for (const t of a.turns) {
       if (t.files.some((f) => f.path === path)) turns.push(t);
       else if (t.notKept) gaps.push(`turn #${t.n} of agent ${a.agentId} changed ${t.notKept} more file${t.notKept === 1 ? "" : "s"} than its record kept, which may include this one`);

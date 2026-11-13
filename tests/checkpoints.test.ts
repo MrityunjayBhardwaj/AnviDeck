@@ -66,7 +66,7 @@ describe("the checkpoint store", () => {
       { path: "n.txt", status: "A", added: 1, removed: 0 },
       { path: "u.env", status: "D", added: 0, removed: 1 },
     ]);
-    expect(c2?.head).toEqual({ sha: expect.stringMatching(/^[0-9a-f]{40}$/), branch: "main" });
+    expect(c2?.head).toEqual({ sha: expect.stringMatching(/^[0-9a-f]{40}$/), branch: "main", prefix: "" });
     // Nothing was written into the project's repository: its status is what the edits made it.
     expect(sh(["git", "status", "--porcelain"], p).out.split("\n").filter(Boolean).sort()).toEqual([" M a.txt", "?? n.txt"]);
   });
@@ -465,7 +465,12 @@ describe("the answer places the agent's folder in its checkout (#275)", () => {
     const ans = inner.turns.list(inner.id);
     expect(ans.prefix).toBe("pkg/sub/");
     const after = ans.records.find((r) => r.kind === "checkpoint" && r.when === "after-turn");
-    expect(after).toMatchObject({ changes: [{ path: "b.txt", status: "A" }] });
+    expect(after).toMatchObject({ changes: [{ path: "b.txt", status: "A" }], head: { branch: "main", prefix: "pkg/sub/" } });
+    // Once the folder is gone, git cannot say; the record still does.
+    rmSync(join(p, "pkg"), { recursive: true, force: true });
+    const gone = inner.turns.list(inner.id);
+    expect(gone.prefix).toBeNull();
+    expect(gone.records.filter((r) => r.kind === "checkpoint").map((r) => (r as CheckpointEntry).head?.prefix)).toEqual(["pkg/sub/", "pkg/sub/"]);
   });
 
   test("a folder outside any git checkout, or one that is gone: null, so its paths are not joined to a PR's", async () => {

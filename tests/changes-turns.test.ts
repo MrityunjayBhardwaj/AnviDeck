@@ -88,6 +88,23 @@ describe("an agent's turns", () => {
     expect(turnsForFile(v, "a.ts")).toMatchObject({ kind: "none-recorded" });
   });
 
+  test("a folder that is gone keeps the place each checkpoint recorded (an issue worktree removed after the merge)", () => {
+    const rec = cp({ files: ["a.ts"], head: { sha: "a".repeat(40), branch: BRANCH, prefix: "src/" } });
+    const v = prTurns(sessions(AGENT), PR, one(answer([rec], { prefix: null, folderGone: true })));
+    expect(turnsForFile(v, "src/a.ts")).toMatchObject({ kind: "turns", turns: [{ n: rec.n }], gaps: [] });
+    // The recorded place wins over git's answer now, which may differ if the folder was replaced.
+    const moved = prTurns(sessions(AGENT), PR, one(answer([rec], { prefix: "" })));
+    expect(turnsForFile(moved, "src/a.ts").kind).toBe("turns");
+  });
+
+  test("some checkpoints placed and some not: the placed ones are joined, the rest counted as a gap", () => {
+    const old = cp({ files: ["b.ts"] }); // from before #275: no recorded place, and the folder is gone
+    const rec = cp({ files: ["a.ts"], head: { sha: "a".repeat(40), branch: BRANCH, prefix: "src/" } });
+    const v = prTurns(sessions(AGENT), PR, one(answer([old, rec], { prefix: null, folderGone: true })));
+    expect(v.state === "agents" && v.agents[0]).toMatchObject({ state: "listed", unplaced: 1, notes: [expect.stringContaining("1 checkpoint could not be placed")] });
+    expect(turnsForFile(v, "src/b.ts")).toEqual({ kind: "none-recorded", gaps: ["agent ag1 has 1 checkpoint whose files could not be matched to the PR's"] });
+  });
+
   test("a folder not placed in a checkout: its paths are not joined, and a file's turns are not known", () => {
     const v = prTurns(sessions(AGENT), PR, one(answer([cp({ files: ["src/a.ts"] })], { prefix: null })));
     expect(v.state === "agents" && v.agents[0].state).toBe("paths-unknown");

@@ -45,7 +45,16 @@ export interface CheckpointEntry {
   /** The snapshot: a git tree in the agent's checkpoint repository. */
   tree: string;
   /** The folder's branch and commit at that moment; null when the folder is not in a git checkout. */
-  head: { sha: string; branch: string | null } | null;
+  head: {
+    sha: string;
+    branch: string | null;
+    /**
+     * The folder's place in its git checkout when the checkpoint was taken, as `prefix` below (#275).
+     * Kept in the record so a turn's paths can still be put in a PR's terms once the folder is gone
+     * (an issue worktree removed after its PR merged). Absent in records from before #275.
+     */
+    prefix?: string;
+  } | null;
   /** Changes since the checkpoint before it (none before the first). At most FILES_KEPT. */
   changes: FileChange[];
   changeCount: number;
