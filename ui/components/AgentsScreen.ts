@@ -100,6 +100,8 @@ const S = {
   focus: null as SavedFocus | null,
   /** Checkpoints per turn (#248) by agent id, with the agent state they were read at. */
   turns: new Map<string, { key: string; load: Load<CheckpointsAnswer> }>(),
+  /** The linked checkpoint already brought into view (agent#n), so a repaint does not scroll again. */
+  shownTurn: null as string | null,
   /** An open Undo preview by agent id: the checkpoint, what it would discard, and what came of pressing. */
   undo: new Map<string, { n: number; plan: Load<UndoPlan>; said?: { ok: boolean; text: string } }>(),
 };
@@ -1023,6 +1025,19 @@ function turnsCard(a: HostAgent): HTMLElement {
   const latest = Math.max(0, ...d.records.map((r) => (r.kind === "checkpoint" ? r.n : 0)));
   for (const r of [...d.records].reverse()) list.append(turnRow(a, r, undoable, d.undo.ok, latest));
   c.append(list);
+  // A link to one checkpoint (#275, from Changes): mark its row, and bring it into view once.
+  const want = S.deps?.route.agent === a.id ? S.deps.route.turn : undefined;
+  const row = want ? list.querySelector<HTMLElement>(`[data-checkpoint="${want}"]`) : null;
+  if (row) {
+    row.classList.add("on");
+    const key = `${a.id}#${want}`;
+    if (S.shownTurn !== key) {
+      S.shownTurn = key;
+      requestAnimationFrame(() => document.querySelector(`#aw-turns [data-checkpoint="${want}"]`)?.scrollIntoView({ block: "center" }));
+    }
+  } else if (want && !d.records.some((r) => r.kind === "checkpoint" && r.n === want)) {
+    c.append(el("div", "aw-err", `Checkpoint #${want} is not in this agent's record.`));
+  }
   if (d.kept) {
     const clear = el("button", "aw-btn sm", d.folderGone ? "Clear its snapshots (folder gone)" : "Clear its snapshots");
     clear.dataset.act = "checkpoints-clear";

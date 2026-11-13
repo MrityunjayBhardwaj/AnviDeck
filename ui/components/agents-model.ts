@@ -729,6 +729,8 @@ export interface AgentsScreenRoute {
   agent?: string;
   session?: string;
   grid: boolean;
+  /** A checkpoint of the agent to show on its Turns card (#275: linked from Changes). */
+  turn?: number;
   /** The older replay view (Agents before #82), kept until its retirement is decided. */
   replay: boolean;
 }
@@ -736,6 +738,7 @@ export interface AgentsScreenRoute {
 export function parseAgentsScreenParams(params: URLSearchParams): AgentsScreenRoute {
   return {
     agent: params.get("agent") ?? undefined,
+    turn: /^[1-9]\d*$/.test(params.get("turn") ?? "") ? Number(params.get("turn")) : undefined,
     session: params.get("session") ?? undefined,
     grid: params.get("grid") === "1",
     // The replay view's own hashes (`#agents?project=…&sid=…`, from Home, Map and the palette)

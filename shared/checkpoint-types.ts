@@ -45,7 +45,16 @@ export interface CheckpointEntry {
   /** The snapshot: a git tree in the agent's checkpoint repository. */
   tree: string;
   /** The folder's branch and commit at that moment; null when the folder is not in a git checkout. */
-  head: { sha: string; branch: string | null } | null;
+  head: {
+    sha: string;
+    branch: string | null;
+    /**
+     * The folder's place in its git checkout when the checkpoint was taken, as `prefix` below (#275).
+     * Kept in the record so a turn's paths can still be put in a PR's terms once the folder is gone
+     * (an issue worktree removed after its PR merged). Absent in records from before #275.
+     */
+    prefix?: string;
+  } | null;
   /** Changes since the checkpoint before it (none before the first). At most FILES_KEPT. */
   changes: FileChange[];
   changeCount: number;
@@ -88,6 +97,13 @@ export interface CheckpointsAnswer {
   folderGone: boolean;
   /** Snapshots are kept for this agent on this machine. */
   kept: boolean;
+  /**
+   * The agent's folder inside its git checkout, as `git rev-parse --show-prefix` says ("" at the
+   * checkout's top, else "sub/dir/"). Each change's path is relative to the agent's folder; this
+   * puts it in the repository's terms, as a PR names its files (#275). Null when the folder is
+   * gone, is not in a git checkout, or git could not say: then the paths cannot be joined to a PR's.
+   */
+  prefix: string | null;
 }
 
 /** GET /api/agents/:id/checkpoints/:n/undo: what pressing Undo would do, read just now. */

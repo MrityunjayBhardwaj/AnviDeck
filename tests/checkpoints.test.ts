@@ -66,7 +66,7 @@ describe("the checkpoint store", () => {
       { path: "n.txt", status: "A", added: 1, removed: 0 },
       { path: "u.env", status: "D", added: 0, removed: 1 },
     ]);
-    expect(c2?.head).toEqual({ sha: expect.stringMatching(/^[0-9a-f]{40}$/), branch: "main" });
+    expect(c2?.head).toEqual({ sha: expect.stringMatching(/^[0-9a-f]{40}$/), branch: "main", prefix: "" });
     // Nothing was written into the project's repository: its status is what the edits made it.
     expect(sh(["git", "status", "--porcelain"], p).out.split("\n").filter(Boolean).sort()).toEqual([" M a.txt", "?? n.txt"]);
   });
@@ -441,5 +441,46 @@ describe("Undo through the routes' side (AgentTurns)", () => {
     const next = hostWith(async function* () {}, { dir });
     await until(() => !next.store.kept(id));
     expect(next.store.read(id).records.at(-1)).toMatchObject({ kind: "cleared", reason: expect.stringContaining("no longer exists") });
+  });
+});
+
+describe("the answer places the agent's folder in its checkout (#275)", () => {
+  async function ranIn(cwd: string) {
+    const h = hostWith(async function* (o) {
+      yield init;
+      writeFileSync(join(o.cwd!, "b.txt"), "the turn's\n");
+      yield result;
+    });
+    const a = h.host.start({ cwd, prompt: "go" });
+    await until(() => whens(h.store, a.id).length === 2 && !h.host.get(a.id).running);
+    return { ...h, id: a.id };
+  }
+
+  test("at the checkout's top the prefix is empty; in a folder inside it, that folder; paths stay the folder's own", async () => {
+    const p = project();
+    const top = await ranIn(p);
+    expect(top.turns.list(top.id).prefix).toBe("");
+    mkdirSync(join(p, "pkg", "sub"), { recursive: true });
+    const inner = await ranIn(join(p, "pkg", "sub"));
+    const ans = inner.turns.list(inner.id);
+    expect(ans.prefix).toBe("pkg/sub/");
+    const after = ans.records.find((r) => r.kind === "checkpoint" && r.when === "after-turn");
+    expect(after).toMatchObject({ changes: [{ path: "b.txt", status: "A" }], head: { branch: "main", prefix: "pkg/sub/" } });
+    // Once the folder is gone, git cannot say; the record still does.
+    rmSync(join(p, "pkg"), { recursive: true, force: true });
+    const gone = inner.turns.list(inner.id);
+    expect(gone.prefix).toBeNull();
+    expect(gone.records.filter((r) => r.kind === "checkpoint").map((r) => (r as CheckpointEntry).head?.prefix)).toEqual(["pkg/sub/", "pkg/sub/"]);
+  });
+
+  test("a folder outside any git checkout, or one that is gone: null, so its paths are not joined to a PR's", async () => {
+    const plain = join(scratch(), "plain");
+    mkdirSync(plain);
+    const h = await ranIn(plain);
+    expect(h.turns.list(h.id).prefix).toBeNull();
+    const p = project();
+    const g = await ranIn(p);
+    rmSync(p, { recursive: true, force: true });
+    expect(g.turns.list(g.id)).toMatchObject({ folderGone: true, prefix: null });
   });
 });

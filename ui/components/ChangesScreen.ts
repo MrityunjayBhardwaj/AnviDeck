@@ -4,7 +4,8 @@
  * the file, not the lines, so a per-hunk join is not yet possible, #153), line comments that go to the PR's running
  * agent, the evidence and self-review from the PR body, and a guided tour in commit order.
  *
- * Reads GET /api/changes/*, GET /api/agents and GET /api/agents/:id; writes only through
+ * Reads GET /api/changes/*, GET /api/agents, GET /api/agents/:id and, for the turns each of the PR's
+ * AnviDeck agents took (#275), GET /api/agents/:id/checkpoints; writes only through
  * ui/write.ts (a line comment is POST /api/agents/:id/message, the #79 endpoint).
  */
 import type { ChangesPrList, ChangesResponse } from "../../shared/changes-types";
@@ -29,6 +30,8 @@ import {
   type DiffLine,
   type Tour,
 } from "./changes-model";
+import { fileTurnsLine, prAgentIds, prTurns, turnsForFile, type PrTurn, type PrTurnsView, type TurnsLoad } from "./changes-turns";
+import type { CheckpointsAnswer } from "../../shared/checkpoint-types";
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const when = (iso: string) => {
@@ -202,6 +205,61 @@ function render(root: HTMLElement, project: string, r: ChangesResponse, list: Ch
   for (const l of ss.lines) sCard.append(el("div", "chg-note sh-dim", esc(l)));
   left.append(sCard);
 
+  // The turns of the PR's AnviDeck agents (#275): read once per agent, then the card and the drawn
+  // files' lines are painted again.
+  const turnLoads = new Map<string, TurnsLoad>();
+  let turns: PrTurnsView = prTurns(r.sessions, pr, turnLoads);
+  const tCard = el("div", "sh-card chg-card chg-turns", "<h3>Turns</h3>");
+  tCard.dataset.tour = "turns";
+  left.append(tCard);
+  const paintTurns = () => {
+    tCard.replaceChildren(el("h3", "", "Turns"));
+    if (turns.state !== "agents") {
+      tCard.append(el("div", `chg-note ${turns.state === "could-not-look" ? "chg-bad" : "sh-dim"}`, esc(turns.note)));
+      return;
+    }
+    for (const a of turns.agents) {
+      const who = el("div", "chg-turn-agent", `agent <span class="mono">${esc(a.agentId)}</span> `);
+      const link = el("a", "", "its Turns card on Agents") as HTMLAnchorElement;
+      link.href = `#agents?agent=${encodeURIComponent(a.agentId)}`;
+      who.append(link);
+      tCard.append(who);
+      const bad = a.state === "unreadable" || a.state === "off" || a.state === "paths-unknown";
+      for (const n of a.notes) tCard.append(el("div", `chg-note ${bad ? "chg-bad" : "sh-dim"}`, esc(n)));
+      if (a.state !== "listed") continue;
+      if (!a.turns.length) tCard.append(el("div", "chg-note sh-dim", `No turn on ${esc(pr.headRefName)} changed a file${a.unchanged ? ` (${a.unchanged} checkpoint${a.unchanged === 1 ? "" : "s"} with nothing changed)` : ""}.`));
+      for (const t of a.turns) tCard.append(turnEl(t));
+      if (a.turns.length && a.unchanged) tCard.append(el("div", "chg-note sh-dim", `${a.unchanged} other checkpoint${a.unchanged === 1 ? "" : "s"} on ${esc(pr.headRefName)} changed nothing.`));
+    }
+  };
+  function turnEl(t: PrTurn): HTMLElement {
+    const row = el("div", "chg-turn");
+    row.dataset.checkpoint = `${t.agentId}#${t.n}`;
+    const go = el("a", "mono", `#${t.n}`) as HTMLAnchorElement;
+    go.href = `#agents?agent=${encodeURIComponent(t.agentId)}&turn=${t.n}`;
+    go.title = "Open this checkpoint on the agent's Turns card, where Undo is";
+    const h = el("div", "chg-turn-head");
+    // In UTC, as the agent's Turns card on Agents says it, so the two can be read side by side.
+    h.append(go, el("span", "", ` ${esc(t.at.slice(0, 10))} ${esc(t.at.slice(11, 16))} UTC · ${esc(t.label)}${t.branch ? "" : " · detached HEAD"}`));
+    row.append(h);
+    const det = el("details", "chg-turn-files");
+    const outside = t.files.filter((f) => !f.inPr).length;
+    det.append(el("summary", "", `${t.changeCount} file${t.changeCount === 1 ? "" : "s"}${outside ? `, ${outside} not in the PR's diff now` : ""}${t.notKept ? `, ${t.notKept} not kept in the record` : ""}`));
+    for (const f of t.files) {
+      const counts = f.added === null ? "binary" : `+${f.added} −${f.removed}`;
+      const b = el("button", `chg-linklike chg-turn-file${f.inPr ? "" : " sh-dim"}`, `<span class="sh-chip">${f.status}</span><span class="mono">${esc(f.path)}</span><span class="sh-dim">${counts}</span>`) as HTMLButtonElement;
+      b.type = "button";
+      b.dataset.file = f.path;
+      b.title = f.inPr ? f.path : `${f.path}: not among the PR's files now (changed back since, or not committed)`;
+      if (f.inPr) b.addEventListener("click", () => showFile(f.path));
+      det.append(b);
+    }
+    row.append(det);
+    if (t.mayIncludeNext) row.append(el("div", "chg-note sh-dim", "A message started the next turn before this snapshot was done, so it may include the start of that turn."));
+    return row;
+  }
+  paintTurns();
+
   // ── middle: tour banner, comment status, diff ──
   const banner = el("div", "sh-card chg-banner");
   banner.hidden = true;
@@ -278,6 +336,9 @@ function render(root: HTMLElement, project: string, r: ChangesResponse, list: Ch
         `<b>Context the agent received for this file</b> <span class="sh-dim">(per file: the hook log does not say which lines)</span>. ${esc(ctxText)}`,
       ),
     );
+    const ft = turnsForFile(turns, f.path);
+    const tl = fileTurnsLine(ft);
+    if (tl) sec.append(el("div", `chg-annot chg-fturns ${ft.kind === "turns" ? "" : ft.kind === "not-known" ? "chg-bad-annot" : "chg-quiet"}`, `<b>Turns</b> ${esc(tl)}`));
     if (f.hunks.length === 0) sec.append(el("div", "chg-annot", "No text hunks (a mode change, an empty file or a rename only)."));
     for (const h of f.hunks) {
       sec.append(el("div", "chg-hunk mono", esc(`@@ ${f.path}  −${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@${h.header.replace(/^@@[^@]*@@/, "")}`)));
@@ -460,6 +521,29 @@ function render(root: HTMLElement, project: string, r: ChangesResponse, list: Ch
     if (tour.steps.length) startTour(0);
   });
 
+  // ── the turns: each agent's checkpoints (#275) ──
+  const redrawDrawn = () => {
+    for (const f of diffFiles) {
+      const sec = fileEls.get(f.path)!;
+      if (!sec.querySelector(".chg-show")) paintFile(sec, f, true);
+    }
+  };
+  void (async () => {
+    const ids = prAgentIds(r.sessions);
+    if (!ids.length) return;
+    await Promise.all(
+      ids.map(async (id) => {
+        const res = await fetch(`/api/agents/${encodeURIComponent(id)}/checkpoints`).catch((e: Error) => e);
+        if (res instanceof Error) return turnLoads.set(id, { state: "error", status: null, error: res.message });
+        const body = (await res.json().catch(() => null)) as any;
+        turnLoads.set(id, res.ok && body ? { state: "ok", data: body as CheckpointsAnswer } : { state: "error", status: res.status, error: `${res.status} ${body?.error ?? res.statusText}` });
+      }),
+    );
+    turns = prTurns(r.sessions, pr, turnLoads);
+    paintTurns();
+    redrawDrawn();
+  })();
+
   // ── the agents: who can take a comment, and comments already sent ──
   void (async () => {
     const read = await api.agentsRead();
@@ -478,9 +562,6 @@ function render(root: HTMLElement, project: string, r: ChangesResponse, list: Ch
       }
     }
     // Redraw the drawn files so earlier comments sit under their lines and line titles say where comments go.
-    for (const f of diffFiles) {
-      const sec = fileEls.get(f.path)!;
-      if (!sec.querySelector(".chg-show")) paintFile(sec, f, true);
-    }
+    redrawDrawn();
   })();
 }

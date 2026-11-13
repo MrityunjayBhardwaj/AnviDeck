@@ -218,7 +218,10 @@ export class CheckpointStore {
     const sha = await this.run("git", ["rev-parse", "--verify", "-q", "HEAD"], { cwd });
     if (sha.code !== 0 || !SHA.test(sha.stdout.trim())) return null;
     const br = await this.run("git", ["symbolic-ref", "--short", "-q", "HEAD"], { cwd });
-    return { sha: sha.stdout.trim(), branch: br.code === 0 && br.stdout.trim() ? br.stdout.trim() : null };
+    const pre = await this.run("git", ["rev-parse", "--show-prefix"], { cwd });
+    const head: NonNullable<CheckpointEntry["head"]> = { sha: sha.stdout.trim(), branch: br.code === 0 && br.stdout.trim() ? br.stdout.trim() : null };
+    if (pre.code === 0) head.prefix = pre.stdout.trim();
+    return head;
   }
 
   /** Files changed from tree `a` to tree `b`, with line counts; `a` null means nothing before. */
