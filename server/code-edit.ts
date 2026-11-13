@@ -122,16 +122,22 @@ function textOf(buf: Buffer, what: string): string {
   }
 }
 
-/** Everyone keeping the file read-only now: AnviDeck's running agents, then terminal sessions. */
+/**
+ * Everyone keeping the file read-only now: AnviDeck's running agents, then terminal sessions. An
+ * agent's own live session is the agent, so it is named once, as the agent (#252).
+ */
 function whoTouches(abs: string, deps: EditDeps): Touching[] {
-  const agents = touching(abs, agentsNow(deps), deps.keyOf);
+  const facts = agentsNow(deps);
+  const agents = touching(abs, facts, deps.keyOf);
+  const named = new Set(agents.map((t) => t.id));
+  const listedAgents = new Map(facts.filter((f) => f.sessionId && named.has(f.id)).map((f) => [f.sessionId!, f.id]));
   let read: { sessions: TerminalSession[]; report: ReadReport };
   try {
     read = (deps.sessions ?? readLiveSessionsReport)();
   } catch (e) {
     read = { sessions: [], report: { status: "unreadable", errors: [(e as Error).message] } };
   }
-  return [...agents, ...terminalTouching(abs, read)];
+  return [...agents, ...terminalTouching(abs, read, listedAgents)];
 }
 
 function agentsNow(deps: EditDeps): AgentFact[] {

@@ -24,6 +24,7 @@ import { readStructure } from "./structure";
 import { readCataloguesReport } from "./catalogue";
 import { candidates, resolveDir } from "../../shared/anvi-paths";
 import { errText, isAbsent } from "./read-status";
+import { readAgentRegistry } from "./agent-registry";
 import { completeFiles, dharanaBoundaries, layersFor, logFileMatches, sessionOfTranscript } from "../../shared/changes";
 import { parseDiff } from "../../shared/diff";
 import type {
@@ -44,11 +45,6 @@ import type {
 import type { HookLogEntry } from "../../shared/types";
 
 const PROJECTS_DIR = join(homedir(), ".claude", "projects");
-/**
- * The agent registry's folder. Same rule as server/agents/registry.ts (DEFAULT_AGENT_DIR), which a
- * reader may not import (tests/reader-actor-split.test.ts); read here, never written.
- */
-const AGENT_DIR = () => process.env.ANVIDECK_AGENT_DIR ?? join(homedir(), ".anvideck", "anvideck");
 const HOOK_DIR = "/tmp";
 const MAX_COMMITS = 40;
 
@@ -218,25 +214,6 @@ function readDharana(projectPath: string): DharanaRead {
   }
 }
 
-interface RegistryAgent {
-  id: string;
-  sessionId?: string;
-  cwd: string;
-  issue?: number;
-}
-
-function readRegistry(): { path: string; status: "read" | "absent" | "unreadable"; reason?: string; agents: RegistryAgent[] } {
-  const path = join(AGENT_DIR(), "agents.json");
-  try {
-    const raw = JSON.parse(readFileSync(path, "utf8"));
-    const agents = Array.isArray(raw?.agents) ? (raw.agents as RegistryAgent[]) : [];
-    return { path, status: "read", agents };
-  } catch (e) {
-    if (isAbsent(e)) return { path, status: "absent", agents: [] };
-    return { path, status: "unreadable", reason: errText(path, e), agents: [] };
-  }
-}
-
 const within = (dir: string, root: string) => {
   const a = real(dir);
   const b = real(root);
@@ -290,7 +267,7 @@ export async function findPrSessions(projectPath: string, repo: string, pr: PrMe
   } catch (e) {
     return { status: "unreadable", reason: errText(projectsDir, e) };
   }
-  const registry = readRegistry();
+  const registry = readAgentRegistry();
   const errors: string[] = [];
   if (registry.status === "unreadable") errors.push(`agent registry: ${registry.reason}`);
   // Every checkout of this repository: the project itself and its git worktrees, wherever they are

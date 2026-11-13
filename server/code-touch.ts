@@ -36,13 +36,19 @@ export interface TerminalSession {
  * terminal session edited is not read (only its folder is known), and a session can edit outside
  * its folder: that is not caught. A sessions folder that could not be read whole keeps every file
  * read-only, since a session working there may be among the unread.
+ *
+ * An AnviDeck agent is a live Claude Code session too, with its own file in ~/.claude/sessions.
+ * `listedAgents` maps the session ids of the agents already named as keeping this file to their
+ * ids; such a session is that agent, so it is left out here rather than named a second time as a
+ * terminal session (#252). Only those: a session whose agent is not in the list stays, since then
+ * the session file is the only sign of someone working there (an agent the host has lost track of).
  */
-export function terminalTouching(abs: string, read: { sessions: TerminalSession[]; report: ReadReport }): Touching[] {
+export function terminalTouching(abs: string, read: { sessions: TerminalSession[]; report: ReadReport }, listedAgents: ReadonlyMap<string, string> = new Map()): Touching[] {
   if (read.report.status === "unreadable" || read.report.status === "partial")
     return [{ id: "terminal sessions", status: read.report.status, why: "sessions not known", detail: `the live Claude Code sessions could not all be read (${read.report.errors.join("; ")}), so whether one works in this folder is not known` }];
   const file = realOr(abs);
   return read.sessions
-    .filter((t) => t.cwd && inside(file, realOr(t.cwd)))
+    .filter((t) => t.cwd && inside(file, realOr(t.cwd)) && !(t.sessionId && listedAgents.has(t.sessionId)))
     .map((t) => ({ id: t.sessionId || `pid ${t.pid}`, status: t.status, why: "a terminal session works in this folder" as const, detail: `a terminal Claude Code session (${t.sessionId.slice(0, 8)}, pid ${t.pid}, ${t.status}) works in ${t.cwd}, which holds this file` }));
 }
 
@@ -51,7 +57,7 @@ export const EDIT_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]
 /** The part of the agent host this module asks (AgentHost satisfies it). */
 export interface HostLike {
   readonly registry: { dir: string };
-  list(): { id: string; status: string; running: boolean; cwd: string; prompt: string }[];
+  list(): { id: string; status: string; running: boolean; cwd: string; prompt: string; sessionId?: string }[];
   transcript(id: string): { lines: { at: string; from: string; message: unknown }[]; unreadable: number };
 }
 
@@ -61,6 +67,8 @@ export interface AgentFact {
   running: boolean;
   cwd: string;
   prompt: string;
+  /** Claude Code's session id, once its init arrived: its live session file has this id (#252). */
+  sessionId?: string;
   edits: { abs: string; tool: string; at: string }[];
   /** Set when the transcript could not be read whole. */
   unreadable?: string;
@@ -94,7 +102,7 @@ export function agentFacts(host: HostLike): AgentFact[] {
     } catch (e) {
       unreadable = `its transcript could not be read: ${(e as Error).message}`;
     }
-    return { id: a.id, status: a.status, running: a.running, cwd: a.cwd, prompt: a.prompt, edits, ...(unreadable ? { unreadable } : {}) };
+    return { id: a.id, status: a.status, running: a.running, cwd: a.cwd, prompt: a.prompt, ...(a.sessionId ? { sessionId: a.sessionId } : {}), edits, ...(unreadable ? { unreadable } : {}) };
   });
 }
 

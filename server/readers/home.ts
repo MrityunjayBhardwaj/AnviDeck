@@ -12,6 +12,7 @@ import type {
   UnreadItem,
 } from "../../shared/home-types";
 import { readLiveSessionsReport } from "./sessions";
+import { readAgentRegistry, type RegistryRead } from "./agent-registry";
 import { encodeCwd, findTranscript, ghPrView, runAsync } from "./replay";
 import { countingSince, lostOutputEnds } from "../child-output";
 import { listStructure, readStructure } from "./structure";
@@ -454,6 +455,18 @@ export function byDeadline<T>(p: Promise<T>, d: Deadline): Promise<T | typeof ST
   return Promise.race([p, d.at]);
 }
 
+/**
+ * The live sessions that are terminal sessions: every one but those whose id is an AnviDeck
+ * agent's in the registry (#252). An unreadable registry leaves them all in, and says so.
+ */
+export function terminalSessions<S extends { sessionId: string }>(sessions: S[], registry: RegistryRead): { terminals: S[]; agentSessions: number; registryNote: string | null } {
+  if (registry.status === "unreadable")
+    return { terminals: sessions, agentSessions: 0, registryNote: `AnviDeck's agent registry could not be read (${registry.reason}), so its agents' sessions are counted as terminal sessions too` };
+  const ids = new Set(registry.agents.map((a) => a.sessionId).filter((x): x is string => !!x));
+  const terminals = sessions.filter((s) => !ids.has(s.sessionId));
+  return { terminals, agentSessions: sessions.length - terminals.length, registryNote: null };
+}
+
 export async function readHome(budgetMs = HOME_BUDGET_MS): Promise<HomeResponse> {
   const t0 = performance.now();
   const now = Date.now();
@@ -464,13 +477,18 @@ export async function readHome(budgetMs = HOME_BUDGET_MS): Promise<HomeResponse>
 
   // Live sessions
   const { sessions, report } = readLiveSessionsReport();
+  // An AnviDeck agent is a live Claude Code session too. Home shows it as the agent (its card and
+  // permission requests come from the agent host), so here it is not a terminal session (#252).
+  // Its transcript is still scanned for PR links below. If the registry cannot be read, every
+  // session stays a terminal session: counted twice rather than not at all.
+  const { terminals, agentSessions, registryNote } = terminalSessions(sessions, readAgentRegistry());
   timings.sessions = Math.round(performance.now() - t0);
   const sessionsSource: HomeSource = {
     status: report.status === "unreadable" ? "could-not-read" : report.status === "partial" ? "partial" : sessions.length ? "ok" : "none",
-    label: `~/.claude/sessions (${sessions.length} live)`,
-    ...(report.errors.length ? { detail: report.errors.join("; ") } : {}),
+    label: `~/.claude/sessions (${sessions.length} live${agentSessions ? `, ${agentSessions} of them AnviDeck agents, shown as agents` : ""})`,
+    ...(report.errors.length || registryNote ? { detail: [...report.errors, ...(registryNote ? [registryNote] : [])].join("; ") } : {}),
   };
-  for (const s of sessions) {
+  for (const s of terminals) {
     if (s.status !== "waiting") continue;
     queue.push({
       kind: "agent-waiting",
@@ -733,7 +751,7 @@ export async function readHome(budgetMs = HOME_BUDGET_MS): Promise<HomeResponse>
   });
 
   // Agents, one line each
-  const agents: HomeAgent[] = sessions.map((s) => ({
+  const agents: HomeAgent[] = terminals.map((s) => ({
     sessionId: s.sessionId,
     name: s.name,
     project: s.project,
