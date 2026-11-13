@@ -1,8 +1,11 @@
 // Home (issue #18): one queue, one count, and "could not read" kept apart from "nothing to decide".
 import { describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { needsCount, headlineText, badgeText, stripText } from "../ui/home-count";
+import { terminalSessions } from "../server/readers/home";
+import { readAgentRegistry } from "../server/readers/agent-registry";
 import { healthMetrics, byDeadline, deadlineIn, STILL_READING, groupFailedPrs, orderQueue, parseAuthoredPrs, prLinkFromLine, prLinksIn, prVerdict, readNotesCurrency, resetAuthoredSearch, searchAuthoredPrs, splitAuthoredPrs, answersFromSearch } from "../server/readers/home";
 import type { HomeResponse, QueueItem } from "../shared/home-types";
 
@@ -358,5 +361,42 @@ describe("agents' permission requests count toward what needs you (#131)", () =>
   test("agents not read yet change nothing", () => {
     expect(needsCount(fixture([]), false, undefined)).toEqual(needsCount(fixture([])));
     expect(headlineText(needsCount(fixture([])))).toBe("Nothing needs you");
+  });
+});
+
+
+describe("an AnviDeck agent's live session is the agent, not a terminal session (#252)", () => {
+  const live = [{ sessionId: "sess-agent", name: "a" }, { sessionId: "sess-term", name: "t" }];
+  const reg = (over: object) => ({ path: "/r/agents.json", status: "read" as const, agents: [], ...over });
+
+  test("a session whose id is a registry agent's is left out; the rest are terminal sessions", () => {
+    const r = terminalSessions(live, reg({ agents: [{ id: "ag1", cwd: "/p", sessionId: "sess-agent" }, { id: "ag2", cwd: "/p" }] }));
+    expect(r).toEqual({ terminals: [live[1]], agentSessions: 1, registryNote: null });
+  });
+
+  test("no registry yet: every session is a terminal session, with nothing to say", () => {
+    expect(terminalSessions(live, reg({ status: "absent" }))).toEqual({ terminals: live, agentSessions: 0, registryNote: null });
+  });
+
+  test("a registry that could not be read keeps every session, and says so: counted twice rather than not at all", () => {
+    const r = terminalSessions(live, reg({ status: "unreadable", reason: "/r/agents.json: EACCES" }));
+    expect(r.terminals).toEqual(live);
+    expect(r.registryNote).toContain("could not be read (/r/agents.json: EACCES)");
+  });
+
+  test("the registry is read from ANVIDECK_AGENT_DIR", () => {
+    const d = join(mkdtempSync(join(tmpdir(), "home-reg-")), "agentdir");
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, "agents.json"), JSON.stringify({ agents: [{ id: "ag1", cwd: "/p", sessionId: "s1" }] }));
+    const was = process.env.ANVIDECK_AGENT_DIR;
+    process.env.ANVIDECK_AGENT_DIR = d;
+    try {
+      expect(readAgentRegistry()).toMatchObject({ status: "read", agents: [{ id: "ag1", sessionId: "s1" }] });
+      writeFileSync(join(d, "agents.json"), "{ not json");
+      expect(readAgentRegistry().status).toBe("unreadable");
+    } finally {
+      if (was === undefined) delete process.env.ANVIDECK_AGENT_DIR;
+      else process.env.ANVIDECK_AGENT_DIR = was;
+    }
   });
 });

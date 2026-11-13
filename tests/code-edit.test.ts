@@ -248,6 +248,9 @@ describe("an edit is refused while an AnviDeck agent works on that file (the age
     const a = host.start({ cwd: wt, prompt: "change a" });
     await until(() => host.transcript(a.id).lines.some((l) => JSON.stringify(l.message).includes('"Edit"')));
     expect(host.get(a.id).running).toBe(true);
+    // The facts carry Claude Code's session id, which its live session file has (#252).
+    expect(agentFacts(host)[0].sessionId).toBe(host.get(a.id).sessionId!);
+    expect(agentFacts(host)[0].sessionId).toBeTruthy();
     const d: EditDeps = { top: () => ({ top }), agents: () => agentFacts(host), sessions: NO_SESSIONS };
     const e = refused(() => applyEdit("p", body("src/a.ts", top, "mine\n"), d));
     expect(e.status).toBe(409);
@@ -323,6 +326,30 @@ describe("a live terminal Claude Code session keeps its folder read-only", () =>
     const other = repo();
     applyEdit("p", body("src/a.ts", other, "y\n"), deps(other, () => [], here));
     expect(readFileSync(join(other, "src", "a.ts"), "utf8")).toBe("y\n");
+  });
+
+  test("an AnviDeck agent's own live session is named once, as the agent (#252)", () => {
+    const top = repo();
+    const agentHere = fact({ id: "ag-1", cwd: top, sessionId: "sess-agent-1" });
+    const own = () => ({ sessions: [{ sessionId: "sess-agent-1", pid: 42, cwd: top, status: "busy" }], report: { status: "ok" as const, errors: [] } });
+    const e = refused(() => applyEdit("p", body("src/a.ts", top, "x\n"), deps(top, () => [agentHere], own)));
+    expect(e.detail.touching?.map((t) => [t.id, t.why])).toEqual([["ag-1", "works in this folder"]]);
+    expect(readWorking("p", "src/a.ts", deps(top, () => [agentHere], own)).reason).toContain("ag-1");
+    // With a real terminal session there too: the agent and that session, each once.
+    const both = () => ({ sessions: [...own().sessions, { sessionId: "sess-term-2", pid: 43, cwd: top, status: "idle" }], report: { status: "ok" as const, errors: [] } });
+    expect(refused(() => applyEdit("p", body("src/a.ts", top, "x\n"), deps(top, () => [agentHere], both))).detail.touching?.map((t) => t.id)).toEqual(["ag-1", "sess-term-2"]);
+  });
+
+  test("a session whose agent is not named as keeping the file stays listed: it may be the only sign of work there", () => {
+    const top = repo();
+    const elsewhere = join(scratch("code-else-"), "x");
+    const sess = () => ({ sessions: [{ sessionId: "sess-agent-1", pid: 42, cwd: top, status: "busy" }], report: { status: "ok" as const, errors: [] } });
+    // The host says the agent works in another folder (or has stopped), yet its session works here.
+    for (const a of [fact({ id: "ag-1", cwd: elsewhere, sessionId: "sess-agent-1" }), fact({ id: "ag-1", cwd: top, sessionId: "sess-agent-1", running: false, status: "stopped" })]) {
+      const e = refused(() => applyEdit("p", body("src/a.ts", top, "x\n"), deps(top, () => [a], sess)));
+      expect(e.detail.touching?.map((t) => [t.id, t.why])).toEqual([["sess-agent-1", "a terminal session works in this folder"]]);
+    }
+    expect(readFileSync(join(top, "src", "a.ts"), "utf8")).toBe("export const a = 1;\n");
   });
 
   test("sessions that could not all be read keep every file read-only", () => {
