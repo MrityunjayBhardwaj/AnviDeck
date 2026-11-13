@@ -13,9 +13,15 @@ import {
   readStructure,
   resetGuardRunStats,
 } from "../server/readers/structure";
+import { typescriptMissing } from "./support/stave-typescript";
 
 const STAVE_PKG = "/Users/mrityunjaybhardwaj/Documents/projects/stave/packages/editor";
 const missing = [STAVE_PKG, LOCKED_REGISTRY, GUARD_PATH].filter((p) => !existsSync(p));
+// The guard also needs TypeScript resolvable from stave's package (#281).
+if (!missing.length) {
+  const noTs = typescriptMissing(STAVE_PKG);
+  if (noTs) missing.push(noTs);
+}
 if (missing.length) console.log(`structure withdrawal controls: SKIPPED — not on this machine: ${missing.join(", ")}`);
 const control = missing.length ? test.skip : test;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
