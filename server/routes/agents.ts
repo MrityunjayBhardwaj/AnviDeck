@@ -14,7 +14,7 @@ import { modesOffered } from "../../shared/agent-modes";
 import { writeGithubAccess } from "../agents/github-access";
 import { GITHUB_ACCESS, githubAccessInfo, isGithubAccess, unavailable } from "../../shared/github-access";
 
-// The full write guard (same origin + this server's token) and the action log are installed
+// The write guard (writes only from the desktop app's channel, #241) and the action log are installed
 // on the whole app (installGuard in server/guard.ts), so every /api write route is covered.
 // This router keeps the origin check so it is never open when mounted on its own.
 export { sameOriginWrites };

@@ -54,7 +54,7 @@ export const SCREENS: readonly ScreenDef[] = [
     group: "rail",
     rail: "changes",
     blurb:
-      "A PR's files, the layers and boundaries it touches, the diff with the anvi context the agent received at each hunk, line comments that go back to the agent, the evidence and the self-review gaps.",
+      "A PR's files, the layers and boundaries it touches, the diff with the anvi context the agent received for each file, line comments that go back to the agent, which turn changed each file, the evidence and the self-review gaps.",
   },
   {
     id: "notes",
