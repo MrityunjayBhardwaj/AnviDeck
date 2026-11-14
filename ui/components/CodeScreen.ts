@@ -384,12 +384,19 @@ export function CodeScreen(project: string | null, params: URLSearchParams): HTM
     return box;
   }
 
+  /** Bumped by every working-copy read and every editing toggle: only the newest read may paint (#220). */
+  let workingSeq = 0;
   async function loadWorking() {
     if (!tree || !selected) return;
+    const f = selected;
+    const seq = ++workingSeq;
     working = { state: "loading" };
     paintFile();
-    const path = tree.packageRel ? `${tree.packageRel}/${selected}` : selected;
+    const path = tree.packageRel ? `${tree.packageRel}/${f}` : f;
     const r = await getJson<WorkingFile & { error?: string }>(`/api/code/${enc(p)}/working?path=${enc(path)}`);
+    // Another file was picked, editing was turned off, or a newer read started: this answer is not
+    // the panel's any more. The header names the selected file, so the panel must show that one.
+    if (seq !== workingSeq || !editing || selected !== f) return;
     working = r.ok && !r.value.error ? { state: "ok", value: workingHere(r.value, inDesktop(), BROWSER_READ_ONLY) } : { state: "error", error: r.ok ? String(r.value.error) : r.error };
     paintFile();
   }
@@ -431,6 +438,7 @@ export function CodeScreen(project: string | null, params: URLSearchParams): HTM
   editBtn.onclick = () => {
     editing = !editing;
     working = null;
+    workingSeq++;
     if (editing) void loadWorking();
     else if (selected) void loadFile(selected);
     paintFile();
@@ -475,7 +483,8 @@ export function CodeScreen(project: string | null, params: URLSearchParams): HTM
     open = openFolders(buildTree(tree.files, m!), selected);
     setHash();
     paintTree();
-    if (selected) void loadFile(selected);
+    // Editing turned on before the tree arrived: the panel waits on the working copy, not the commit (#220).
+    if (selected) void (editing ? loadWorking() : loadFile(selected));
     void loadRefusals();
   })();
   paintHead();

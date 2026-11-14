@@ -83,9 +83,11 @@ export class AgentTurns {
     if (read.report.status === "unreadable" || read.report.status === "partial")
       return no(`the live Claude Code sessions could not all be read (${read.report.errors.join("; ")}), so whether one works in this folder is not known`);
     for (const t of read.sessions) {
-      if (!t.cwd || (a.sessionId && t.sessionId === a.sessionId)) continue;
+      if (a.sessionId && t.sessionId === a.sessionId) continue;
+      const who = `a terminal Claude Code session (${t.sessionId.slice(0, 8) || "no session id"}, pid ${t.pid})`;
+      // A folder not known is not "elsewhere" (#286).
+      if (!t.cwd) return no(`${who} names no working folder, so whether it works in this folder is not known`);
       const there = realOr(t.cwd);
-      const who = `a terminal Claude Code session (${t.sessionId.slice(0, 8)}, pid ${t.pid})`;
       if (within(there, here)) return no(`${who} works in ${t.cwd}`);
       if (above(there, here)) warnings.push(`${who} works in ${t.cwd}, which holds this folder: make sure it is not editing here`);
     }
