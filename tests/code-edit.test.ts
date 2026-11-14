@@ -21,6 +21,7 @@ import { HTTP_WRITE_REFUSAL, installGuard } from "../server/guard";
 import { dispatch, isFromApp } from "../server/desktop";
 import { ActionLog, type ActionRecord } from "../server/action-log";
 import { editBody, savedAs } from "../ui/components/code-model";
+import { sessionEdits } from "../server/readers/session-edits";
 
 const dirs: string[] = [];
 const scratch = (p = "code-edit-") => {
@@ -52,7 +53,15 @@ function repo(): string {
 }
 
 const NO_SESSIONS = () => ({ sessions: [], report: { status: "none" as const, errors: [] } });
-const deps = (top: string, agents: EditDeps["agents"] = () => [], sessions: EditDeps["sessions"] = NO_SESSIONS): EditDeps => ({ top: () => ({ top }), agents, sessions });
+/** A session that has edited nothing: these tests never read the machine's real transcripts. */
+const NO_EDITS = () => ({ edits: [], files: 1 });
+const deps = (top: string, agents: EditDeps["agents"] = () => [], sessions: EditDeps["sessions"] = NO_SESSIONS, sessionEdits: EditDeps["sessionEdits"] = NO_EDITS): EditDeps => ({
+  top: () => ({ top }),
+  agents,
+  sessions,
+  sessionEdits,
+});
+const live = (...s: { sessionId: string; pid: number; cwd: string; status: string }[]) => () => ({ sessions: s, report: { status: "ok" as const, errors: [] } });
 const body = (path: string, top: string, content: string) => ({ path, baseHash: sha(readFileSync(join(top, path))), content });
 const fact = (o: Partial<AgentFact> & { cwd: string }): AgentFact => ({ id: "a-1", status: "working", running: true, prompt: "p", edits: [], ...o });
 
@@ -361,6 +370,94 @@ describe("a live terminal Claude Code session keeps its folder read-only", () =>
     };
     expect(refused(() => applyEdit("p", body("src/a.ts", top, "x\n"), deps(top, () => [], boom))).status).toBe(409);
     expect(readFileSync(join(top, "src", "a.ts"), "utf8")).toBe("export const a = 1;\n");
+  });
+
+  test("a live session that names no folder keeps the file read-only (#222)", () => {
+    const top = repo();
+    const nowhere = live({ sessionId: "abcdef12-0000", pid: 42, cwd: "", status: "busy" });
+    const e = refused(() => applyEdit("p", body("src/a.ts", top, "x\n"), deps(top, () => [], nowhere)));
+    expect(e.status).toBe(409);
+    expect(e.detail.touching?.map((t) => [t.id, t.why])).toEqual([["abcdef12-0000", "a terminal session's folder is not known"]]);
+    const w = readWorking("p", "src/a.ts", deps(top, () => [], nowhere));
+    expect(w.editable).toBe(false);
+    expect(w.reason).toContain("names no working folder");
+    expect(readFileSync(join(top, "src", "a.ts"), "utf8")).toBe("export const a = 1;\n");
+    // The agent's own session is still named once, as the agent, folder or not (#252).
+    const agentHere = fact({ id: "ag-1", cwd: top, sessionId: "sess-agent-1" });
+    const own = live({ sessionId: "sess-agent-1", pid: 42, cwd: "", status: "busy" });
+    expect(refused(() => applyEdit("p", body("src/a.ts", top, "x\n"), deps(top, () => [agentHere], own))).detail.touching?.map((t) => t.id)).toEqual(["ag-1"]);
+  });
+});
+
+describe("a terminal session working in another folder that edited the file (#206)", () => {
+  const elsewhere = () => live({ sessionId: "sess-else-1", pid: 77, cwd: scratch("code-other-"), status: "busy" });
+
+  test("its edit of this file (by path, or the same file in another checkout of the repository) refuses; an edit of another file does not", () => {
+    const top = repo();
+    const wt = join(scratch("code-wt-"), "wt");
+    git(top, "worktree", "add", "-q", wt);
+    for (const abs of [join(top, "src", "a.ts"), join(wt, "src", "a.ts")]) {
+      const edited = () => ({ edits: [{ abs, tool: "Edit", at: "2026-11-14T10:00:00Z" }], files: 1 });
+      const e = refused(() => applyEdit("p", body("src/a.ts", top, "x\n"), deps(top, () => [], elsewhere(), edited)));
+      expect(e.status).toBe(409);
+      expect(e.detail.touching?.map((t) => [t.id, t.why])).toEqual([["sess-else-1", "a terminal session edited this file"]]);
+      expect(e.message).toContain(`with Edit at 2026-11-14T10:00:00Z (${abs})`);
+    }
+    // Another file of the repository, and a file of the same name in another repository: written.
+    const other = repo();
+    const notThis = () => ({ edits: [{ abs: join(top, "README.md"), tool: "Write", at: "t" }, { abs: join(other, "src", "a.ts"), tool: "Edit", at: "t" }], files: 1 });
+    applyEdit("p", body("src/a.ts", top, "y\n"), deps(top, () => [], elsewhere(), notThis));
+    expect(readFileSync(join(top, "src", "a.ts"), "utf8")).toBe("y\n");
+  });
+
+  test("its edits not known (a transcript that could not be read whole) keep the file read-only", () => {
+    const top = repo();
+    const unknown = () => ({ edits: [], files: 1, unreadable: "2 line(s) of /x/s.jsonl could not be read" });
+    const e = refused(() => applyEdit("p", body("src/a.ts", top, "x\n"), deps(top, () => [], elsewhere(), unknown)));
+    expect(e.detail.touching?.map((t) => t.why)).toEqual(["a terminal session's edits are not known"]);
+    expect(e.message).toContain("2 line(s) of /x/s.jsonl could not be read");
+    expect(readWorking("p", "src/a.ts", deps(top, () => [], elsewhere(), unknown)).editable).toBe(false);
+  });
+
+  test("end to end through the transcript reader: a subagent's Edit in the session's transcript folder refuses the write", () => {
+    const top = repo();
+    const projects = scratch("code-projects-");
+    const cwd = scratch("code-sess-cwd-");
+    const sid = "0f0e0d0c-1111-2222-3333-444455556666";
+    const dir = join(projects, cwd.replace(/[^A-Za-z0-9]/g, "-"));
+    mkdirSync(join(dir, sid, "subagents"), { recursive: true });
+    writeFileSync(join(dir, `${sid}.jsonl`), JSON.stringify({ type: "user", message: { role: "user", content: "hi" } }) + "\n");
+    const sessions = live({ sessionId: sid, pid: 88, cwd, status: "busy" });
+    const read = (t: { sessionId: string; cwd: string }) => sessionEdits(t.sessionId, t.cwd, projects);
+    // Nothing edited yet: written.
+    applyEdit("p", body("src/a.ts", top, "one\n"), deps(top, () => [], sessions, read));
+    const edit = { type: "assistant", timestamp: "2026-11-14T11:00:00Z", isSidechain: true, message: { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Edit", input: { file_path: join(top, "src", "a.ts"), old_string: "a", new_string: "b" } }] } };
+    writeFileSync(join(dir, sid, "subagents", "agent-a1.jsonl"), JSON.stringify(edit) + "\n");
+    const e = refused(() => applyEdit("p", body("src/a.ts", top, "two\n"), deps(top, () => [], sessions, read)));
+    expect(e.detail.touching?.map((t) => t.why)).toEqual(["a terminal session edited this file"]);
+    expect(readFileSync(join(top, "src", "a.ts"), "utf8")).toBe("one\n");
+  });
+});
+
+describe("the file is checked again just before the new text replaces it (#207)", () => {
+  test("a change made after the first check is kept, and the edit refused (409); no temporary file is left", () => {
+    const top = repo();
+    const f = join(top, "src", "a.ts");
+    const d: EditDeps = { ...deps(top), beforeReplace: (abs) => writeFileSync(abs, "theirs\n") };
+    const e = refused(() => applyEdit("p", body("src/a.ts", top, "mine\n"), d));
+    expect(e.status).toBe(409);
+    expect(e.message).toContain("changed while your edit was being written");
+    expect(e.message).toContain(sha("theirs\n").slice(0, 12));
+    expect(readFileSync(f, "utf8")).toBe("theirs\n");
+    expect(spawnSync("ls", ["-a", join(top, "src")], { encoding: "utf8" }).stdout.trim().split("\n").sort()).toEqual([".", "..", "a.ts"]);
+  });
+
+  test("must not refuse: nothing changed in between, so the text is written", () => {
+    const top = repo();
+    let ran = 0;
+    applyEdit("p", body("src/a.ts", top, "mine\n"), { ...deps(top), beforeReplace: () => ran++ });
+    expect(ran).toBe(1);
+    expect(readFileSync(join(top, "src", "a.ts"), "utf8")).toBe("mine\n");
   });
 });
 

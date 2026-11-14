@@ -16,10 +16,11 @@
  * its repository read-only.
  */
 import { realpathSync } from "node:fs";
-import { sep } from "node:path";
+import { basename, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { LIVE_STATUSES, type AgentStatus } from "./agents/registry";
 import { repoFileKey } from "./readers/replay";
+import { EDIT_TOOLS, editCalls, sessionEdits, type SessionEdits } from "./readers/session-edits";
 import type { AgentsRead, AgentTouch, Touching } from "../shared/code-types";
 import type { ReadReport } from "../shared/types";
 
@@ -32,10 +33,17 @@ export interface TerminalSession {
 }
 
 /**
- * Terminal Claude Code sessions (not AnviDeck's) whose working folder holds the file. What a
- * terminal session edited is not read (only its folder is known), and a session can edit outside
- * its folder: that is not caught. A sessions folder that could not be read whole keeps every file
- * read-only, since a session working there may be among the unread.
+ * Terminal Claude Code sessions (not AnviDeck's) that keep the file read-only, each with why:
+ *   a terminal session works in this folder — its working folder holds the file;
+ *   a terminal session edited this file — elsewhere, but its transcript (or a subagent's) has an
+ *     edit call on the same file, judged as for agents (same path, or same repository and path; #206);
+ *   a terminal session's edits are not known — elsewhere, and its transcript could not be read whole;
+ *   a terminal session's folder is not known — its session file names no folder (#222).
+ * Each "not known" keeps the file read-only: could not tell is never read as "nobody".
+ *
+ * A sessions folder that could not be read whole keeps every file read-only, since a session
+ * working there may be among the unread. What a session changes through Bash names no file and
+ * is not seen.
  *
  * An AnviDeck agent is a live Claude Code session too, with its own file in ~/.claude/sessions.
  * `listedAgents` maps the session ids of the agents already named as keeping this file to their
@@ -43,16 +51,47 @@ export interface TerminalSession {
  * terminal session (#252). Only those: a session whose agent is not in the list stays, since then
  * the session file is the only sign of someone working there (an agent the host has lost track of).
  */
-export function terminalTouching(abs: string, read: { sessions: TerminalSession[]; report: ReadReport }, listedAgents: ReadonlyMap<string, string> = new Map()): Touching[] {
+export function terminalTouching(
+  abs: string,
+  read: { sessions: TerminalSession[]; report: ReadReport },
+  listedAgents: ReadonlyMap<string, string> = new Map(),
+  opts: { editsOf?: (t: TerminalSession) => SessionEdits; keyOf?: (p: string) => string | null } = {},
+): Touching[] {
   if (read.report.status === "unreadable" || read.report.status === "partial")
     return [{ id: "terminal sessions", status: read.report.status, why: "sessions not known", detail: `the live Claude Code sessions could not all be read (${read.report.errors.join("; ")}), so whether one works in this folder is not known` }];
+  const editsOf = opts.editsOf ?? ((t: TerminalSession) => sessionEdits(t.sessionId, t.cwd));
+  const keys = new Map<string, { store: string; top: string } | null>();
+  const keyOf = opts.keyOf ?? ((p: string) => repoFileKey(p, keys));
   const file = realOr(abs);
-  return read.sessions
-    .filter((t) => t.cwd && inside(file, realOr(t.cwd)) && !(t.sessionId && listedAgents.has(t.sessionId)))
-    .map((t) => ({ id: t.sessionId || `pid ${t.pid}`, status: t.status, why: "a terminal session works in this folder" as const, detail: `a terminal Claude Code session (${t.sessionId.slice(0, 8)}, pid ${t.pid}, ${t.status}) works in ${t.cwd}, which holds this file` }));
+  const name = basename(file);
+  let fileKey: string | null | undefined;
+  const out: Touching[] = [];
+  for (const t of read.sessions) {
+    if (t.sessionId && listedAgents.has(t.sessionId)) continue;
+    const id = t.sessionId || `pid ${t.pid}`;
+    const who = `a terminal Claude Code session (${t.sessionId.slice(0, 8) || "no session id"}, pid ${t.pid}, ${t.status})`;
+    if (!t.cwd) {
+      out.push({ id, status: t.status, why: "a terminal session's folder is not known", detail: `${who} names no working folder, so whether it works on this file is not known` });
+      continue;
+    }
+    if (inside(file, realOr(t.cwd))) {
+      out.push({ id, status: t.status, why: "a terminal session works in this folder", detail: `${who} works in ${t.cwd}, which holds this file` });
+      continue;
+    }
+    const e = editsOf(t);
+    // The same repository file has the same name: only those edits are worth a git call.
+    const hit = e.edits.find((x) => basename(x.abs) === name && (realOr(x.abs) === file || ((fileKey ??= keyOf(abs)) !== null && keyOf(x.abs) === fileKey)));
+    if (hit) {
+      out.push({ id, status: t.status, why: "a terminal session edited this file", detail: `${who}, working in ${t.cwd}, edited this file with ${hit.tool} at ${hit.at} (${hit.abs})` });
+      continue;
+    }
+    if (e.unreadable)
+      out.push({ id, status: t.status, why: "a terminal session's edits are not known", detail: `${who}, working in ${t.cwd}: ${e.unreadable}, so whether it edited this file is not known` });
+  }
+  return out;
 }
 
-export const EDIT_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
+export { EDIT_TOOLS };
 
 /** The part of the agent host this module asks (AgentHost satisfies it). */
 export interface HostLike {
@@ -76,18 +115,7 @@ export interface AgentFact {
 
 /** Every file-editing tool call in a host transcript, by the absolute path it named. */
 export function editsIn(lines: { at: string; from: string; message: unknown }[]): { abs: string; tool: string; at: string }[] {
-  const out: { abs: string; tool: string; at: string }[] = [];
-  for (const l of lines) {
-    if (l.from !== "sdk") continue;
-    const m = l.message as { type?: string; message?: { content?: unknown } } | null;
-    if (!m || m.type !== "assistant" || !Array.isArray(m.message?.content)) continue;
-    for (const b of m.message!.content as { type?: string; name?: string; input?: Record<string, unknown> }[]) {
-      if (b?.type !== "tool_use" || !b.name || !EDIT_TOOLS.has(b.name)) continue;
-      const p = b.input?.file_path ?? b.input?.notebook_path;
-      if (typeof p === "string" && p.startsWith("/")) out.push({ abs: p, tool: b.name, at: l.at });
-    }
-  }
-  return out;
+  return lines.flatMap((l) => (l.from === "sdk" ? editCalls(l.message, l.at) : []));
 }
 
 /** The agents and what each edited. Throws when the host cannot be asked; the caller says so. */
