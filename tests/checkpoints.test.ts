@@ -5,7 +5,7 @@
  * Real git on scratch repositories; the agent is a fake query() that edits the folder as a turn would.
  */
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -14,6 +14,8 @@ import { AgentRegistry } from "../server/agents/registry";
 import { loginOnlyEnv, type ClaudeBinary } from "../server/agents/login";
 import { CheckpointStore, IGNORE_ALL, gitRunner, maxCopyBytes, DEFAULT_MAX_MB } from "../server/agents/checkpoints";
 import { AgentTurns } from "../server/agents/turns";
+import { sessionEdits } from "../server/readers/session-edits";
+import { encodeCwd } from "../server/readers/replay";
 import type { CheckpointEntry } from "../shared/checkpoint-types";
 
 const dirs: string[] = [];
@@ -240,7 +242,8 @@ const init = { type: "system", subtype: "init", apiKeySource: "none", session_id
 const result = { type: "result", subtype: "success", is_error: false, result: "ok", total_cost_usd: 0, num_turns: 1, duration_ms: 1, duration_api_ms: 1, stop_reason: null, usage: {}, modelUsage: {}, session_id: "sess-1", uuid: "u3" } as unknown as SDKMessage;
 type Script = (o: Options) => AsyncGenerator<SDKMessage>;
 
-function hostWith(script: Script, opts: { sessions?: ConstructorParameters<typeof AgentTurns>[1]["sessions"]; dir?: string } = {}) {
+type TurnsOpts = NonNullable<ConstructorParameters<typeof AgentTurns>[1]>;
+function hostWith(script: Script, opts: { sessions?: TurnsOpts["sessions"]; edits?: TurnsOpts["edits"]; dir?: string } = {}) {
   const dir = opts.dir ?? scratch();
   const registry = new AgentRegistry(dir);
   const store = new CheckpointStore(dir);
@@ -263,7 +266,11 @@ function hostWith(script: Script, opts: { sessions?: ConstructorParameters<typeo
     githubAccess: () => ({ status: "ok", access: "your-login", source: "default", file: join(dir, "settings.json") }) as never,
     emit: () => {},
   });
-  const turns = new AgentTurns(host, { sessions: opts.sessions ?? (() => ({ sessions: [], report: { status: "ok", errors: [] } as never })) });
+  const turns = new AgentTurns(host, {
+    sessions: opts.sessions ?? (() => ({ sessions: [], report: { status: "ok", errors: [] } as never })),
+    // Never the real ~/.claude/projects: a test says what each session edited.
+    edits: opts.edits ?? (() => ({ edits: [], files: 0 })),
+  });
   return { host, store, turns, dir, firstTurnSaw };
 }
 
@@ -420,6 +427,72 @@ describe("Undo through the routes' side (AgentTurns)", () => {
     expect(own).toBeTruthy();
     sessions = { sessions: [{ sessionId: own, pid: 42, cwd: "", status: "idle" }], report: { status: "ok", errors: [] } as never };
     expect(h.turns.list(a.id).undo).toEqual({ ok: true, warnings: [] });
+  });
+
+  test("a session working in another folder that edited a file in the agent's folder refuses Undo (#288)", async () => {
+    const p = project();
+    const elsewhere = mkdtempSync(join(tmpdir(), "anvideck-elsewhere-"));
+    const ok = { status: "ok", errors: [] } as never;
+    let sessions: ReturnType<NonNullable<TurnsOpts["sessions"]>> = { sessions: [], report: ok };
+    let edits: ReturnType<NonNullable<TurnsOpts["edits"]>> = { edits: [], files: 1 };
+    const asked: string[] = [];
+    const h = hostWith(async function* () {
+      yield init;
+      yield result;
+    }, { sessions: () => sessions, edits: (sid, cwd) => (asked.push(`${sid} ${cwd}`), edits) });
+    const a = h.host.start({ cwd: p, prompt: "go" });
+    await until(() => whens(h.store, a.id).length === 2 && !h.host.get(a.id).running);
+    sessions = { sessions: [{ sessionId: "abcdef12-x", pid: 42, cwd: elsewhere, status: "busy" }], report: ok };
+    // Elsewhere, with edits only elsewhere: Undo is offered, and the session's edits were asked for.
+    edits = { edits: [{ abs: join(elsewhere, "x.ts"), tool: "Edit", at: "t0" }], files: 1 };
+    expect(h.turns.list(a.id).undo).toEqual({ ok: true, warnings: [] });
+    expect(asked).toContain(`abcdef12-x ${elsewhere}`);
+    // A file beside the folder whose name starts the same is not in it.
+    edits = { edits: [{ abs: p + "-other/a.txt", tool: "Write", at: "t1" }], files: 1 };
+    expect(h.turns.list(a.id).undo).toEqual({ ok: true, warnings: [] });
+    // An edit of a file in the folder (named by its real path, as Claude Code may): refused, in list and preview.
+    edits = { edits: [{ abs: join(realpathSync(p), "a.txt"), tool: "Edit", at: "t2" }], files: 1 };
+    expect(h.turns.list(a.id).undo).toEqual({ ok: false, why: expect.stringContaining(`but edited ${join(realpathSync(p), "a.txt")} in this folder (Edit at t2)`) });
+    await expect(h.turns.plan(a.id, "1")).rejects.toThrow("in this folder");
+    // A file it created that is gone now still counts.
+    edits = { edits: [{ abs: join(p, "gone", "new.txt"), tool: "Write", at: "t3" }], files: 1 };
+    expect(h.turns.list(a.id).undo).toEqual({ ok: false, why: expect.stringContaining("new.txt in this folder") });
+    // What it edited could not be read: not known, so refused.
+    edits = { edits: [], files: 1, unreadable: "2 line(s) of t.jsonl could not be read" };
+    expect(h.turns.list(a.id).undo).toEqual({ ok: false, why: expect.stringContaining("what it edited could not be read (2 line(s)") });
+    // A session in a folder above that edited here: refused, not only warned.
+    sessions = { sessions: [{ sessionId: "abcdef12-x", pid: 42, cwd: join(p, ".."), status: "busy" }], report: ok };
+    edits = { edits: [{ abs: join(p, "a.txt"), tool: "MultiEdit", at: "t4" }], files: 1 };
+    expect(h.turns.list(a.id).undo).toEqual({ ok: false, why: expect.stringContaining("in this folder (MultiEdit at t4)") });
+    // The agent's own session is the agent: its edits are not asked for.
+    asked.length = 0;
+    sessions = { sessions: [{ sessionId: h.host.get(a.id).sessionId!, pid: 42, cwd: elsewhere, status: "idle" }], report: ok };
+    expect(h.turns.list(a.id).undo).toEqual({ ok: true, warnings: [] });
+    expect(asked).toEqual([]);
+  });
+
+  test("end to end through the real transcript reader: a subagent's Edit in the agent's folder refuses Undo (#288)", async () => {
+    const p = project();
+    const elsewhere = mkdtempSync(join(tmpdir(), "anvideck-elsewhere-"));
+    const projects = mkdtempSync(join(tmpdir(), "anvideck-projects-"));
+    const sid = "e2e28800-0000-4000-8000-000000000288";
+    const dir = join(projects, encodeCwd(elsewhere));
+    mkdirSync(join(dir, sid, "subagents"), { recursive: true });
+    writeFileSync(join(dir, `${sid}.jsonl`), JSON.stringify({ type: "user", message: { content: "hi" } }) + "\n");
+    const edit = (abs: string) => JSON.stringify({ type: "assistant", isSidechain: true, timestamp: "2026-11-15T00:00:00Z", message: { content: [{ type: "tool_use", name: "Edit", input: { file_path: abs } }] } }) + "\n";
+    writeFileSync(join(dir, sid, "subagents", "agent-1.jsonl"), edit(join(elsewhere, "mine.ts")));
+    const h = hostWith(async function* () {
+      yield init;
+      yield result;
+    }, {
+      sessions: () => ({ sessions: [{ sessionId: sid, pid: 42, cwd: elsewhere, status: "busy" }], report: { status: "ok", errors: [] } as never }),
+      edits: (s, cwd) => sessionEdits(s, cwd, projects),
+    });
+    const a = h.host.start({ cwd: p, prompt: "go" });
+    await until(() => whens(h.store, a.id).length === 2 && !h.host.get(a.id).running);
+    expect(h.turns.list(a.id).undo).toEqual({ ok: true, warnings: [] });
+    appendFileSync(join(dir, sid, "subagents", "agent-1.jsonl"), edit(join(p, "a.txt")));
+    expect(h.turns.list(a.id).undo).toEqual({ ok: false, why: expect.stringContaining(`edited ${join(p, "a.txt")} in this folder`) });
   });
 
   test("a resume, or a start in the same folder, is refused while an Undo holds the agent", async () => {
