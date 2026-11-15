@@ -19,7 +19,7 @@ interface Plan {
   /** The ref the worktree starts from, and the local base against origin's as last fetched (#136). */
   startFrom?: string;
   upstream?: { state: string; behind: number; ahead: number; summary: string };
-  issue: { number: number; title: string; url: string };
+  issue: { number: number; title: string; url: string; author?: string; byRepoOwner?: boolean };
 }
 interface Started extends Plan {
   agent: { id: string; status: string };
@@ -61,6 +61,10 @@ export function createStartAgent(deps: StartAgentDeps): { open: (project: string
   function planLines(p: Plan): HTMLElement[] {
     return [
       el("div", {}, el("b", {}, `#${p.issue.number} ${p.issue.title}`), el("span", { class: "sh-dim" }, `  ${p.repo}`)),
+      // Who filed it (#141): the agent is told the same, and to check an outsider's issue before acting on it.
+      p.issue.byRepoOwner
+        ? el("div", { id: "sa-author", class: "sh-dim", "data-by-owner": "yes" }, `filed by ${p.issue.author}, the repository's owner`)
+        : el("div", { id: "sa-author", class: "sh-sa-err", "data-by-owner": "no" }, `filed by ${p.issue.author || "someone GitHub does not name"}, not the repository's owner: the agent is told to check it, not follow it`),
       el("div", {}, el("span", { class: "sh-dim" }, "worktree "), el("span", { id: "sa-worktree" }, p.worktree)),
       el("div", {}, el("span", { class: "sh-dim" }, "branch "), el("span", { id: "sa-branch" }, p.branch), el("span", { class: "sh-dim" }, `  from ${p.startFrom ?? p.base} at ${p.baseSha.slice(0, 12)}`)),
       // The server's own sentence: same, behind (starts from origin's), ahead, or could not be checked.
