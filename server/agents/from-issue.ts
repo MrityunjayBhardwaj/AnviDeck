@@ -67,6 +67,10 @@ export interface IssueInfo {
   state: string;
   url: string;
   labels: string[];
+  /** Who filed it, as GitHub names them ("" when it does not say, as for a deleted account). */
+  author: string;
+  /** Filed by the repository's owner (the part of owner/name before the slash); false when not known (#141). */
+  byRepoOwner: boolean;
 }
 
 export interface Plan {
@@ -162,7 +166,7 @@ export class FromIssue {
   }
 
   private async readIssue(repo: string, n: number): Promise<IssueInfo> {
-    const r = await this.run("gh", ["issue", "view", String(n), "--repo", repo, "--json", "number,title,body,state,url,labels"]);
+    const r = await this.run("gh", ["issue", "view", String(n), "--repo", repo, "--json", "number,title,body,state,url,labels,author"]);
     if (r.code !== 0) {
       const said = (r.stderr || r.stdout).trim().slice(0, 300) || `gh exited ${r.code}`;
       // Only GitHub's own "no such issue" answer is a missing issue; no auth, no network or no gh
@@ -171,8 +175,11 @@ export class FromIssue {
       throw refuse(502, "github-unread", `could not ask GitHub for issue #${n} of ${repo}: ${said}`);
     }
     try {
-      const j = JSON.parse(r.stdout) as { number: number; title: string; body: string | null; state: string; url: string; labels?: { name: string }[] };
-      return { number: j.number, title: j.title, body: j.body ?? "", state: j.state, url: j.url, labels: (j.labels ?? []).map((l) => l.name) };
+      const j = JSON.parse(r.stdout) as { number: number; title: string; body: string | null; state: string; url: string; labels?: { name: string }[]; author?: { login?: unknown } | null };
+      const author = typeof j.author?.login === "string" ? j.author.login : "";
+      const owner = repo.split("/")[0]!;
+      const byRepoOwner = author !== "" && author.toLowerCase() === owner.toLowerCase();
+      return { number: j.number, title: j.title, body: j.body ?? "", state: j.state, url: j.url, labels: (j.labels ?? []).map((l) => l.name), author, byRepoOwner };
     } catch {
       throw refuse(502, "github-unread", `GitHub's answer for issue #${n} of ${repo} could not be read`);
     }
@@ -246,6 +253,8 @@ export class FromIssue {
         title: p.issue.title,
         body: p.issue.body,
         url: p.issue.url,
+        author: p.issue.author,
+        byRepoOwner: p.issue.byRepoOwner,
         branch: p.branch,
         base: p.base,
         baseSha: p.baseSha,
