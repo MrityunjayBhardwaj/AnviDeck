@@ -142,7 +142,15 @@ export type CodeFileResponse = CodeFileOk | CodeFileNot;
 export interface Touching {
   id: string;
   status: string;
-  why: "works in this folder" | "edited this file" | "edits not known" | "a terminal session works in this folder" | "sessions not known";
+  why:
+    | "works in this folder"
+    | "edited this file"
+    | "edits not known"
+    | "a terminal session works in this folder"
+    | "a terminal session edited this file"
+    | "a terminal session's edits are not known"
+    | "a terminal session's folder is not known"
+    | "sessions not known";
   detail: string;
 }
 

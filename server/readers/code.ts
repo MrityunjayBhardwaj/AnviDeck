@@ -22,9 +22,10 @@ import type { Catalogue } from "../../shared/types";
 /** The rule an edit is judged by, in the words the page shows (server/code-edit.ts enforces it). */
 export const EDIT_RULE =
   "Code writes a file only when no running AnviDeck agent works in the folder that holds it, or has edited the same file " +
-  "in any checkout of this repository, and only when the file is still the one you opened (same sha256). " +
-  "No live terminal Claude Code session may work in the folder that holds it either (what a terminal session edits " +
-  "outside its own folder is not known). Only inside the project's own folder: no path outside it, no symlink, nothing under .git. " +
+  "in any checkout of this repository, and only when the file is still the one you opened (same sha256, checked again just before it is replaced). " +
+  "No live terminal Claude Code session may work in the folder that holds it, or have edited the same file from another folder " +
+  "(its transcripts' edit calls; a change it makes through Bash is not seen), and a session whose folder or edits cannot be read " +
+  "keeps it read-only. Only inside the project's own folder: no path outside it, no symlink, nothing under .git. " +
   "Never a catalogue (.anvi), a Ground Truth doc (ref/) or Claude Code's configuration (.claude/, .mcp.json): agents change those.";
 
 /** Files larger than this are not shown (said, never cut). */

@@ -411,6 +411,15 @@ describe("Undo through the routes' side (AgentTurns)", () => {
     expect((await h.turns.plan(a.id, "1")).warnings).toEqual([expect.stringContaining("a terminal Claude Code session (abcdef12, pid 42)")]);
     sessions = { sessions: [], report: { status: "partial", errors: ["x.json: EACCES"] } as never };
     expect(h.turns.list(a.id).undo).toEqual({ ok: false, why: expect.stringContaining("could not all be read") });
+    // A live session that names no folder may be working here (#286): refused, and plan says so.
+    sessions = { sessions: [{ sessionId: "abcdef12-x", pid: 42, cwd: "", status: "busy" }], report: { status: "ok", errors: [] } as never };
+    expect(h.turns.list(a.id).undo).toEqual({ ok: false, why: expect.stringContaining("names no working folder") });
+    await expect(h.turns.plan(a.id, "1")).rejects.toThrow("names no working folder");
+    // The agent's own session is the agent (stopped here), with or without a folder: not a refusal.
+    const own = h.host.get(a.id).sessionId!;
+    expect(own).toBeTruthy();
+    sessions = { sessions: [{ sessionId: own, pid: 42, cwd: "", status: "idle" }], report: { status: "ok", errors: [] } as never };
+    expect(h.turns.list(a.id).undo).toEqual({ ok: true, warnings: [] });
   });
 
   test("a resume, or a start in the same folder, is refused while an Undo holds the agent", async () => {
