@@ -11,18 +11,25 @@
  * worktree is `.claude/worktrees/issue-N` inside it) is named as a warning, not a refusal: it is
  * working on another checkout, and refusing on it would turn Undo off whenever you have the
  * project open in a terminal. It can still edit here; the preview says so.
+ *
+ * A session in any other folder is judged by what it edited (#288): an edit call in its
+ * transcripts (or its subagents') on a file in this folder refuses, for as long as the session
+ * lives, and so do edits that could not be read. Changes made through Bash name no file and are
+ * not seen.
  */
 import { spawnSync } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
-import { sep } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { AgentHost, HostError, type AgentView } from "./host";
 import { CheckpointError } from "./checkpoints";
 import { readLiveSessionsReport } from "../readers/sessions";
+import { sessionEdits, type SessionEdits } from "../readers/session-edits";
 import { LIVE_STATUSES } from "./registry";
 import type { CheckpointsAnswer, UndoAnswer, UndoPlan } from "../../shared/checkpoint-types";
 import type { ReadReport } from "../../shared/types";
 
 type SessionsRead = () => { sessions: { sessionId: string; pid: number; cwd: string; status: string }[]; report: ReadReport };
+type EditsRead = (sessionId: string, cwd: string) => SessionEdits;
 
 const realOr = (p: string) => {
   try {
@@ -31,6 +38,21 @@ const realOr = (p: string) => {
     return p;
   }
 };
+/**
+ * A file's path through the real path of its nearest folder that still exists: the file, and the
+ * folders it was made in, may be gone (an Undo, a rename).
+ */
+function realFile(p: string): string {
+  const rest: string[] = [];
+  for (let d = p; ; d = dirname(d)) {
+    try {
+      return join(realpathSync(d), ...rest);
+    } catch {
+      if (dirname(d) === d) return p;
+      rest.unshift(basename(d));
+    }
+  }
+}
 const within = (a: string, b: string) => a === b || a.startsWith(b.endsWith(sep) ? b : b + sep);
 /** Is `other` (a session's or agent's folder) a folder above `here`, not `here` itself? */
 const above = (other: string, here: string) => other !== here && within(here, other);
@@ -38,12 +60,14 @@ const SHA = /^[0-9a-f]{40}$/;
 
 export class AgentTurns {
   private readonly sessions: SessionsRead;
+  private readonly edits: EditsRead;
 
   constructor(
     private readonly host: AgentHost,
-    opts: { sessions?: SessionsRead } = {},
+    opts: { sessions?: SessionsRead; edits?: EditsRead } = {},
   ) {
     this.sessions = opts.sessions ?? readLiveSessionsReport;
+    this.edits = opts.edits ?? ((sid, cwd) => sessionEdits(sid, cwd));
   }
 
   private store() {
@@ -89,6 +113,12 @@ export class AgentTurns {
       if (!t.cwd) return no(`${who} names no working folder, so whether it works in this folder is not known`);
       const there = realOr(t.cwd);
       if (within(there, here)) return no(`${who} works in ${t.cwd}`);
+      // Working elsewhere is not proof it does not edit here (#288): what it edited is in its
+      // transcripts. Any edit of a file in this folder counts for as long as the session lives.
+      const e = this.edits(t.sessionId, t.cwd);
+      if (e.unreadable) return no(`${who} works in ${t.cwd}, and what it edited could not be read (${e.unreadable}), so whether it edits this folder is not known`);
+      const hit = e.edits.findLast((x) => within(realFile(x.abs), here));
+      if (hit) return no(`${who} works in ${t.cwd} but edited ${hit.abs} in this folder (${hit.tool}${hit.at ? ` at ${hit.at}` : ""}); it may edit here again while it runs`);
       if (above(there, here)) warnings.push(`${who} works in ${t.cwd}, which holds this folder: make sure it is not editing here`);
     }
     return { why: null, warnings };
