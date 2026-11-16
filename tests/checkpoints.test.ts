@@ -613,30 +613,33 @@ describe("limits on a snapshot (#276)", () => {
   test("one time limit for all of a snapshot's git steps: each step gets what is left, and past it the snapshot is given up", async () => {
     const p = project();
     const real = gitRunner(60_000);
+    // The time limit is measured on a clock the test moves: each git step takes 40 ms on it, however
+    // long real git takes on this machine (#294).
+    let clock = 1_000_000;
     const given: number[] = [];
     const slow = async (cmd: string, args: string[], opts?: { cwd?: string; timeoutMs?: number }) => {
       given.push(opts?.timeoutMs ?? -1);
-      await tick(40);
-      return real(cmd, args, opts);
+      clock += 40;
+      // Real git gets real time: only the test's clock measures the limit, so a step this machine
+      // runs slowly is never stopped, and never sends the snapshot down another path.
+      return real(cmd, args, { ...opts, timeoutMs: 60_000 });
     };
-    const store = new CheckpointStore(join(scratch(), "agentdir"), { run: slow, snapshotMs: 150 });
+    const now = () => clock;
+    const store = new CheckpointStore(join(scratch(), "agentdir"), { run: slow, snapshotMs: 150, now });
     expect(await store.capture("ag1", p, { when: "before-run", run: 1 })).toBeNull();
     expect(store.read("ag1").records.at(-1)).toMatchObject({ kind: "checkpoint-failed", reason: expect.stringContaining("took longer than its time limit (0 s for all its steps)") });
-    // Every step was handed a limit, never more than the whole, and less each time.
-    expect(given.length).toBeGreaterThan(1);
-    expect(given.every((ms) => ms > 0 && ms <= 150)).toBe(true);
-    expect(given).toEqual([...given].sort((a, b) => b - a));
+    // Every step was handed what was left of the one limit, and the fifth was never started.
+    expect(given).toEqual([150, 110, 70, 30]);
     // With time enough, every step of a whole snapshot (add and write-tree too) is handed what is left.
     given.length = 0;
-    const roomy = new CheckpointStore(join(scratch(), "agentdir"), { run: slow, snapshotMs: 20_000 });
+    const roomy = new CheckpointStore(join(scratch(), "agentdir"), { run: slow, snapshotMs: 20_000, now });
     expect(await roomy.capture("ag1", p, { when: "before-run", run: 1 })).toMatchObject({ kind: "checkpoint" });
-    const steps = given.slice(0, given.length);
-    expect(steps.length).toBeGreaterThanOrEqual(8); // init, config, rev-parse, ls-files, add, write-tree, three for the head
+    expect(given.length).toBeGreaterThanOrEqual(8); // init, config, rev-parse, ls-files, add, write-tree, three for the head
     // The snapshot's own steps come first; the record's steps after it (diff-tree, update-ref) have no snapshot limit.
-    const snap = steps.filter((ms) => ms !== -1);
-    console.log(`  steps handed a limit: ${snap.length} of ${steps.length}`);
+    const snap = given.filter((ms) => ms !== -1);
+    expect(given.slice(0, snap.length)).toEqual(snap);
     expect(snap.length).toBe(9);
-    expect(snap.every((ms) => ms > 0 && ms <= 20_000)).toBe(true);
+    expect(snap).toEqual(snap.map((_, i) => 20_000 - 40 * i));
   });
 
   test("an agent over the limit starts at once, and its Turns card says why its checkpoints are missing", async () => {
