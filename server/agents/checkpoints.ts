@@ -127,14 +127,17 @@ export class CheckpointStore {
 
   /** How old an index.lock must be to count as left behind by a stopped git step. */
   private readonly lockStaleMs: number;
+  /** The clock a snapshot's time limit is measured on; a test passes its own (#294). */
+  private readonly now: () => number;
 
-  constructor(agentDir: string, opts: { run?: TimedRun; lockStaleMs?: number; snapshotMs?: number; maxBytes?: number } = {}) {
+  constructor(agentDir: string, opts: { run?: TimedRun; lockStaleMs?: number; snapshotMs?: number; maxBytes?: number; now?: () => number } = {}) {
     this.root = join(agentDir, "checkpoints");
     this.recordDir = join(agentDir, "turns");
     this.run = opts.run ?? gitRunner(SNAPSHOT_MS);
     this.snapshotMs = opts.snapshotMs ?? SNAPSHOT_MS;
     this.lockStaleMs = opts.lockStaleMs ?? this.snapshotMs;
     this.maxBytes = opts.maxBytes ?? maxCopyBytes();
+    this.now = opts.now ?? Date.now;
   }
 
   /** The disk an agent's snapshot repository uses on this machine, in bytes; 0 when none is kept (#276). */
@@ -263,10 +266,10 @@ export class CheckpointStore {
    */
   async snapshot(id: string, cwd: string): Promise<Snapshot> {
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new CheckpointError(409, `the agent's folder ${cwd} no longer exists`, "folder-gone");
-    const deadline = Date.now() + this.snapshotMs;
+    const deadline = this.now() + this.snapshotMs;
     const total = `${Math.round(this.snapshotMs / 1000)} s`;
     const left = () => {
-      const ms = deadline - Date.now();
+      const ms = deadline - this.now();
       if (ms <= 0) throw new Error(`the snapshot was given up: it took longer than its time limit (${total} for all its steps)`);
       return ms;
     };
