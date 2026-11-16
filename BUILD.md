@@ -92,7 +92,7 @@ Agents AnviDeck starts write two PR-body sections with a fixed shape: **Evidence
 
 | Guard | Status |
 |---|---|
-| Listens on `127.0.0.1` unless `HOST` is set; refuses a request whose Host is not a loopback name or whose Origin is another page (`server/access.ts`, tested in `tests/access.test.ts`) | **Exists** (#66) |
+| Listens on `127.0.0.1` unless `HOST` is set; refuses a request whose Host is not a loopback name or whose Origin is another page, and one the browser marks as sent by another site's page (`Sec-Fetch-Site` cross-site or same-site; a navigation to a page, not `/api` or `/ws`, is let through) (`server/access.ts`, tested in `tests/access.test.ts`) | **Exists** (#66; #195) |
 | Nothing sent over HTTP can act: writes come only from the desktop app's window, over its private channel; no token in the page | On `main` (#241; replaced #76's token check) |
 | Every action (what, target, result, time) appended to an action log in AnviDeck's own store folder and shown in History | Logged (#76); History shows the lines that name a project (#90) |
 | Readers can't act: a test fails if a reader imports the agent host or writes a file | Planned (#76) |

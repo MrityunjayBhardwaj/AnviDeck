@@ -57,6 +57,42 @@ describe("localOnly", () => {
   });
 });
 
+describe("a request another site's page sent (#195)", () => {
+  const app = new Hono();
+  app.use("/*", localOnly("127.0.0.1", ["tauri://localhost"]));
+  app.get("/api/x", (c) => c.json({ ok: true }));
+  app.get("/ws", (c) => c.text("ws"));
+  app.get("/", (c) => c.text("page"));
+  app.get("/agent-host", (c) => c.text("page"));
+  const at = (path: string, headers: Record<string, string>) => app.request(`http://ignored${path}`, { headers: { host: "127.0.0.1:4000", ...headers } });
+
+  test("an <img> or script from another site (no Origin, Sec-Fetch-Site cross-site or same-site) is refused", async () => {
+    for (const site of ["cross-site", "same-site"]) {
+      for (const mode of ["no-cors", "cors"]) {
+        const r = await at("/api/x?refresh=1", { "sec-fetch-site": site, "sec-fetch-mode": mode, "sec-fetch-dest": "image" });
+        expect(r.status).toBe(403);
+        expect((await r.json()).error).toContain(`Sec-Fetch-Site ${site}`);
+      }
+    }
+  });
+
+  test("a navigation from another site to the API or the WebSocket path is refused; to a page it loads", async () => {
+    for (const path of ["/api/x?refresh=1", "/ws", "/api"]) expect((await at(path, { "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate" })).status).toBe(403);
+    for (const path of ["/", "/agent-host"]) expect((await at(path, { "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate" })).status).toBe(200);
+    // Only a navigation: another site's <img> or fetch of a page is refused like any other request.
+    expect((await at("/agent-host", { "sec-fetch-site": "cross-site", "sec-fetch-mode": "no-cors" })).status).toBe(403);
+    // A path that only starts with "api" is a page, not the API.
+    expect((await at("/apix", { "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate" })).status).not.toBe(403);
+  });
+
+  test("its own pages, a typed address, curl, and the desktop window pass", async () => {
+    expect((await at("/api/x?refresh=1", { "sec-fetch-site": "same-origin", "sec-fetch-mode": "cors" })).status).toBe(200);
+    expect((await at("/api/x?refresh=1", { "sec-fetch-site": "none", "sec-fetch-mode": "navigate" })).status).toBe(200);
+    expect((await at("/api/x?refresh=1", {})).status).toBe(200);
+    expect((await at("/api/x?refresh=1", { origin: "tauri://localhost", "sec-fetch-site": "cross-site", "sec-fetch-mode": "cors" })).status).toBe(200);
+  });
+});
+
 // The shipped server, started as `bun run dev` starts it.
 describe("the real server", () => {
   const port = 4600 + Math.floor(Math.random() * 300);
@@ -80,6 +116,17 @@ describe("the real server", () => {
     const other = await fetch(`http://127.0.0.1:${port}/api/routing-architecture`, { headers: { origin: "https://example.com" } });
     expect(other.status).toBe(403);
     expect(other.headers.get("access-control-allow-origin")).toBeNull();
+  }, 15000);
+
+  test("Notes' currency run is not started by another site's GET, and is by its own page (#195)", async () => {
+    await up(`http://127.0.0.1:${port}/api/routing-architecture`);
+    const url = `http://127.0.0.1:${port}/api/notes/currency?project=__no_such_project__&refresh=1`;
+    const other = await fetch(url, { headers: { "sec-fetch-site": "cross-site", "sec-fetch-mode": "no-cors", "sec-fetch-dest": "image" } });
+    expect(other.status).toBe(403);
+    // Its own page reaches the route (404: no such project), so the guard let it through.
+    const own = await fetch(url, { headers: { "sec-fetch-site": "same-origin", "sec-fetch-mode": "cors" } });
+    expect(own.status).toBe(404);
+    expect(String((await own.json()).error)).toContain("__no_such_project__");
   }, 15000);
 
   test("a WebSocket from another page is refused, from its own page accepted", async () => {
