@@ -1,6 +1,7 @@
 import type { Run } from "../readers/repo";
 import type { MergeAnswer, NewIssueAnswer } from "../../shared/work-types";
 import { WorkError } from "../readers/work";
+import { CHECK_KEYS, ciFromContexts, redAtMerge, type CheckKey } from "../../shared/merge-checks";
 
 /**
  * The Work screen's two actions (#85). Each is reached only through the write guard (this
@@ -41,6 +42,11 @@ async function readBack(run: Run, repo: string, number: number): Promise<{ ok: t
  * read and the merge. gh has no such guard for the base, so a retarget inside that window (the
  * time of one gh call) is not caught.
  *
+ * The same read carries CI, the closing reference and GitHub's answer on conflicts with the base
+ * (#148). A check that is red now and is not in `acknowledged`, the red checks the confirmation
+ * named, answers 409 "unnamed-red": CI that turned red after the page was read, or a page that did
+ * not name it, cannot be merged over unseen. Conflicts with other open PRs are not read again.
+ *
  * When gh reports a failure that is not a moved head, the PR is read back before answering,
  * because gh can fail after GitHub merged (a timeout, a dropped connection):
  *   MERGED                  merged (200), with gh's words in ghFailed
@@ -49,17 +55,21 @@ async function readBack(run: Run, repo: string, number: number): Promise<{ ok: t
  * After a merge gh reported, the read-back can only add facts: a failed read-back never turns
  * the merge into a failure.
  */
-export async function mergePr(run: Run, repo: string, number: number, head: string, base: string): Promise<MergeAnswer> {
+export async function mergePr(run: Run, repo: string, number: number, head: string, base: string, acknowledged: unknown = []): Promise<MergeAnswer> {
   if (!Number.isInteger(number) || number <= 0) throw new WorkError(400, "PR number must be a positive whole number");
   if (!FULL_SHA.test(head)) throw new WorkError(400, "head must be the full 40-character commit the page showed you (the commit you reviewed)");
   if (!BRANCH.test(base)) throw new WorkError(400, "base must be the branch the page showed the PR merging into");
-  const v = await run("gh", ["pr", "view", String(number), "--repo", repo, "--json", "number,state,isDraft,headRefOid,baseRefName"]);
+  if (!Array.isArray(acknowledged) || !acknowledged.every((k) => (CHECK_KEYS as readonly unknown[]).includes(k))) {
+    throw new WorkError(400, `acknowledged must list the red checks the confirmation named, each one of ${CHECK_KEYS.join(", ")}`);
+  }
+  const named = new Set(acknowledged as CheckKey[]);
+  const v = await run("gh", ["pr", "view", String(number), "--repo", repo, "--json", "number,state,isDraft,headRefOid,baseRefName,statusCheckRollup,mergeable,closingIssuesReferences"]);
   if (v.code !== 0) {
     const why = said(v);
     if (/Could not resolve to a PullRequest/i.test(why)) throw new WorkError(404, `${repo} has no PR #${number}`, { refusal: "no-pr" });
     throw new WorkError(502, `could not ask GitHub for PR #${number} of ${repo}, so nothing was merged: ${why}`, { refusal: "github-unread" });
   }
-  let now: { state: string; isDraft: boolean; headRefOid: string; baseRefName: string };
+  let now: { state: string; isDraft: boolean; headRefOid: string; baseRefName: string; statusCheckRollup?: unknown; mergeable?: string; closingIssuesReferences?: { number: number }[] };
   try {
     now = JSON.parse(v.stdout);
   } catch {
@@ -79,6 +89,15 @@ export async function mergePr(run: Run, repo: string, number: number, head: stri
       refusal: "base-moved",
       shownBase: base,
       currentBase: now.baseRefName ?? null,
+    });
+  }
+  // Fail closed: a closing list GitHub did not send reads as none, which is red.
+  const red = redAtMerge({ ci: ciFromContexts(now.statusCheckRollup), closing: Array.isArray(now.closingIssuesReferences) ? now.closingIssuesReferences : [], mergeable: String(now.mergeable ?? "") });
+  const unnamed = red.filter((c) => !named.has(c.key));
+  if (unnamed.length) {
+    throw new WorkError(409, `PR #${number} has a red check the confirmation did not name: ${unnamed.map((c) => c.text).join("; ")}. Nothing was merged; reload to see it`, {
+      refusal: "unnamed-red",
+      red: unnamed.map((c) => c.text),
     });
   }
   const m = await run("gh", ["pr", "merge", String(number), "--repo", repo, "--squash", "--match-head-commit", head]);
