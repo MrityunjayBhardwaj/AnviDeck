@@ -219,15 +219,6 @@ export interface HostDeps {
   handoffWaitMs?: number;
 }
 
-export const DEFAULT_CAP = 3;
-
-/**
- * How long a status write waits for another server's registry lock. The wait blocks the event
- * loop, so it is short; a write that misses it is retried (see persist), never dropped.
- */
-export const PERSIST_WAIT_MS = 500;
-/** How soon a missed write, or a start-up sweep that found the registry locked, is tried again. */
-export const RETRY_MS = 2000;
 /**
  * How long Claude Code may keep running after the agent's result before AnviDeck ends it (#105).
  * It normally exits within seconds; one that keeps going is running a background task the agent
@@ -241,6 +232,16 @@ export const EXIT_GRACE_MS = 30_000;
 export const MESSAGE_WAIT_MS = 30_000;
 /** How long a resume waits for the previous run's process to exit once it is ended (#126). */
 export const HANDOFF_WAIT_MS = 10_000;
+
+export const DEFAULT_CAP = 3;
+
+/**
+ * How long a status write waits for another server's registry lock. The wait blocks the event
+ * loop, so it is short; a write that misses it is retried (see persist), never dropped.
+ */
+export const PERSIST_WAIT_MS = 500;
+/** How soon a missed write, or a start-up sweep that found the registry locked, is tried again. */
+export const RETRY_MS = 2000;
 
 export function capFromEnv(v: string | undefined = process.env.ANVIDECK_AGENT_CAP): number {
   const n = Number.parseInt(v ?? "", 10);
@@ -656,19 +657,20 @@ export class AgentHost {
       if (e instanceof RegistryLockedError) throw new HostError(503, `${e.message}; the agent was not resumed, try again in a moment`);
       throw e;
     }
-    // While the old process exits, its run and the new one share one record.
-    if (exiting) rec = Object.assign(this.agents.get(id) ?? found, rec);
     this.agents.set(id, rec);
+    // While the old process exits, its run and the new one share one record.
+    const run = exiting ? Object.assign(this.agents.get(id) ?? found, rec) : rec;
+    this.agents.set(id, run);
     const lines = this.registry.readTranscript(id).lines;
-    rec.messageCount = Math.max(rec.messageCount, lines.length ? lines[lines.length - 1].seq : 0);
-    this.seq.set(id, Math.max(rec.messageCount, this.seq.get(id) ?? 0));
+    run.messageCount = Math.max(run.messageCount, lines.length ? lines[lines.length - 1].seq : 0);
+    this.seq.set(id, Math.max(run.messageCount, this.seq.get(id) ?? 0));
     if (!exiting) {
-      this.launch(rec, prompt, claude, rec.sessionId, github);
-      return this.view(rec);
+      this.launch(run, prompt, claude, run.sessionId, github);
+      return this.view(run);
     }
     // Two Claude Code processes never run one session at once: the old one is ended, and the
     // next run starts when it has exited (finish calls handoff), or not at all if it does not.
-    const final = rec;
+    const final = run;
     const old = exiting.turnOver;
     const timer = setTimeout(() => {
       exiting.timers.delete(timer);
