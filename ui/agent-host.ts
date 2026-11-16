@@ -15,6 +15,8 @@ import { agentRequests, keepCardsOf, onAnswerSent } from "./components/Permissio
 
 interface Agent {
   id: string;
+  /** Its result is in and its Claude Code process is exiting (#105): no Stop; Resume ends it first (#126). */
+  exiting?: { since: string; endsBy: string };
   sessionId?: string;
   cwd: string;
   prompt: string;
@@ -250,11 +252,13 @@ function renderList(): void {
     const actions = el("td", {});
     if (a.runsElsewhere) {
       actions.append(el("span", { class: "k", "data-elsewhere": String(a.runsElsewhere.port ?? "") }, `${elsewhereText(a.runsElsewhere)}; act on it there`));
-    } else if (live) {
+    } else if (live && !a.exiting) {
       const b = el("button", { "data-act": "stop" }, "Stop");
       b.onclick = (ev) => { ev.stopPropagation(); void act(() => call("POST", `/${a.id}/stop`)); };
       actions.append(b);
     } else if (a.sessionId) {
+      // Its result is in and its process is exiting (#105): no Stop; a resume ends it first (#126).
+      if (a.exiting) actions.append(el("span", { class: "k", "data-exiting": a.exiting.endsBy }, `exiting, ended by ${new Date(a.exiting.endsBy).toLocaleTimeString()} at the latest `));
       const inp = el("input", { size: "18", placeholder: "resume prompt", "data-act": "resume-prompt" });
       inp.onclick = (ev) => ev.stopPropagation();
       const b = el("button", { "data-act": "resume" }, "Resume");
