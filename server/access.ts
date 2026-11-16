@@ -35,7 +35,17 @@ function hostnameOf(hostHeader: string): string {
  *    owner opted into a non-loopback bind; or
  *  - it carries an Origin other than the server's own, i.e. another web page
  *    (or its WebSocket) is asking. Same-origin GETs and non-browser clients
- *    such as curl send no Origin and pass.
+ *    such as curl send no Origin and pass; or
+ *  - the browser marks it as sent by another site (Sec-Fetch-Site cross-site or
+ *    same-site) (#195). A plain GET from another page, such as an <img> or a
+ *    script pointing here, carries no Origin, yet it reaches the readers, and
+ *    some of them start work when asked (anvi's currency report runs for
+ *    minutes). Our own pages are same-origin, the desktop window is let through
+ *    by its Origin above, and a page typed in or opened from a bookmark is
+ *    "none". The one cross-site request kept is a top-level navigation to a
+ *    page (a link to AnviDeck clicked elsewhere): it loads the page, not /api
+ *    or /ws, so it starts nothing. A browser too old to send Sec-Fetch-Site,
+ *    like curl, is not judged by it.
  */
 export function localOnly(bind: string = bindHost(), extraOrigins: readonly string[] = []): MiddlewareHandler {
   const anyHost = !isLoopback(bind);
@@ -58,6 +68,15 @@ export function localOnly(bind: string = bindHost(), extraOrigins: readonly stri
       try { ok = new URL(origin).host === host; } catch { ok = false; }
       if (!ok) return c.json({ error: `AnviDeck answers only its own pages (Origin "${origin}" refused)` }, 403);
     }
+    const site = c.req.header("sec-fetch-site");
+    if ((site === "cross-site" || site === "same-site") && !pageNavigation(c.req.header("sec-fetch-mode"), c.req.path)) {
+      return c.json({ error: `AnviDeck answers only its own pages (a request another site's page sent was refused: Sec-Fetch-Site ${site})` }, 403);
+    }
     await next();
   };
+}
+
+/** A top-level navigation to one of AnviDeck's pages, not to its API or WebSocket. */
+function pageNavigation(mode: string | undefined, path: string): boolean {
+  return mode === "navigate" && !/^\/(api|ws)(\/|$)/.test(path);
 }
