@@ -1,5 +1,5 @@
 import { randomUUID, type UUID } from "node:crypto";
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import type {
   Options,
@@ -242,6 +242,11 @@ export const DEFAULT_CAP = 3;
 export const PERSIST_WAIT_MS = 500;
 /** How soon a missed write, or a start-up sweep that found the registry locked, is tried again. */
 export const RETRY_MS = 2000;
+/**
+ * How often a server reads the registry and transcripts for agents it does not run, to show
+ * their changes on its own pages (#223): another server pushes them only to its own pages.
+ */
+export const WATCH_MS = 1500;
 
 export function capFromEnv(v: string | undefined = process.env.ANVIDECK_AGENT_CAP): number {
   const n = Number.parseInt(v ?? "", 10);
@@ -283,6 +288,11 @@ export class AgentHost {
   readonly checkpoints: CheckpointStore | null;
   /** Agents an Undo is putting back right now (#248), with what: no resume or start in their folder until it is done. */
   private readonly holds = new Map<string, { cwd: string; what: string }>();
+  /** Agents this host does not run, as last pushed to the pages, and how far their transcript was read (#223). */
+  private readonly watched = new Map<string, { view: string; size: number }>();
+  private watchedOnce = false;
+  private watchUnread: string | null = null;
+  private watchTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(deps: HostDeps & { query: QueryFn }) {
     this.registry = deps.registry ?? new AgentRegistry();
@@ -478,6 +488,113 @@ export class AgentHost {
     this.emitFn = fn;
   }
 
+  /**
+   * Agents this host does not run change only on disk: another server writes their status to
+   * the registry and their lines to their transcripts, and pushes both only to its own pages.
+   * Every `ms` this host reads them and pushes what changed to its pages too (#223), as it does
+   * for its own agents. The first read only notes where things stand: the pages read the list
+   * themselves when they open.
+   */
+  watchOthers(ms: number = WATCH_MS): void {
+    if (this.watchTimer) return;
+    this.pollOthers();
+    this.watchTimer = setInterval(() => this.pollOthers(), ms);
+    this.watchTimer.unref?.();
+  }
+
+  stopWatching(): void {
+    if (this.watchTimer) clearInterval(this.watchTimer);
+    this.watchTimer = null;
+  }
+
+  /**
+   * One read of the agents this host does not run: an agent whose view changed (status, owner,
+   * its server gone) is pushed as an "agent" event; lines added to its transcript since the last
+   * read are pushed as "agent-message" events, read from where the last read ended. Agents this
+   * host runs are skipped: it pushes their changes as they happen.
+   */
+  pollOthers(): void {
+    const snap = this.snapshot();
+    if (snap.unread) {
+      // Nothing is pushed: the pages keep what they last read, and their next list says why.
+      if (this.watchUnread !== snap.unread) console.error(`[agents] could not read other servers' agents: ${snap.unread}`);
+      this.watchUnread = snap.unread;
+      return;
+    }
+    this.watchUnread = null;
+    const first = !this.watchedOnce;
+    this.watchedOnce = true;
+    for (const v of snap.agents) {
+      if (this.live.has(v.id)) {
+        this.watched.delete(v.id);
+        continue;
+      }
+      const key = JSON.stringify(v);
+      const prev = this.watched.get(v.id);
+      const size = this.transcriptSize(v.id);
+      if (!prev) {
+        this.watched.set(v.id, { view: key, size });
+        // An agent first seen after the first read is new to the pages too.
+        if (!first) {
+          this.emitFn({ type: "agent", data: v });
+          for (const line of this.transcriptFrom(v.id, 0, size).lines) this.emitFn({ type: "agent-message", data: { id: v.id, line } });
+        }
+        continue;
+      }
+      let at = prev.size;
+      if (size < at) at = size; // the file was replaced: start again from its end
+      else if (size > at) {
+        const read = this.transcriptFrom(v.id, at, size);
+        for (const line of read.lines) this.emitFn({ type: "agent-message", data: { id: v.id, line } });
+        at = read.end;
+      }
+      if (prev.view !== key) this.emitFn({ type: "agent", data: v });
+      this.watched.set(v.id, { view: key, size: at });
+    }
+  }
+
+  private transcriptSize(id: string): number {
+    try {
+      return statSync(this.registry.transcriptPath(id)).size;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * The whole lines of a transcript between two byte offsets, and where the last whole line
+   * ends: a line still being written is read next time. A line that does not parse is skipped.
+   */
+  private transcriptFrom(id: string, from: number, to: number): { lines: TranscriptLine[]; end: number } {
+    if (to <= from) return { lines: [], end: from };
+    let text: string;
+    try {
+      const fd = openSync(this.registry.transcriptPath(id), "r");
+      try {
+        const buf = Buffer.alloc(to - from);
+        const n = readSync(fd, buf, 0, buf.length, from);
+        text = buf.subarray(0, n).toString("utf8");
+      } finally {
+        closeSync(fd);
+      }
+    } catch (e) {
+      console.error(`[agents] could not read the transcript of ${id}: ${(e as Error).message}`);
+      return { lines: [], end: from };
+    }
+    const cut = text.lastIndexOf("\n");
+    if (cut < 0) return { lines: [], end: from };
+    const lines: TranscriptLine[] = [];
+    for (const t of text.slice(0, cut).split("\n")) {
+      if (!t.trim()) continue;
+      try {
+        lines.push(JSON.parse(t));
+      } catch {
+        /* a damaged line: the transcript read counts it */
+      }
+    }
+    return { lines, end: from + Buffer.byteLength(text.slice(0, cut + 1), "utf8") };
+  }
+
   /** How many Claude Code processes this host is running right now. */
   get running(): number {
     return this.live.size;
@@ -598,7 +715,6 @@ export class AgentHost {
     }
     const mode = this.checkStartMode(req.mode, req.confirm, req.githubAccess);
     this.refuseHeld(null, cwd);
-    this.checkCap();
     const github = this.requireGithubAccess();
     const claude = this.requireClaude();
     const now = new Date().toISOString();
@@ -615,6 +731,12 @@ export class AgentHost {
       runs: 0,
       messageCount: 0,
     };
+    // Written under the registry's lock, after counting every server's running agents against the
+    // cap, so two servers cannot both pass it (#225).
+    this.claim("started", (agents) => {
+      this.checkCap(agents);
+      return { agents: [...agents, { ...rec }], out: undefined };
+    });
     this.agents.set(rec.id, rec);
     this.seq.set(rec.id, 0);
     this.launch(rec, prompt, claude, undefined, github);
@@ -636,28 +758,22 @@ export class AgentHost {
     // A resume keeps the mode it was started in, and is refused if the cap has been lowered since.
     // Its Full access was confirmed when it started, for the GitHub access it started with (#270).
     this.checkStartMode(found.mode ?? DEFAULT_MODE, FULL_ACCESS_CONFIRM, found.githubAccess, "resume");
-    // The resume of an exiting agent replaces its process: it needs no slot of its own (#126).
-    this.checkCap(exiting ? id : undefined);
     // A resume gets the setting as it is now, not as it was when the agent started.
     const github = this.requireGithubAccess();
     const claude = this.requireClaude();
-    // Claim it under the lock: if another server resumed it a moment ago, it now runs there.
-    let rec: AgentRecord;
-    try {
-      rec = this.registry.update((agents) => {
-        const i = agents.findIndex((a) => a.id === id);
-        const now = i >= 0 ? agents[i]! : found;
-        this.refuseElsewhere(now, "resume it");
-        const claimed: AgentRecord = { ...now, owner: this.owner, status: "starting", reason: undefined, updatedAt: new Date().toISOString() };
-        const next = [...agents];
-        if (i >= 0) next[i] = claimed;
-        else next.push(claimed);
-        return { agents: next, out: claimed };
-      }, PERSIST_WAIT_MS);
-    } catch (e) {
-      if (e instanceof RegistryLockedError) throw new HostError(503, `${e.message}; the agent was not resumed, try again in a moment`);
-      throw e;
-    }
+    // Claim it under the lock: if another server resumed it a moment ago, it now runs there. The
+    // cap counts every server's running agents, read under the same lock (#225).
+    const rec = this.claim("resumed", (agents) => {
+      const i = agents.findIndex((a) => a.id === id);
+      const now = i >= 0 ? agents[i]! : found;
+      this.refuseElsewhere(now, "resume it");
+      this.checkCap(agents, exiting ? id : undefined);
+      const claimed: AgentRecord = { ...now, owner: this.owner, status: "starting", reason: undefined, updatedAt: new Date().toISOString() };
+      const next = [...agents];
+      if (i >= 0) next[i] = claimed;
+      else next.push(claimed);
+      return { agents: next, out: claimed };
+    });
     this.agents.set(id, rec);
     // While the old process exits, its run and the new one share one record.
     const run = exiting ? Object.assign(this.agents.get(id) ?? found, rec) : rec;
@@ -836,10 +952,52 @@ export class AgentHost {
 
   // ---------------------------------------------------------------------------------------
 
-  private checkCap(replacing?: string): void {
-    const n = this.live.size - (replacing !== undefined && this.live.has(replacing) ? 1 : 0);
-    if (n >= this.cap) {
-      throw new HostError(429, `${n} agents are running, the most allowed at once is ${this.cap}; stop one first`);
+  /**
+   * Agents running now, as counted against the cap (#225): this server's own, and those another
+   * AnviDeck server that is still alive runs on the same registry (`agents`, as on disk).
+   */
+  private runningEverywhere(agents: AgentRecord[], replacing?: string): { here: number; elsewhere: AgentRecord[] } {
+    // The resume of an exiting agent replaces its process: it needs no slot of its own (#126).
+    const here = this.live.size - (replacing !== undefined && this.live.has(replacing) ? 1 : 0);
+    return { here, elsewhere: agents.filter((a) => !this.live.has(a.id) && this.elsewhere(a) !== undefined) };
+  }
+
+  /** 429 when the agents running in every server on this registry reach this server's cap. */
+  private checkCap(agents: AgentRecord[], replacing?: string): void {
+    const { here, elsewhere } = this.runningEverywhere(agents, replacing);
+    const total = here + elsewhere.length;
+    if (total < this.cap) return;
+    const servers = [...new Set(elsewhere.map((a) => (a.owner!.port !== undefined ? `port ${a.owner!.port}` : `pid ${a.owner!.pid}`)))];
+    const split = elsewhere.length ? ` (${here} here, ${elsewhere.length} in another AnviDeck server: ${servers.join(", ")})` : "";
+    throw new HostError(429, `${total} agent${total === 1 ? " is" : "s are"} running${split}, the most allowed at once is ${this.cap}; stop one first`, {
+      running: { here, elsewhere: elsewhere.length },
+      cap: this.cap,
+    });
+  }
+
+  /**
+   * The cap checked before anything is made (from-issue makes a worktree first), on the registry
+   * as it reads now. The start checks again under the lock. A registry that cannot be read is
+   * refused, never counted as empty.
+   */
+  precheckCap(): void {
+    let agents: AgentRecord[];
+    try {
+      agents = this.registry.load();
+    } catch (e) {
+      throw new HostError(503, `the agent registry could not be read, so the agents running in other AnviDeck servers could not be counted against the cap: ${(e as Error).message}`);
+    }
+    this.checkCap(agents);
+  }
+
+  /** A read-modify-write of the registry under its lock for a start or resume; refusals thrown in `fn` pass through. */
+  private claim<T>(doing: "started" | "resumed", fn: (agents: AgentRecord[]) => { agents?: AgentRecord[]; out: T }): T {
+    try {
+      return this.registry.update(fn, PERSIST_WAIT_MS);
+    } catch (e) {
+      if (e instanceof HostError) throw e;
+      if (e instanceof RegistryLockedError) throw new HostError(503, `${e.message}; the agent was not ${doing}, try again in a moment`);
+      throw new HostError(503, `the agent registry could not be read, so the agent was not ${doing}: ${(e as Error).message}`);
     }
   }
 

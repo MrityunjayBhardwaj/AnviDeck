@@ -330,17 +330,17 @@ function hostLine(read: AgentsRead): HTMLElement {
     const hosted = read.agents as unknown as HostAgent[];
     const running = hosted.filter((a) => a.running).length;
     const elsewhere = hosted.filter((a) => a.runsElsewhere).length;
-    line.append(`Agent host: ${read.agents.length} agent${read.agents.length === 1 ? "" : "s"}, ${running} running`);
+    line.append(`Agent host: ${read.agents.length} agent${read.agents.length === 1 ? "" : "s"}, ${running} running here`);
+    // Another AnviDeck server sharing the registry runs these (#104). The cap counts them too (#225).
+    if (elsewhere) line.append(` and ${elsewhere} in another AnviDeck server`);
     const o = S.overview;
     if (o.state === "ok") {
       const l = o.data.login;
-      line.append(` of at most ${o.data.cap} · login `,
+      line.append(` (${running + elsewhere} of at most ${o.data.cap}, counted across every AnviDeck server) · login `,
         l.error ? el("span", "aw-err", `could not read (${l.error})`) : el("span", l.ok ? "aw-ok" : "aw-err", `${l.authMethod ?? "?"} · plan ${l.plan ?? "?"}${l.loggedIn ? "" : " · NOT logged in"}`),
         ` · registry ${o.data.registry} (GET /api/agents)`);
       if (o.data.registryUnread) line.append(" · ", el("span", "aw-err", `${o.data.registryUnread}; only this server's own agents are listed`));
     } else if (o.state === "error") line.append(el("span", "aw-err", ` · login and cap could not be read (${o.error})`));
-    // Another AnviDeck server sharing the registry runs these (#104); they are not in this server's count or cap.
-    if (elsewhere) line.append(` · ${elsewhere} running in another AnviDeck server`);
   }
   return line;
 }

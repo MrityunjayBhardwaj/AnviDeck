@@ -217,6 +217,14 @@ async function renderActions(): Promise<void> {
   }
 }
 
+/** This server's running agents, and those another AnviDeck server runs: the cap counts both (#225). */
+function runningText(): string {
+  const all = [...agents.values()];
+  const here = all.filter((a) => a.running).length;
+  const elsewhere = all.filter((a) => a.runsElsewhere).length;
+  return elsewhere ? `${here + elsewhere} (${here} here, ${elsewhere} in another AnviDeck server)` : String(here);
+}
+
 function renderLogin(o: Overview): void {
   loginBox.replaceChildren(
     el("div", {}, el("span", { class: "k" }, "Claude Code: "),
@@ -226,7 +234,7 @@ function renderLogin(o: Overview): void {
         ? el("span", { class: "err" }, `could not read (${o.login.error})`)
         : el("span", { class: o.login.ok ? "ok" : "err", id: "login-method" },
           `${o.login.authMethod ?? "?"} · plan ${o.login.plan ?? "?"} · provider ${o.login.apiProvider ?? "?"}${o.login.loggedIn ? "" : " · NOT logged in"}`)),
-    el("div", {}, el("span", { class: "k" }, "Running: "), el("span", { id: "running-count" }, String(o.running)), ` of at most ${o.cap}`,
+    el("div", {}, el("span", { class: "k" }, "Running: "), el("span", { id: "running-count" }, runningText()), ` of at most ${o.cap}, counted across every AnviDeck server`,
       el("span", { class: "k" }, "   registry: "), o.registry),
   );
 }
@@ -234,7 +242,7 @@ function renderLogin(o: Overview): void {
 function renderList(): void {
   // Kept current from the agents themselves, not only from the last full read.
   const count = document.getElementById("running-count");
-  if (count) count.textContent = String([...agents.values()].filter((a) => a.running).length);
+  if (count) count.textContent = runningText();
   const rows = [...agents.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   keepCardsOf(rows);
   const table = el("table", {},
