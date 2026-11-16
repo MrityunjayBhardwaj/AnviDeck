@@ -620,7 +620,9 @@ describe("limits on a snapshot (#276)", () => {
     const slow = async (cmd: string, args: string[], opts?: { cwd?: string; timeoutMs?: number }) => {
       given.push(opts?.timeoutMs ?? -1);
       clock += 40;
-      return real(cmd, args, opts);
+      // Real git gets real time: only the test's clock measures the limit, so a step this machine
+      // runs slowly is never stopped, and never sends the snapshot down another path.
+      return real(cmd, args, { ...opts, timeoutMs: 60_000 });
     };
     const now = () => clock;
     const store = new CheckpointStore(join(scratch(), "agentdir"), { run: slow, snapshotMs: 150, now });
