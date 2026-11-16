@@ -154,6 +154,18 @@ interface Live {
    * subagent parks carries only this id; the card names it from here.
    */
   subagents: Map<string, { type?: string; description?: string }>;
+  /**
+   * When the turn's result was applied and the prompt stream closed: the agent is done (or
+   * failed) and its Claude Code process is exiting. From here its result stands (#114).
+   */
+  exitingSince?: string;
+  /** AnviDeck ended the process after its result (why): its exit, error or not, changes nothing. */
+  cutOff?: string;
+  /** A resume waits for this run's process to exit, then launches the next run (#126). */
+  handoff?: () => void;
+  /** Timers of this run (exit grace, message wait), cleared when it ends. */
+  timers: Set<ReturnType<typeof setTimeout>>;
+  messageWait?: ReturnType<typeof setTimeout>;
 }
 
 export type HostEvent =
@@ -169,6 +181,11 @@ export type AgentView = AgentRecord & {
   running: boolean;
   pendingPermissions: PendingPermission[];
   runsElsewhere?: RunsElsewhere;
+  /**
+   * Its result is in and its Claude Code process is exiting (#105, #114): nothing to stop, and a
+   * resume ends that process first (#126). `endsBy`: when AnviDeck ends it at the latest.
+   */
+  exiting?: { since: string; endsBy: string };
 };
 
 export interface HostDeps {
@@ -196,6 +213,10 @@ export interface HostDeps {
    * turn, kept in AnviDeck's own folder. Off (null) unless given; the real app gives one.
    */
   checkpoints?: CheckpointStore | null;
+  /** EXIT_GRACE_MS, MESSAGE_WAIT_MS, HANDOFF_WAIT_MS (tests shorten them). */
+  exitGraceMs?: number;
+  messageWaitMs?: number;
+  handoffWaitMs?: number;
 }
 
 export const DEFAULT_CAP = 3;
@@ -207,6 +228,19 @@ export const DEFAULT_CAP = 3;
 export const PERSIST_WAIT_MS = 500;
 /** How soon a missed write, or a start-up sweep that found the registry locked, is tried again. */
 export const RETRY_MS = 2000;
+/**
+ * How long Claude Code may keep running after the agent's result before AnviDeck ends it (#105).
+ * It normally exits within seconds; one that keeps going is running a background task the agent
+ * started, which nobody will read once the turn is over, and it would hold a run slot.
+ */
+export const EXIT_GRACE_MS = 30_000;
+/**
+ * How long a message sent at the end of a turn may wait for Claude Code to take it in as the
+ * next turn (#124). After that it is recorded as not delivered and the turn's result applies.
+ */
+export const MESSAGE_WAIT_MS = 30_000;
+/** How long a resume waits for the previous run's process to exit once it is ended (#126). */
+export const HANDOFF_WAIT_MS = 10_000;
 
 export function capFromEnv(v: string | undefined = process.env.ANVIDECK_AGENT_CAP): number {
   const n = Number.parseInt(v ?? "", 10);
@@ -241,6 +275,9 @@ export class AgentHost {
   /** The start-up sweep found the registry locked and is still to be done. */
   private sweepPending = false;
   private readonly retryMs: number;
+  private readonly exitGraceMs: number;
+  private readonly messageWaitMs: number;
+  private readonly handoffWaitMs: number;
   /** Checkpoints per turn (#248), or null when this host takes none. */
   readonly checkpoints: CheckpointStore | null;
   /** Agents an Undo is putting back right now (#248), with what: no resume or start in their folder until it is done. */
@@ -266,6 +303,9 @@ export class AgentHost {
     };
     this.ownerAlive = deps.ownerAlive ?? ((o) => this.ownerAliveDefault(o));
     this.retryMs = deps.retryMs ?? RETRY_MS;
+    this.exitGraceMs = deps.exitGraceMs ?? EXIT_GRACE_MS;
+    this.messageWaitMs = deps.messageWaitMs ?? MESSAGE_WAIT_MS;
+    this.handoffWaitMs = deps.handoffWaitMs ?? HANDOFF_WAIT_MS;
     this.checkpoints = deps.checkpoints ?? null;
     try {
       this.sweep();
@@ -584,7 +624,10 @@ export class AgentHost {
   resume(id: string, promptIn: unknown): AgentView {
     const found = this.find(id);
     if (!found) throw new HostError(404, `no agent ${id}`);
-    if (this.live.has(id)) throw new HostError(409, "agent is still running");
+    // A finished agent whose process is still exiting can be resumed: that process is ended and
+    // the resume starts once it has exited (#126). One still in its turn cannot.
+    const exiting = this.live.get(id);
+    if (exiting && !this.isExiting(exiting)) throw new HostError(409, exiting.handoff ? "agent is already being resumed" : "agent is still running");
     this.refuseElsewhere(found, "resume it");
     this.refuseHeld(id, found.cwd);
     if (!found.sessionId) throw new HostError(409, "agent never reached Claude Code, so there is no session to resume; start a new one");
@@ -613,12 +656,59 @@ export class AgentHost {
       if (e instanceof RegistryLockedError) throw new HostError(503, `${e.message}; the agent was not resumed, try again in a moment`);
       throw e;
     }
+    // While the old process exits, its run and the new one share one record.
+    if (exiting) rec = Object.assign(this.agents.get(id) ?? found, rec);
     this.agents.set(id, rec);
     const lines = this.registry.readTranscript(id).lines;
     rec.messageCount = Math.max(rec.messageCount, lines.length ? lines[lines.length - 1].seq : 0);
-    this.seq.set(id, rec.messageCount);
-    this.launch(rec, prompt, claude, rec.sessionId, github);
-    return this.view(rec);
+    this.seq.set(id, Math.max(rec.messageCount, this.seq.get(id) ?? 0));
+    if (!exiting) {
+      this.launch(rec, prompt, claude, rec.sessionId, github);
+      return this.view(rec);
+    }
+    // Two Claude Code processes never run one session at once: the old one is ended, and the
+    // next run starts when it has exited (finish calls handoff), or not at all if it does not.
+    const final = rec;
+    const old = exiting.turnOver;
+    const timer = setTimeout(() => {
+      exiting.timers.delete(timer);
+      if (!exiting.handoff) return;
+      exiting.handoff = undefined;
+      final.status = old?.status ?? "done";
+      final.reason = old?.reason;
+      this.record(id, "host", { event: "resume-not-started", reason: `its previous Claude Code process had not exited ${Math.round(this.handoffWaitMs / 1000)} s after AnviDeck ended it; resume again once it has` });
+      this.changed(final);
+    }, this.handoffWaitMs);
+    timer.unref?.();
+    exiting.timers.add(timer);
+    exiting.handoff = () => {
+      clearTimeout(timer);
+      this.launch(final, prompt, claude, final.sessionId, github);
+    };
+    this.cutOff(id, exiting, "resumed while its Claude Code was still exiting after its result; AnviDeck ended it so the resume can start");
+    this.changed(final);
+    return this.view(final);
+  }
+
+  /** The turn's result is applied and the process is only exiting: nothing is left to stop (#114). */
+  private isExiting(live: Live): boolean {
+    return live.exitingSince !== undefined && !live.ending && !live.handoff;
+  }
+
+  /**
+   * End a run's process after its result (#105, #114, #126): recorded with why, and its exit,
+   * with an error or not, leaves the result as it is.
+   */
+  private cutOff(id: string, live: Live, why: string): void {
+    if (live.cutOff) return;
+    live.cutOff = why;
+    this.record(id, "host", { event: "process-ended", reason: why });
+    live.abort.abort();
+    try {
+      live.close?.();
+    } catch {
+      /* already closed */
+    }
   }
 
   /** Stop a running agent at once. */
@@ -629,6 +719,23 @@ export class AgentHost {
     if (!live) {
       this.refuseElsewhere(rec, "stop it");
       throw new HostError(409, `agent is not running (${this.view(rec).status})`);
+    }
+    if (live.handoff) throw new HostError(409, "the agent is being resumed; stop it once it has started", { status: rec.status });
+    // Its result is in: Stop would only relabel it (#114). Its process is ended for it (#105).
+    if (this.isExiting(live)) {
+      throw new HostError(409, `agent is already ${rec.status}: its result stands, and its Claude Code process is exiting (AnviDeck ends it within ${Math.round(this.exitGraceMs / 1000)} s of the result)`, {
+        status: rec.status,
+        exiting: true,
+      });
+    }
+    if (live.turnOver && !live.ending) {
+      // The result is in, and the run waits only for a message sent at the end of the turn: that
+      // message is not delivered, the result stands, and the process is ended now.
+      for (const u of live.undelivered) this.record(id, "host", { event: "message-not-delivered", messageId: u, reason: `${reason} before Claude Code took it in` });
+      live.undelivered.clear();
+      this.maybeEndTurn(rec, live);
+      this.cutOff(id, live, `${reason} after its result; the result stands`);
+      return this.view(rec);
     }
     this.endRun(id, live, { status: "stopped", reason });
     return this.view(rec);
@@ -669,6 +776,8 @@ export class AgentHost {
     const line = this.record(id, "host", { event: "message-sent", messageId, said, comment, text });
     live.undelivered.add(messageId);
     live.input.push(text, messageId);
+    // Sent after the result, while the run waits: it gets the whole wait from now (#124).
+    if (live.turnOver) this.waitForMessages(rec, live);
     this.changed(rec);
     return { agent: this.view(rec), message: { messageId, said, comment, text, sentAt: line.at, state: "queued" } };
   }
@@ -752,6 +861,10 @@ export class AgentHost {
       }
       return { ...rest, running: false, pendingPermissions };
     }
+    if (this.isExiting(live)) {
+      const endsBy = new Date(Date.parse(live.exitingSince!) + this.exitGraceMs).toISOString();
+      return { ...a, running: true, pendingPermissions, exiting: { since: live.exitingSince!, endsBy } };
+    }
     return { ...a, running: true, pendingPermissions };
   }
 
@@ -774,6 +887,7 @@ export class AgentHost {
       turnOpen: true,
       turnsStarted: 1,
       subagents: new Map(),
+      timers: new Set(),
     };
     // Registered before any await, so two starts in one tick cannot both pass the cap.
     this.live.set(rec.id, live);
@@ -913,8 +1027,37 @@ export class AgentHost {
         live.turnOver = { status: "failed", reason: `Claude Code reported ${m.subtype}${detail ? `: ${String(detail).slice(0, 300)}` : ""}` };
       }
       this.checkpointTurn(rec, live, "after-turn");
-      if (!this.maybeEndTurn(rec, live)) this.changed(rec);
+      if (!this.maybeEndTurn(rec, live)) {
+        if (live.undelivered.size) this.waitForMessages(rec, live);
+        this.changed(rec);
+      }
     }
+  }
+
+  /**
+   * The turn's result is in and a message sent to the agent waits to run as its next turn. If
+   * Claude Code neither takes it in nor turns it away within MESSAGE_WAIT_MS, it is recorded
+   * as not delivered and the result applies (#124): the agent never stays working on it forever.
+   */
+  private waitForMessages(rec: AgentRecord, live: Live): void {
+    if (live.messageWait) {
+      clearTimeout(live.messageWait);
+      live.timers.delete(live.messageWait);
+    }
+    const t = setTimeout(() => {
+      live.timers.delete(t);
+      live.messageWait = undefined;
+      if (this.live.get(rec.id) !== live || live.ending || !live.turnOver || !live.undelivered.size) return;
+      const s = Math.round(this.messageWaitMs / 1000);
+      for (const u of live.undelivered) {
+        this.record(rec.id, "host", { event: "message-not-delivered", messageId: u, reason: `Claude Code did not take it in within ${s} s after the agent's turn ended; resume the agent with it` });
+      }
+      live.undelivered.clear();
+      if (!this.maybeEndTurn(rec, live)) this.changed(rec);
+    }, this.messageWaitMs);
+    t.unref?.();
+    live.messageWait = t;
+    live.timers.add(t);
   }
 
   /**
@@ -950,6 +1093,17 @@ export class AgentHost {
     live.input.end();
     rec.status = live.turnOver.status;
     rec.reason = live.turnOver.reason;
+    live.exitingSince = new Date().toISOString();
+    // Claude Code exits within seconds unless a background task keeps it going: past the grace
+    // it is ended, so a finished agent never holds a run slot for long (#105).
+    const t = setTimeout(() => {
+      live.timers.delete(t);
+      if (this.live.get(rec.id) !== live || !this.isExiting(live)) return;
+      this.cutOff(rec.id, live, `Claude Code was still running ${Math.round(this.exitGraceMs / 1000)} s after the agent's result (a background task it started, for example); AnviDeck ended it so it no longer holds a run slot. The result stands`);
+      this.changed(rec);
+    }, this.exitGraceMs);
+    t.unref?.();
+    live.timers.add(t);
     this.changed(rec);
     return true;
   }
@@ -1023,6 +1177,11 @@ export class AgentHost {
   /** The host ends a run itself (stop, wrong credential, shutdown). Status is set now, not when the process exits. */
   private endRun(id: string, live: Live, ending: { status: "stopped" | "failed"; reason: string }): void {
     if (live.ending) return;
+    // After its result (server shutdown, say): the process is ended, the result stands (#114).
+    if (live.exitingSince) {
+      this.cutOff(id, live, `${ending.reason}; the result stands`);
+      return;
+    }
     live.ending = ending;
     this.withdrawAll(id, live, ending.reason);
     live.input.end();
@@ -1042,6 +1201,16 @@ export class AgentHost {
   private finish(rec: AgentRecord, live: Live, error: unknown): void {
     if (this.live.get(rec.id) !== live) return;
     this.live.delete(rec.id);
+    for (const t of live.timers) clearTimeout(t);
+    live.timers.clear();
+    // A resume was waiting for this process to exit (#126): its run starts now, on the same
+    // record; this run's result was recorded when it came.
+    if (live.handoff) {
+      const next = live.handoff;
+      live.handoff = undefined;
+      next();
+      return;
+    }
     delete rec.processAlive;
     this.withdrawAll(rec.id, live, "agent ended");
     live.input.end();
@@ -1051,8 +1220,13 @@ export class AgentHost {
     if (live.ending) {
       rec.status = live.ending.status;
       rec.reason = live.ending.reason;
-    } else if (live.turnOver && error === undefined) {
-      // Claude Code exited after a result while a message was still waiting: the result stands.
+    } else if (live.turnOver) {
+      // A result was reported: it stands, however the process then exits (#114). An error after
+      // it is recorded, unless AnviDeck ended the process itself.
+      if (error !== undefined && !live.cutOff) {
+        const msg = error instanceof Error ? error.message : String(error);
+        this.record(rec.id, "host", { event: "exited-with-error-after-result", reason: `Claude Code exited with an error after the agent's result; the result stands: ${msg}`.slice(0, 600) });
+      }
       rec.status = live.turnOver.status;
       rec.reason = live.turnOver.reason;
     } else if (error !== undefined || !live.sawResult) {

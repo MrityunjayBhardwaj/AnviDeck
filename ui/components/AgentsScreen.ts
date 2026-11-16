@@ -522,12 +522,18 @@ function controls(a: HostAgent, out: HTMLElement): HTMLElement {
       note.append(link);
     }
     box.append(note);
-  } else if (a.running) {
+  } else if (a.running && !a.exiting) {
     const stop = el("button", "aw-btn sm bad", "Stop");
     stop.dataset.act = "stop";
     stop.onclick = () => void act("Stop", `/api/agents/${encodeURIComponent(a.id)}/stop`);
     box.append(stop);
   } else if (a.sessionId) {
+    // Its result is in and its process is exiting (#105): no Stop; a resume ends it first (#126).
+    if (a.exiting) {
+      const note = el("span", "aw-note", `${a.status}; its Claude Code is exiting (ended by ${new Date(a.exiting.endsBy).toLocaleTimeString()} at the latest) `);
+      note.dataset.exiting = a.exiting.endsBy;
+      box.append(note);
+    }
     const resume = el("button", "aw-btn sm", "Resume");
     resume.dataset.act = "resume";
     resume.title = "Resume its session; the message box's text, if any, is the prompt (else \"Continue.\")";

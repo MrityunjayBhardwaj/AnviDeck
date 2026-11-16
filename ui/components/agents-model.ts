@@ -600,6 +600,8 @@ export interface HostAgent {
   running: boolean;
   /** Another AnviDeck server sharing the registry runs it (#104): act on it there. */
   runsElsewhere?: { pid: number; port?: number };
+  /** Its result is in and its Claude Code process is exiting (#105): no Stop; Resume ends it first (#126). */
+  exiting?: { since: string; endsBy: string };
   createdAt: string;
   updatedAt: string;
   model?: string;
