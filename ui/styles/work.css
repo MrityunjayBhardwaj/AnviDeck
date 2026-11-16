@@ -35,8 +35,13 @@
 .wk-merge { margin-left: auto; display: inline-flex; gap: 6px; }
 .wk-merge-btn, .wk-merge-go { border-color: var(--accent) !important; font-weight: 600; }
 .wk-merge-go { background: var(--sh-accent-soft); }
-.wk-merge-btn:disabled { opacity: .5; cursor: not-allowed; }
+.wk-merge-btn:disabled, .wk-merge-go:disabled { opacity: .5; cursor: not-allowed; }
 .wk-merge-out { font-size: 12.5px; min-height: 0; }
+.wk-confirm { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.wk-confirm ul { margin: 0; padding-left: 18px; }
+.wk-red li { color: var(--red); }
+.wk-over { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.wk-judged { font-size: 12.5px; margin: 4px 0; }
 .wk-others { font-size: 12px; }
 
 /* board */

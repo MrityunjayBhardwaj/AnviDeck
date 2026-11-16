@@ -9,7 +9,8 @@ import { onWorkError, type WorkDeps } from "./work";
  * The Work screen's two actions (#85), mounted at /api:
  *
  *   POST /api/issues                { project, title, body? }      files an issue (gh issue create)
- *   POST /api/prs/:n/merge          { project, head, base }        merges only that head into that base (squash), or 409
+ *   POST /api/prs/:n/merge          { project, head, base, acknowledged? }  merges only that head into that base (squash), or 409;
+ *                                                                  acknowledged: the red checks the confirmation named (#148)
  *
  * Both are writes: the guard installed on the whole app (server/guard.ts) lets them through only
  * with this server's Origin and token, and appends each one, accepted or refused, to the action
@@ -42,7 +43,7 @@ export function workActionRoutes(deps: WorkDeps = {}): Hono {
     if (!/^\d+$/.test(n)) throw new WorkError(400, "PR number must be a whole number");
     const b = await body(c);
     const p = await resolveProject(run, projects, typeof b.project === "string" ? b.project : "");
-    return c.json(await mergePr(run, p.repo, Number(n), typeof b.head === "string" ? b.head : "", typeof b.base === "string" ? b.base : ""));
+    return c.json(await mergePr(run, p.repo, Number(n), typeof b.head === "string" ? b.head : "", typeof b.base === "string" ? b.base : "", b.acknowledged ?? []));
   });
 
   return r;

@@ -5,12 +5,15 @@
  *   prSteps         your workflow, Friction → … → Merge (you), each step from real data
  *   mergeChecks     CI, the closing reference, conflicts with the base and other open PRs
  *   mergeLabel      the Merge button names the commit it will merge
+ *   mergeWarnings   what the confirmation names: red checks and steps not done (#148)
+ *   mergeBlocked    why Merge is not offered, including a head other than the one Home judged (#160)
  *   refusalText     what the page says when a write is refused
  *
  * A fact that could not be read is never shown as a pass: "no CI configured" is not green,
  * an unchecked conflict is not "no conflict", a missing Evidence section is not a done step.
  */
-import type { BoardItem, CiRead, PrConflicts, PrFacts } from "../../shared/work-types";
+import type { BoardItem, PrConflicts, PrFacts } from "../../shared/work-types";
+import { ciCheck, closingCheck, type Check, type CheckKey } from "../../shared/merge-checks";
 
 // ---------------------------------------------------------------------------
 // Board
@@ -176,43 +179,9 @@ export function repoOf(url: string): string {
 // Merge checks
 // ---------------------------------------------------------------------------
 
-export type CheckState = "ok" | "bad" | "pending" | "none" | "unknown";
-
-export interface Check {
-  key: "ci" | "closing" | "base" | "others";
-  state: CheckState;
-  text: string;
-  /** What it was read from, shown on hover. */
-  detail: string;
-}
-
-const CI_OK = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
-const CI_PENDING = new Set(["PENDING", "EXPECTED", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED", ""]);
-
-export function ciCheck(ci: CiRead): Check {
-  const from = "the head commit's statusCheckRollup on GitHub";
-  // No checks at all is "no CI configured": never green.
-  if (ci.rollup === null || ci.total === 0) return { key: "ci", state: "none", text: "no CI configured", detail: `${from}: no checks on the head commit` };
-  const failing = ci.contexts.filter((c) => !CI_OK.has(c.state) && !CI_PENDING.has(c.state));
-  const pending = ci.contexts.filter((c) => CI_PENDING.has(c.state));
-  const cut = ci.total > ci.contexts.length ? ` (${ci.contexts.length} of ${ci.total} read)` : "";
-  if (ci.rollup === "SUCCESS" && !failing.length && !pending.length) return { key: "ci", state: "ok", text: `CI green (${ci.total} check${ci.total === 1 ? "" : "s"})`, detail: `${from}${cut}` };
-  if (ci.rollup === "PENDING" || ci.rollup === "EXPECTED") {
-    return { key: "ci", state: "pending", text: `CI running (${pending.length} of ${ci.total} pending)`, detail: `${from}: ${pending.map((c) => c.name).join(", ")}${cut}` };
-  }
-  return {
-    key: "ci",
-    state: "bad",
-    text: failing.length ? `CI failing: ${failing.map((c) => c.name).join(", ")}` : `CI ${ci.rollup.toLowerCase()}`,
-    detail: `${from}: rollup ${ci.rollup}${cut}`,
-  };
-}
-
-export function closingCheck(pr: PrFacts): Check {
-  const from = "GitHub's closingIssuesReferences for the PR";
-  if (!pr.closing.length) return { key: "closing", state: "bad", text: "no closing reference parsed", detail: `${from}: none. A PR body says "Closes #N" when it finishes the issue` };
-  return { key: "closing", state: "ok", text: `closes ${pr.closing.map((i) => `#${i.number}`).join(", ")} parsed`, detail: from };
-}
+// The CI and closing-reference rules live in shared/merge-checks.ts: the server reads them again
+// just before it merges, and must not disagree with the page about what is red.
+export { ciCheck, closingCheck, type Check, type CheckKey, type CheckState } from "../../shared/merge-checks";
 
 /** Conflicts with the base branch: GitHub's own answer and git merge-tree must both be clean. */
 export function baseCheck(pr: PrFacts, c: PrConflicts, base: string): Check {
@@ -258,15 +227,61 @@ export function mergeLabel(head: string): string {
   return `Merge ${shortSha(head)}`;
 }
 
-/** The second click's words: the PR, the commit, the method and the base. */
-export function confirmLabel(pr: { number: number; headRefOid: string; baseRefName: string }): string {
-  return `Squash-merge #${pr.number} at ${shortSha(pr.headRefOid)} into ${pr.baseRefName}`;
+/** The second click's words: the PR, the commit, the method, the base, and how many red items it merges over. */
+export function confirmLabel(pr: { number: number; headRefOid: string; baseRefName: string }, red = 0): string {
+  return `Squash-merge #${pr.number} at ${shortSha(pr.headRefOid)} into ${pr.baseRefName}${red ? `, over ${red} red` : ""}`;
 }
 
-/** Why Merge is not offered, or null when it is. Checks that are not green are shown beside it, not hidden by it. */
-export function mergeBlocked(pr: PrFacts): string | null {
+export interface MergeWarnings {
+  /** Red: a check that failed, or a workflow step not done. Merging over any of them needs a tick in the confirmation. */
+  red: { text: string; key?: CheckKey }[];
+  /** Not red and not green: CI running or not configured, a conflict not checked. Named, no tick. */
+  unsure: string[];
+  /** The checks among red: the server reads these again and refuses one that is red and was not named. */
+  acknowledged: CheckKey[];
+}
+
+/**
+ * What the confirmation names before you merge (#148): every check that is not green, and every
+ * step of the workflow before Merge that is not done. The Issue step is left out: the closing
+ * check says the same thing, and naming it twice is noise.
+ */
+export function mergeWarnings(checks: Check[], steps: Step[]): MergeWarnings {
+  const red: MergeWarnings["red"] = checks.filter((c) => c.state === "bad").map((c) => ({ text: c.text, key: c.key }));
+  for (const s of steps) {
+    if (s.key === "merge" || s.key === "issue" || s.state === "done") continue;
+    red.push({ text: s.detail.startsWith(s.label) ? s.detail : `${s.label}: ${s.detail}` });
+  }
+  const unsure = checks.filter((c) => c.state === "pending" || c.state === "none" || c.state === "unknown").map((c) => c.text);
+  return { red, unsure, acknowledged: red.flatMap((r) => (r.key ? [r.key] : [])) };
+}
+
+const SHA = /^[0-9a-f]{40}$/;
+
+/** The head Home judged ready, from `#work?…&head=<sha>` (#160), or null. */
+export function judgedHead(params: URLSearchParams): string | null {
+  const v = params.get("head");
+  return v && SHA.test(v) ? v : null;
+}
+
+/**
+ * When Home's link names a repository other than the project's, Work refuses to focus a PR by
+ * that number: #12 there is not #12 here. Null when the link names none or the same one.
+ */
+export function repoMismatch(params: URLSearchParams, repo: string): string | null {
+  const want = params.get("repo");
+  if (!want || want.toLowerCase() === repo.toLowerCase()) return null;
+  const n = params.get("pr");
+  return `Home's link is for ${want}${n ? `#${n}` : ""}, but this project's repository is ${repo}. Pick the project of ${want} in the switcher above.`;
+}
+
+/** Why Merge is not offered, or null when it is. Checks that are not green are shown beside it, and named in the confirmation. */
+export function mergeBlocked(pr: PrFacts, judged: string | null = null): string | null {
   if (pr.isDraft) return "a draft cannot be merged; mark it ready on GitHub";
-  if (!/^[0-9a-f]{40}$/.test(pr.headRefOid)) return "the PR's head commit could not be read";
+  if (!SHA.test(pr.headRefOid)) return "the PR's head commit could not be read";
+  if (judged && judged !== pr.headRefOid) {
+    return `Home judged head ${shortSha(judged)} ready; the PR is now at ${shortSha(pr.headRefOid)}. Review the new head before merging it`;
+  }
   return null;
 }
 
@@ -282,6 +297,10 @@ export function refusalText(status: number, body: Record<string, unknown>): stri
     const was = typeof body.shownBase === "string" ? body.shownBase : "?";
     const now = typeof body.currentBase === "string" ? body.currentBase : "unknown";
     return `Refused, nothing merged: the PR now merges into ${now}, not ${was} as this page showed it. Reload and check where it goes.`;
+  }
+  if (body.refusal === "unnamed-red") {
+    const red = Array.isArray(body.red) ? body.red.filter((x): x is string => typeof x === "string") : [];
+    return `Refused, nothing merged: ${red.length ? red.join("; ") : "a check"} is red now, and the confirmation did not name it. Reload to see it.`;
   }
   // gh failed and GitHub could not be read back: it may have merged. Never "Not done".
   if (body.refusal === "merge-unknown") return `Unknown whether it merged: ${error}`;

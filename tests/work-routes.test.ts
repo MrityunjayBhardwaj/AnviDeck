@@ -40,7 +40,8 @@ function fake(rules: [string, RunResult | ((args: string[]) => RunResult)][]) {
     }
     return fail(`no fake for: ${line}`, 127);
   };
-  return { run, calls, ran: (words: string) => calls.some((c) => words.split(" ").every((w) => c.join(" ").includes(w))) };
+  // ran matches whole arguments: "merge" must not match the "mergeable" field gh pr view asks for.
+  return { run, calls, ran: (words: string) => calls.some((c) => words.split(" ").every((w) => c.includes(w))) };
 }
 
 /** A git checkout with origin on GitHub, so resolveProject finds acme/widget. */
@@ -84,7 +85,9 @@ async function server(rules: [string, RunResult | ((args: string[]) => RunResult
   return { send, sendHttp, get, lines, f };
 }
 
-const view = (state: string, head: string, isDraft = false, base = "main") => ok(JSON.stringify({ number: 7, state, isDraft, headRefOid: head, baseRefName: base }));
+/** gh pr view of PR 7: green by default (closes #70, no CI, GitHub says mergeable); `extra` overrides fields (#148). */
+const view = (state: string, head: string, isDraft = false, base = "main", extra: Record<string, unknown> = {}) =>
+  ok(JSON.stringify({ number: 7, state, isDraft, headRefOid: head, baseRefName: base, statusCheckRollup: [], mergeable: "MERGEABLE", closingIssuesReferences: [{ number: 70 }], ...extra }));
 
 describe("merge refuses a head that moved", () => {
   test("the page's head is no longer the PR's: 409 with both heads, gh pr merge is never run, the refusal is logged", async () => {
@@ -154,6 +157,60 @@ describe("merge refuses a head that moved", () => {
   });
 });
 
+describe("merge refuses a red check the confirmation did not name (#148)", () => {
+  const failing = { statusCheckRollup: [{ __typename: "CheckRun", name: "build", conclusion: "FAILURE", status: "COMPLETED" }, { __typename: "StatusContext", context: "lint", state: "SUCCESS" }] };
+  const mergedBack: [string, RunResult] = ["state,mergeCommit", ok(JSON.stringify({ state: "MERGED", mergeCommit: { oid: "abc" }, mergedAt: "2026-11-16T12:00:00Z" }))];
+
+  test("CI failing and not named: 409 unnamed-red naming the check, gh pr merge never run, refusal logged", async () => {
+    const s = await server([["gh pr view 7 --repo acme/widget --json number", view("OPEN", HEAD, false, "main", failing)], ["gh pr merge", ok()]]);
+    const res = await s.send("/api/prs/7/merge", { project: "widget", head: HEAD, base: "main" });
+    expect(res.status).toBe(409);
+    const j = (await res.json()) as Record<string, unknown>;
+    expect(j).toMatchObject({ refusal: "unnamed-red", red: ["CI failing: build"] });
+    expect(String(j.error)).toContain("Nothing was merged");
+    expect(s.f.ran("gh pr merge")).toBe(false);
+    expect(s.lines().at(-1)).toMatchObject({ path: "/api/prs/7/merge", status: 409, result: "failed" });
+  });
+
+  test("the same CI failure, named by the confirmation: merged", async () => {
+    const s = await server([["gh pr view 7 --repo acme/widget --json number", view("OPEN", HEAD, false, "main", failing)], mergedBack, ["gh pr merge 7", ok()]]);
+    const res = await s.send("/api/prs/7/merge", { project: "widget", head: HEAD, base: "main", acknowledged: ["ci"] });
+    expect(res.status).toBe(200);
+    expect(s.f.ran("gh pr merge")).toBe(true);
+  });
+
+  test("each red check is read on its own: naming CI does not cover a missing closing reference or a conflict with the base", async () => {
+    const r = fake([["gh pr view 7", view("OPEN", HEAD, false, "main", { ...failing, closingIssuesReferences: [], mergeable: "CONFLICTING" })], ["gh pr merge", ok()]]);
+    const e = await mergePr(r.run, "acme/widget", 7, HEAD, "main", ["ci"]).catch((x) => x);
+    expect(e.status).toBe(409);
+    expect(e.detail.red).toEqual(["no closing reference parsed", "conflicts with its base (GitHub says CONFLICTING)"]);
+    const all = fake([["gh pr view 7 --repo acme/widget --json number", view("OPEN", HEAD, false, "main", { ...failing, closingIssuesReferences: [], mergeable: "CONFLICTING" })], mergedBack, ["gh pr merge", ok()]]);
+    expect((await mergePr(all.run, "acme/widget", 7, HEAD, "main", ["ci", "closing", "base"])).merged).toBe(true);
+    expect(r.ran("gh pr merge")).toBe(false);
+  });
+
+  test("a closing list GitHub did not send is read as none (red), never as named", async () => {
+    const r = fake([["gh pr view 7", ok(JSON.stringify({ number: 7, state: "OPEN", isDraft: false, headRefOid: HEAD, baseRefName: "main" }))], ["gh pr merge", ok()]]);
+    const e = await mergePr(r.run, "acme/widget", 7, HEAD, "main").catch((x) => x);
+    expect(e.detail).toMatchObject({ refusal: "unnamed-red", red: ["no closing reference parsed"] });
+    expect(r.ran("gh pr merge")).toBe(false);
+  });
+
+  test("CI still running, unknown mergeability: not red, so nothing has to be named", async () => {
+    const r = fake([["gh pr view 7 --repo acme/widget --json number", view("OPEN", HEAD, false, "main", { mergeable: "UNKNOWN", statusCheckRollup: [{ __typename: "CheckRun", name: "build", conclusion: "", status: "IN_PROGRESS" }] })], mergedBack, ["gh pr merge", ok()]]);
+    expect((await mergePr(r.run, "acme/widget", 7, HEAD, "main")).merged).toBe(true);
+  });
+
+  test("acknowledged that is not a list of check names: 400, nothing read or merged", async () => {
+    for (const bad of ["ci", [1], ["everything"], null]) {
+      const r = fake([["gh pr view", view("OPEN", HEAD)], ["gh pr merge", ok()]]);
+      const e = await mergePr(r.run, "acme/widget", 7, HEAD, "main", bad).catch((x) => x);
+      expect(e.status).toBe(400);
+      expect(r.calls.length).toBe(0);
+    }
+  });
+});
+
 describe("merge refuses a PR retargeted since the page showed it", () => {
   test("the page showed base main, the PR now merges into other-base: 409 base-moved, gh pr merge is never run", async () => {
     const s = await server([["gh pr view 7", view("OPEN", HEAD, false, "other-base")], ["gh pr merge", ok()]]);
@@ -184,7 +241,7 @@ describe("gh pr merge failing is read back before it is called a failure", () =>
     const res = await s.send("/api/prs/7/merge", { project: "widget", head: HEAD, base: "main" });
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ merged: true, base: "main", ghFailed: "gh pr took longer than 60s and was stopped", readBack: { state: "read", mergeCommit: "abc" } });
-    expect(s.f.ran("state,mergeCommit")).toBe(true);
+    expect(s.f.ran("state,mergeCommit,mergedAt")).toBe(true);
     expect(s.lines().at(-1)).toMatchObject({ status: 200, result: "accepted" });
   });
 

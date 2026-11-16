@@ -11,12 +11,16 @@ import {
   itemRef,
   mergeBlocked,
   mergeChecks,
+  judgedHead,
   mergeLabel,
+  mergeWarnings,
   NO_STATUS,
   othersCheck,
   prSteps,
   refusalText,
+  repoMismatch,
 } from "../ui/components/work-model";
+import { ciFromContexts, redAtMerge } from "../shared/merge-checks";
 import { parsePrSections, PR_SECTIONS_EXAMPLE } from "../shared/pr-evidence";
 import type { BoardItem, PairResult, PrConflicts, PrFacts } from "../shared/work-types";
 
@@ -238,5 +242,82 @@ describe("merge", () => {
     expect(focusedPr(new URLSearchParams("pr=12"))).toBe(12);
     expect(focusedPr(new URLSearchParams("pr=x"))).toBeNull();
     expect(focusedPr(new URLSearchParams(""))).toBeNull();
+  });
+});
+
+describe("the confirmation names every red check and unfinished step (#148)", () => {
+  const conflicts = (over: Partial<PrConflicts> = {}): PrConflicts =>
+    ({ state: "checked", base: { state: "clean" }, others: [], ...over }) as PrConflicts;
+  const warn = (p: PrFacts, c: PrConflicts = conflicts()) => mergeWarnings(mergeChecks({ ...p, conflicts: c }), prSteps(p));
+
+  test("all green: nothing red, no tick asked, the label is the plain one", () => {
+    const w = warn(pr());
+    expect(w.red).toEqual([]);
+    expect(w.acknowledged).toEqual([]);
+    expect(confirmLabel(pr(), w.red.length)).toBe("Squash-merge #12 at 0123456 into main");
+  });
+
+  test("CI failing, a conflict with another PR, no closing reference: each named, the checks among them sent as acknowledged", () => {
+    const p = pr({ closing: [], ci: { rollup: "FAILURE", contexts: [{ name: "build", state: "FAILURE" }], total: 1 } });
+    const c = conflicts({ others: [{ number: 145, result: { state: "conflict", files: ["a.ts"] } }] } as Partial<PrConflicts>);
+    const w = warn(p, c);
+    expect(w.red.filter((r) => r.key).map((r) => r.text)).toEqual(["CI failing: build", "no closing reference parsed", "conflicts with #145"]);
+    expect(w.acknowledged).toEqual(["ci", "closing", "others"]);
+    expect(confirmLabel(p, w.red.length)).toContain(`, over ${w.red.length} red`);
+  });
+
+  test("a workflow that has not reached Self-review is red, step by step; the Issue step is not named twice", () => {
+    const p = pr({ closing: [], sections: parsePrSections("") });
+    const texts = warn(p).red.map((r) => r.text);
+    expect(texts).toContain("Self-review not recorded in the PR body");
+    expect(texts.some((t) => t.startsWith("Test:"))).toBe(true);
+    expect(texts.some((t) => t.startsWith("Issue"))).toBe(false);
+    expect(texts).toContain("no closing reference parsed");
+  });
+
+  test("not green but not red (CI running, no CI, a conflict not checked) is listed apart and asks no tick", () => {
+    const w = warn(pr({ ci: { rollup: null, contexts: [], total: 0 } }), { state: "unchecked", reason: "offline" } as PrConflicts);
+    expect(w.red).toEqual([]);
+    expect(w.unsure).toEqual(["no CI configured", "conflicts with main not checked", "conflicts with open PRs not checked"]);
+  });
+
+  test("the server's re-read: gh's context list gives the same verdict as GitHub's rollup", () => {
+    const failing = ciFromContexts([{ __typename: "CheckRun", name: "build", conclusion: "FAILURE", status: "COMPLETED" }, { __typename: "StatusContext", context: "lint", state: "SUCCESS" }]);
+    expect(ciCheck(failing)).toMatchObject({ state: "bad", text: "CI failing: build" });
+    expect(ciCheck(ciFromContexts([{ __typename: "CheckRun", name: "build", conclusion: "", status: "IN_PROGRESS" }])).state).toBe("pending");
+    expect(ciCheck(ciFromContexts([{ __typename: "CheckRun", name: "build", conclusion: "SUCCESS", status: "COMPLETED" }])).state).toBe("ok");
+    // One failed while another still runs: failing, as GitHub's rollup says, not "running".
+    expect(ciCheck(ciFromContexts([{ __typename: "CheckRun", name: "build", conclusion: "FAILURE", status: "COMPLETED" }, { __typename: "CheckRun", name: "e2e", conclusion: null, status: "IN_PROGRESS" }]))).toMatchObject({ state: "bad", text: "CI failing: build" });
+    expect(ciCheck(ciFromContexts([])).state).toBe("none");
+    expect(ciCheck(ciFromContexts(undefined)).state).toBe("none");
+    expect(redAtMerge({ ci: failing, closing: [], mergeable: "CONFLICTING" }).map((c) => c.key)).toEqual(["ci", "closing", "base"]);
+    expect(redAtMerge({ ci: ciFromContexts([]), closing: [{ number: 1 }], mergeable: "UNKNOWN" })).toEqual([]);
+  });
+
+  test("an unnamed-red refusal says which check, and that nothing merged", () => {
+    const t = refusalText(409, { error: "x", refusal: "unnamed-red", red: ["CI failing: build"] });
+    expect(t).toBe("Refused, nothing merged: CI failing: build is red now, and the confirmation did not name it. Reload to see it.");
+  });
+});
+
+describe("Home's link: the head it judged and the repository it meant (#160)", () => {
+  const MOVED = "fedcba9876543210fedcba9876543210fedcba98";
+
+  test("the judged head is read only when it is a full commit", () => {
+    expect(judgedHead(new URLSearchParams(`pr=12&head=${HEAD}`))).toBe(HEAD);
+    expect(judgedHead(new URLSearchParams("pr=12&head=0123456"))).toBeNull();
+    expect(judgedHead(new URLSearchParams("pr=12"))).toBeNull();
+  });
+
+  test("Merge is not offered when the PR moved past the head Home judged; the same head is offered", () => {
+    expect(mergeBlocked(pr(), MOVED)).toBe("Home judged head fedcba9 ready; the PR is now at 0123456. Review the new head before merging it");
+    expect(mergeBlocked(pr(), HEAD)).toBeNull();
+    expect(mergeBlocked(pr(), null)).toBeNull();
+  });
+
+  test("a link for another repository's PR is refused, in any letter case of the same one it is not", () => {
+    expect(repoMismatch(new URLSearchParams("pr=12&repo=acme/other"), "acme/widget")).toContain("Home's link is for acme/other#12, but this project's repository is acme/widget");
+    expect(repoMismatch(new URLSearchParams("pr=12&repo=Acme/Widget"), "acme/widget")).toBeNull();
+    expect(repoMismatch(new URLSearchParams("pr=12"), "acme/widget")).toBeNull();
   });
 });

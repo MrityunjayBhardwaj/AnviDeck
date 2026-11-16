@@ -14,12 +14,16 @@ import {
   confirmLabel,
   focusedPr,
   itemRef,
+  judgedHead,
   mergeBlocked,
   mergeChecks,
   mergeLabel,
+  mergeWarnings,
   prSteps,
   refusalText,
+  repoMismatch,
   shortSha,
+  type MergeWarnings,
 } from "./work-model";
 
 export interface WorkDeps {
@@ -87,7 +91,7 @@ export function WorkScreen(project: string | null, params: URLSearchParams, deps
   const focus = focusedPr(params);
   void (async () => {
     const r = await getJson<PrsResponse>(`/api/work/prs?project=${encodeURIComponent(p)}`);
-    prsEl.replaceChildren(r.ok ? prsSection(r.value, focus) : el("div", { class: "sh-card wk-bad", id: "wk-prs-error" }, `Could not read the open PRs: ${r.error}`));
+    prsEl.replaceChildren(r.ok ? prsSection(r.value, focus, params) : el("div", { class: "sh-card wk-bad", id: "wk-prs-error" }, `Could not read the open PRs: ${r.error}`));
   })();
   async function loadBoard() {
     const r = await getJson<BoardResponse>(`/api/work/board?project=${encodeURIComponent(p)}`);
@@ -101,8 +105,16 @@ export function WorkScreen(project: string | null, params: URLSearchParams, deps
 // PRs
 // ---------------------------------------------------------------------------
 
-function prsSection(r: PrsResponse, focus: number | null): HTMLElement {
+function prsSection(r: PrsResponse, focus: number | null, params: URLSearchParams): HTMLElement {
   const box = el("div", { class: "wk-prs-in" });
+  // Home's link names a PR of another repository: #N there is not #N here (#160).
+  const wrongRepo = focus !== null ? repoMismatch(params, r.repo) : null;
+  if (wrongRepo) {
+    box.append(el("div", { class: "sh-card wk-bad", id: "wk-wrong-repo" }, `${wrongRepo} `, el("a", { href: "#work" }, `Show ${r.repo}'s PRs`)));
+    return box;
+  }
+  // The head Home judged ready applies to the PR its link focuses, and only to it.
+  const judged = focus !== null ? judgedHead(params) : null;
   const shown = r.prs.length < r.total ? `the newest ${r.prs.length} of ${r.total} open PRs` : `${r.total} open PR${r.total === 1 ? "" : "s"}`;
   const source = el("div", { class: "sh-dim wk-src", id: "wk-prs-src" },
     `${r.repo} · ${shown} · read from GitHub ${when(r.readAt)} · conflicts by git merge-tree against each PR's own base and each other open PR`);
@@ -116,7 +128,7 @@ function prsSection(r: PrsResponse, focus: number | null): HTMLElement {
     if (!one) box.append(el("div", { class: "sh-card wk-bad", id: "wk-focus-missing" }, `PR #${focus} is not among ${shown} of ${r.repo}. `, el("a", { href: "#work" }, "Show all")));
     else list = [one];
   }
-  for (const pr of list) box.append(prCard(r, pr));
+  for (const pr of list) box.append(prCard(r, pr, pr.number === focus ? judged : null));
   if (focus !== null && list.length === 1 && r.prs.length > 1) {
     box.append(el("div", { class: "sh-dim wk-others" }, "Other open PRs: ",
       ...r.prs.filter((x) => x.number !== focus).flatMap((x) => [el("a", { href: `#work?pr=${x.number}` }, `#${x.number}`), " "]),
@@ -128,36 +140,50 @@ function prsSection(r: PrsResponse, focus: number | null): HTMLElement {
 
 const MARK = { done: "✓", missing: "○", failed: "✕", todo: "" } as const;
 
-function prCard(r: PrsResponse, pr: PrFacts & { conflicts: PrConflicts }): HTMLElement {
+function prCard(r: PrsResponse, pr: PrFacts & { conflicts: PrConflicts }, judged: string | null): HTMLElement {
   const card = el("div", { class: "sh-card wk-pr", "data-pr": String(pr.number), id: `wk-pr-${pr.number}` });
   card.append(el("h3", {},
     el("a", { href: `#work?pr=${pr.number}` }, `PR #${pr.number}`), " · your workflow ",
     el("span", { class: "wk-pr-title" }, el("a", { href: pr.url, target: "_blank", rel: "noopener" }, pr.title)),
     el("span", { class: "sh-dim wk-pr-by" }, ` ${pr.author ?? "?"} · ${pr.headRefName} · updated ${when(pr.updatedAt)}`)));
 
+  const steps = prSteps(pr);
   const pipe = el("div", { class: "wk-pipeline", role: "list", "data-tour": "pipeline" });
-  for (const s of prSteps(pr)) {
+  for (const s of steps) {
     const mark = s.now && s.state !== "failed" ? "●" : MARK[s.state];
     pipe.append(el("span", { class: `wk-st ${s.state}${s.now ? " now" : ""}`, role: "listitem", title: s.detail, "data-step": s.key, "data-state": s.state }, `${mark ? `${mark} ` : ""}${s.label}`));
   }
   card.append(pipe);
 
+  if (judged) {
+    const moved = judged !== pr.headRefOid;
+    card.append(moved
+      ? el("div", { class: "wk-bad wk-judged", id: `wk-judged-${pr.number}`, "data-judged": judged, "data-moved": "yes" },
+          `Home judged head ${shortSha(judged)} ready; the PR is now at ${shortSha(pr.headRefOid)}. Merge is not offered for the old judgement. `,
+          el("a", { href: `#work?pr=${pr.number}&repo=${encodeURIComponent(r.repo)}` }, `Review the PR at ${shortSha(pr.headRefOid)}`))
+      : el("div", { class: "sh-dim wk-judged", id: `wk-judged-${pr.number}`, "data-judged": judged, "data-moved": "no" },
+          `Home judged this head (${shortSha(judged)}) ready; the checks below are Work's own, read just now.`));
+  }
+
+  const checks = mergeChecks(pr);
   const row = el("div", { class: "wk-row" });
-  for (const c of mergeChecks(pr)) row.append(el("span", { class: `sh-chip wk-chk ${c.state}`, title: c.detail, "data-check": c.key, "data-state": c.state }, c.text));
+  for (const c of checks) row.append(el("span", { class: `sh-chip wk-chk ${c.state}`, title: c.detail, "data-check": c.key, "data-state": c.state }, c.text));
   const out = el("div", { class: "wk-merge-out", "aria-live": "polite" });
-  row.append(mergeControl(r.project, pr, out));
+  row.append(mergeControl(r.project, pr, out, mergeWarnings(checks, steps), judged));
   card.append(row, out);
   return card;
 }
 
 /**
  * Merge, in two clicks: the first names the commit, the second says exactly what happens
- * (squash-merge #N at <sha> into <base>). Only the head shown here is sent; the server refuses
- * with 409 if the PR's head is no longer that commit.
+ * (squash-merge #N at <sha> into <base>) and lists every red check and unfinished step (#148);
+ * with any red, the second button stays off until you tick that you merge over them. Only the
+ * head shown here is sent, with the red checks named; the server refuses with 409 if the head
+ * moved, or if a check it reads again is red and was not named.
  */
-function mergeControl(project: string, pr: PrFacts, out: HTMLElement): HTMLElement {
+function mergeControl(project: string, pr: PrFacts, out: HTMLElement, warn: MergeWarnings, judged: string | null): HTMLElement {
   const box = el("span", { class: "wk-merge" });
-  const blocked = mergeBlocked(pr);
+  const blocked = mergeBlocked(pr, judged);
   const head = pr.headRefOid;
   const btn = el("button", { class: "sh-btn wk-merge-btn", type: "button", "data-head": head, "data-base": pr.baseRefName, title: blocked ?? `You merge; agents never do. Merges exactly ${head}.` }, mergeLabel(head));
   if (blocked) {
@@ -165,11 +191,31 @@ function mergeControl(project: string, pr: PrFacts, out: HTMLElement): HTMLEleme
     box.append(btn);
     return box;
   }
-  const sure = el("button", { class: "sh-btn wk-merge-go", type: "button" }, confirmLabel(pr));
+  const sure = el("button", { class: "sh-btn wk-merge-go", type: "button", "data-red": String(warn.red.length) }, confirmLabel(pr, warn.red.length));
   const cancel = el("button", { class: "sh-btn", type: "button" }, "Cancel");
+  const confirmText = (): HTMLElement => {
+    const c = el("div", { class: "wk-confirm", id: `wk-confirm-${pr.number}` }, el("div", { class: "sh-dim" }, `This merges commit ${head} and nothing newer.`));
+    if (warn.red.length) {
+      c.append(el("div", { class: "wk-bad" }, `Red (${warn.red.length}):`),
+        el("ul", { class: "wk-red" }, ...warn.red.map((x) => el("li", x.key ? { "data-check": x.key } : {}, x.text))));
+    }
+    if (warn.unsure.length) {
+      c.append(el("div", { class: "sh-dim" }, "Not green: "), el("ul", { class: "wk-unsure" }, ...warn.unsure.map((t) => el("li", {}, t))));
+    }
+    if (warn.red.length) {
+      const tick = el("input", { type: "checkbox", id: `wk-over-${pr.number}` });
+      sure.disabled = true;
+      tick.onchange = () => (sure.disabled = !tick.checked);
+      c.append(el("label", { class: "wk-over" }, tick, ` I merge over the ${warn.red.length} red item${warn.red.length === 1 ? "" : "s"} above`));
+    }
+    return c;
+  };
   btn.onclick = () => {
+    // A refused merge left both buttons off; each opening starts afresh (the tick, if any, unticked).
+    sure.disabled = false;
+    cancel.disabled = false;
     box.replaceChildren(sure, cancel);
-    out.replaceChildren(el("span", { class: "sh-dim" }, `This merges commit ${head} and nothing newer.`));
+    out.replaceChildren(confirmText());
   };
   cancel.onclick = () => {
     box.replaceChildren(btn);
@@ -182,7 +228,7 @@ function mergeControl(project: string, pr: PrFacts, out: HTMLElement): HTMLEleme
     try {
       // The head and base sent are the ones this button was built with (and the confirmation
       // named), read from its data attributes; the server refuses if either changed.
-      const a = await write<MergeAnswer>("POST", `/api/prs/${pr.number}/merge`, { project, head: btn.dataset.head, base: btn.dataset.base });
+      const a = await write<MergeAnswer>("POST", `/api/prs/${pr.number}/merge`, { project, head: btn.dataset.head, base: btn.dataset.base, acknowledged: warn.acknowledged });
       const back = a.readBack.state === "read" ? `merge commit ${a.readBack.mergeCommit ? shortSha(a.readBack.mergeCommit) : "?"}` : `read-back: ${a.readBack.reason}`;
       const odd = a.ghFailed ? ` · gh reported "${a.ghFailed}", but GitHub reads it back as merged` : "";
       box.replaceChildren();
