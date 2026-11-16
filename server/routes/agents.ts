@@ -168,6 +168,10 @@ export function createAgentHost(
     return cached.value;
   };
 
+  // Agents another AnviDeck server runs change only on disk; their changes reach this server's
+  // pages by this watch (#223).
+  host.watchOthers();
+
   const page = new Hono();
   // Temporary page for #75 only; the Agents screen (#82) replaces it.
   // It carries no token (#241): writes come only through the desktop app's channel.
@@ -182,5 +186,5 @@ export function createAgentHost(
     return new Response(f, { headers: { "content-type": "application/javascript" } });
   });
 
-  return { host, api: agentRoutes(host, login), page, stopAll: (why: string) => host.stopAll(why), listeningOn: (port: number) => host.listeningOn(port) };
+  return { host, api: agentRoutes(host, login), page, stopAll: (why: string) => { host.stopWatching(); host.stopAll(why); }, listeningOn: (port: number) => host.listeningOn(port) };
 }
