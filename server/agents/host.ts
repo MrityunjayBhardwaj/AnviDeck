@@ -557,7 +557,6 @@ export class AgentHost {
     }
     const mode = this.checkStartMode(req.mode, req.confirm, req.githubAccess);
     this.refuseHeld(null, cwd);
-    this.checkCap();
     const github = this.requireGithubAccess();
     const claude = this.requireClaude();
     const now = new Date().toISOString();
@@ -574,6 +573,12 @@ export class AgentHost {
       runs: 0,
       messageCount: 0,
     };
+    // Written under the registry's lock, after counting every server's running agents against the
+    // cap, so two servers cannot both pass it (#225).
+    this.claim("started", (agents) => {
+      this.checkCap(agents);
+      return { agents: [...agents, { ...rec }], out: undefined };
+    });
     this.agents.set(rec.id, rec);
     this.seq.set(rec.id, 0);
     this.launch(rec, prompt, claude, undefined, github);
@@ -592,27 +597,22 @@ export class AgentHost {
     // A resume keeps the mode it was started in, and is refused if the cap has been lowered since.
     // Its Full access was confirmed when it started, for the GitHub access it started with (#270).
     this.checkStartMode(found.mode ?? DEFAULT_MODE, FULL_ACCESS_CONFIRM, found.githubAccess, "resume");
-    this.checkCap();
     // A resume gets the setting as it is now, not as it was when the agent started.
     const github = this.requireGithubAccess();
     const claude = this.requireClaude();
-    // Claim it under the lock: if another server resumed it a moment ago, it now runs there.
-    let rec: AgentRecord;
-    try {
-      rec = this.registry.update((agents) => {
-        const i = agents.findIndex((a) => a.id === id);
-        const now = i >= 0 ? agents[i]! : found;
-        this.refuseElsewhere(now, "resume it");
-        const claimed: AgentRecord = { ...now, owner: this.owner, status: "starting", reason: undefined, updatedAt: new Date().toISOString() };
-        const next = [...agents];
-        if (i >= 0) next[i] = claimed;
-        else next.push(claimed);
-        return { agents: next, out: claimed };
-      }, PERSIST_WAIT_MS);
-    } catch (e) {
-      if (e instanceof RegistryLockedError) throw new HostError(503, `${e.message}; the agent was not resumed, try again in a moment`);
-      throw e;
-    }
+    // Claim it under the lock: if another server resumed it a moment ago, it now runs there. The
+    // cap counts every server's running agents, read under the same lock (#225).
+    const rec = this.claim("resumed", (agents) => {
+      const i = agents.findIndex((a) => a.id === id);
+      const now = i >= 0 ? agents[i]! : found;
+      this.refuseElsewhere(now, "resume it");
+      this.checkCap(agents);
+      const claimed: AgentRecord = { ...now, owner: this.owner, status: "starting", reason: undefined, updatedAt: new Date().toISOString() };
+      const next = [...agents];
+      if (i >= 0) next[i] = claimed;
+      else next.push(claimed);
+      return { agents: next, out: claimed };
+    });
     this.agents.set(id, rec);
     const lines = this.registry.readTranscript(id).lines;
     rec.messageCount = Math.max(rec.messageCount, lines.length ? lines[lines.length - 1].seq : 0);
@@ -724,9 +724,50 @@ export class AgentHost {
 
   // ---------------------------------------------------------------------------------------
 
-  private checkCap(): void {
-    if (this.live.size >= this.cap) {
-      throw new HostError(429, `${this.live.size} agents are running, the most allowed at once is ${this.cap}; stop one first`);
+  /**
+   * Agents running now, as counted against the cap (#225): this server's own, and those another
+   * AnviDeck server that is still alive runs on the same registry (`agents`, as on disk).
+   */
+  private runningEverywhere(agents: AgentRecord[]): { here: number; elsewhere: AgentRecord[] } {
+    return { here: this.live.size, elsewhere: agents.filter((a) => !this.live.has(a.id) && this.elsewhere(a) !== undefined) };
+  }
+
+  /** 429 when the agents running in every server on this registry reach this server's cap. */
+  private checkCap(agents: AgentRecord[]): void {
+    const { here, elsewhere } = this.runningEverywhere(agents);
+    const total = here + elsewhere.length;
+    if (total < this.cap) return;
+    const servers = [...new Set(elsewhere.map((a) => (a.owner!.port !== undefined ? `port ${a.owner!.port}` : `pid ${a.owner!.pid}`)))];
+    const split = elsewhere.length ? ` (${here} here, ${elsewhere.length} in another AnviDeck server: ${servers.join(", ")})` : "";
+    throw new HostError(429, `${total} agent${total === 1 ? " is" : "s are"} running${split}, the most allowed at once is ${this.cap}; stop one first`, {
+      running: { here, elsewhere: elsewhere.length },
+      cap: this.cap,
+    });
+  }
+
+  /**
+   * The cap checked before anything is made (from-issue makes a worktree first), on the registry
+   * as it reads now. The start checks again under the lock. A registry that cannot be read is
+   * refused, never counted as empty.
+   */
+  precheckCap(): void {
+    let agents: AgentRecord[];
+    try {
+      agents = this.registry.load();
+    } catch (e) {
+      throw new HostError(503, `the agent registry could not be read, so the agents running in other AnviDeck servers could not be counted against the cap: ${(e as Error).message}`);
+    }
+    this.checkCap(agents);
+  }
+
+  /** A read-modify-write of the registry under its lock for a start or resume; refusals thrown in `fn` pass through. */
+  private claim<T>(doing: "started" | "resumed", fn: (agents: AgentRecord[]) => { agents?: AgentRecord[]; out: T }): T {
+    try {
+      return this.registry.update(fn, PERSIST_WAIT_MS);
+    } catch (e) {
+      if (e instanceof HostError) throw e;
+      if (e instanceof RegistryLockedError) throw new HostError(503, `${e.message}; the agent was not ${doing}, try again in a moment`);
+      throw new HostError(503, `the agent registry could not be read, so the agent was not ${doing}: ${(e as Error).message}`);
     }
   }
 
