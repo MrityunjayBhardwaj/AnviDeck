@@ -636,7 +636,8 @@ export class AgentHost {
     // A resume keeps the mode it was started in, and is refused if the cap has been lowered since.
     // Its Full access was confirmed when it started, for the GitHub access it started with (#270).
     this.checkStartMode(found.mode ?? DEFAULT_MODE, FULL_ACCESS_CONFIRM, found.githubAccess, "resume");
-    this.checkCap();
+    // The resume of an exiting agent replaces its process: it needs no slot of its own (#126).
+    this.checkCap(exiting ? id : undefined);
     // A resume gets the setting as it is now, not as it was when the agent started.
     const github = this.requireGithubAccess();
     const claude = this.requireClaude();
@@ -835,9 +836,10 @@ export class AgentHost {
 
   // ---------------------------------------------------------------------------------------
 
-  private checkCap(): void {
-    if (this.live.size >= this.cap) {
-      throw new HostError(429, `${this.live.size} agents are running, the most allowed at once is ${this.cap}; stop one first`);
+  private checkCap(replacing?: string): void {
+    const n = this.live.size - (replacing !== undefined && this.live.has(replacing) ? 1 : 0);
+    if (n >= this.cap) {
+      throw new HostError(429, `${n} agents are running, the most allowed at once is ${this.cap}; stop one first`);
     }
   }
 

@@ -255,3 +255,26 @@ describe("Resume while the finished agent's process is still exiting (#126)", ()
     h.stop(a.id);
   });
 });
+
+describe("Resume of an exiting agent at a full cap (#126)", () => {
+  test("is not refused for want of a slot: it replaces that agent's own process", async () => {
+    const calls: Options[] = [];
+    const query: QueryFn = ({ prompt, options }) => {
+      calls.push(options);
+      return (async function* () {
+        await (prompt as AsyncIterable<SDKUserMessage>)[Symbol.asyncIterator]().next();
+        yield init();
+        yield result;
+        if (!options.resume) await aborted(options);
+      })();
+    };
+    const h = new AgentHost({ registry: new AgentRegistry(scratch()), query, resolveClaude: () => CLAUDE, env: () => loginOnlyEnv({ PATH: "/usr/bin" }), cap: 1, exitGraceMs: 60_000 });
+    const a = h.start({ cwd: scratch(), prompt: "go" });
+    await until(() => h.get(a.id).exiting !== undefined);
+    // Another start is still refused: the exiting process is alive and counts.
+    expect(refusal(() => h.start({ cwd: scratch(), prompt: "another" })).status).toBe(429);
+    expect(h.resume(a.id, "more").status).toBe("starting");
+    await until(() => calls.length === 2 && !h.get(a.id).running);
+    expect(h.get(a.id).status).toBe("done");
+  });
+});
