@@ -44,7 +44,7 @@ const quickJob: QueryFn = () =>
 /** Which servers are alive, by instance: the test's stand-in for process.kill(pid, 0). */
 const alive = new Set<string>();
 
-function server(dir: string, port: number, query: QueryFn = longJob) {
+function server(dir: string, port: number, query: QueryFn = longJob, cap?: number) {
   const owner: Partial<AgentOwner> = { pid: 90000 + port, port, instance: `srv-${port}-${Math.random().toString(36).slice(2)}` };
   alive.add(owner.instance!);
   const host = new AgentHost({
@@ -54,6 +54,7 @@ function server(dir: string, port: number, query: QueryFn = longJob) {
     env: () => loginOnlyEnv({ PATH: "/usr/bin" }),
     owner,
     ownerAlive: (o) => alive.has(o.instance),
+    ...(cap !== undefined ? { cap } : {}),
   });
   /** The server process goes away without stopping anything (crash, kill, restart). */
   const die = () => alive.delete(owner.instance!);
@@ -450,5 +451,142 @@ describe("the owner names the port the server listens on (#240)", () => {
     const a = host.start({ cwd: scratch(), prompt: "job" });
     await until(() => host.get(a.id).status === "done");
     expect(onDisk(dir).find((r) => r.id === a.id)!.owner!.port).toBe(51234);
+  });
+});
+
+describe("the cap counts every server's running agents (#225)", () => {
+  const refusal = (act: () => unknown): HostError => {
+    try {
+      act();
+    } catch (e) {
+      if (e instanceof HostError) return e;
+      throw e;
+    }
+    throw new Error("expected a refusal");
+  };
+
+  test("a start on one server is refused while another server runs the one agent the cap allows; once it stops, it starts", async () => {
+    const dir = scratch();
+    const A = server(dir, 4135, longJob, 1);
+    const B = server(dir, 4136, longJob, 1);
+    const a = A.host.start({ cwd: scratch(), prompt: "A's job" });
+    await until(() => A.host.get(a.id).status === "working");
+    const e = refusal(() => B.host.start({ cwd: scratch(), prompt: "B's job" }));
+    expect(e.status).toBe(429);
+    expect(e.message).toBe("1 agent is running (0 here, 1 in another AnviDeck server: port 4135), the most allowed at once is 1; stop one first");
+    expect(e.detail).toEqual({ running: { here: 0, elsewhere: 1 }, cap: 1 });
+    // Nothing was written for the refused start.
+    expect(onDisk(dir).map((r) => r.id)).toEqual([a.id]);
+    // from-issue asks the same before it makes a worktree.
+    expect(refusal(() => B.host.precheckCap()).status).toBe(429);
+    A.host.stop(a.id);
+    await until(() => A.host.running === 0 && !onDisk(dir).find((r) => r.id === a.id)!.processAlive);
+    B.host.precheckCap();
+    const b = B.host.start({ cwd: scratch(), prompt: "B's job" });
+    expect(b.status).toBe("starting");
+    B.host.stopAll("test over");
+  });
+
+  test("a resume is refused the same way, and says how many run where", async () => {
+    const dir = scratch();
+    const B = server(dir, 4136, quickJob, 2);
+    const done = B.host.start({ cwd: scratch(), prompt: "quick" });
+    await until(() => B.host.get(done.id).status === "done" && !onDisk(dir).find((r) => r.id === done.id)!.processAlive);
+    const A = server(dir, 4135, longJob, 2);
+    const a1 = A.host.start({ cwd: scratch(), prompt: "one" });
+    const a2 = A.host.start({ cwd: scratch(), prompt: "two" });
+    await until(() => A.host.get(a1.id).status === "working" && A.host.get(a2.id).status === "working");
+    const e = refusal(() => B.host.resume(done.id, "again"));
+    expect(e.status).toBe(429);
+    expect(e.message).toContain("2 agents are running (0 here, 2 in another AnviDeck server: port 4135), the most allowed at once is 2");
+    expect(onDisk(dir).find((r) => r.id === done.id)!.status).toBe("done");
+    A.host.stopAll("test over");
+  });
+
+  test("an agent whose server is gone is not counted", async () => {
+    const dir = scratch();
+    const A = server(dir, 4135, longJob, 1);
+    const a = A.host.start({ cwd: scratch(), prompt: "long" });
+    await until(() => A.host.get(a.id).status === "working");
+    A.die();
+    const B = server(dir, 4136, longJob, 1);
+    const b = B.host.start({ cwd: scratch(), prompt: "mine" });
+    expect(b.status).toBe("starting");
+    B.host.stopAll("test over");
+    A.host.stopAll("test over");
+  });
+
+  test("nor is one whose server died after this server started, while the file still says working", async () => {
+    const dir = scratch();
+    const B = server(dir, 4136, longJob, 1);
+    const A = server(dir, 4135, longJob, 1);
+    const a = A.host.start({ cwd: scratch(), prompt: "long" });
+    await until(() => A.host.get(a.id).status === "working");
+    A.die();
+    // No sweep has run on B since: the record on disk still reads working.
+    expect(onDisk(dir).find((r) => r.id === a.id)!.status).toBe("working");
+    const b = B.host.start({ cwd: scratch(), prompt: "mine" });
+    expect(b.status).toBe("starting");
+    B.host.stopAll("test over");
+    A.host.stopAll("test over");
+  });
+
+  test("a registry that cannot be read refuses the start: the other servers' agents could not be counted", () => {
+    const dir = scratch();
+    const B = server(dir, 4136, longJob, 3);
+    writeFileSync(join(dir, "agents.json"), "{ not json");
+    const e = refusal(() => B.host.start({ cwd: scratch(), prompt: "x" }));
+    expect(e.status).toBe(503);
+    expect(e.message).toContain("the agent registry could not be read, so the agent was not started");
+    expect(refusal(() => B.host.precheckCap()).message).toContain("could not be counted against the cap");
+    expect(B.host.running).toBe(0);
+  });
+
+  test("two server processes starting at the same moment with a cap of 1: exactly one starts", async () => {
+    const dir = scratch();
+    const work = scratch("agent-owners-race-");
+    const hostTs = join(import.meta.dir, "..", "server", "agents", "host.ts");
+    const regTs = join(import.meta.dir, "..", "server", "agents", "registry.ts");
+    const loginTs = join(import.meta.dir, "..", "server", "agents", "login.ts");
+    const script = `
+      import { existsSync } from "node:fs";
+      const { AgentHost } = await import(${JSON.stringify(hostTs)});
+      const { AgentRegistry } = await import(${JSON.stringify(regTs)});
+      const { loginOnlyEnv } = await import(${JSON.stringify(loginTs)});
+      const [dir, work, port] = process.argv.slice(2);
+      const query = ({ options }) => (async function* () {
+        yield { type: "system", subtype: "init", apiKeySource: "none", session_id: "s" + port, claude_code_version: "2", model: "m", cwd: "/x", tools: [], mcp_servers: [], permissionMode: "default", slash_commands: [], output_style: "default", uuid: "u" };
+        await new Promise((_, rej) => options.abortController.signal.addEventListener("abort", () => rej(new Error("aborted"))));
+      })();
+      const host = new AgentHost({ registry: new AgentRegistry(dir), query, resolveClaude: () => ({ path: "/fake/claude", realPath: "/fake/claude", fileId: "1" }), env: () => loginOnlyEnv({ PATH: "/usr/bin" }), owner: { port: Number(port) }, cap: 1 });
+      const wait = async (f) => { while (!existsSync(f)) await new Promise((r) => setTimeout(r, 2)); };
+      console.log("ready");
+      await wait(work + "/go");
+      try { host.start({ cwd: work, prompt: "race" }); console.log("started"); } catch (e) { console.log("refused " + e.status + " " + e.message); }
+      await wait(work + "/end");
+      host.stopAll("test over");
+      process.exit(0);
+    `;
+    const child = join(work, "child.ts");
+    writeFileSync(child, script);
+    const procs = [4135, 4136].map((port) => Bun.spawn(["bun", child, dir, work, String(port)], { stdout: "pipe", stderr: "pipe" }));
+    const outs = procs.map((p) => p.stdout.getReader());
+    const dec = new TextDecoder();
+    const said = ["", ""];
+    const readUntil = async (i: number, want: RegExp) => {
+      while (!want.test(said[i]!)) {
+        const { value, done } = await outs[i]!.read();
+        if (done) throw new Error(`child ${i} ended: ${said[i]}`);
+        said[i] += dec.decode(value);
+      }
+    };
+    await Promise.all([readUntil(0, /ready/), readUntil(1, /ready/)]);
+    writeFileSync(join(work, "go"), "");
+    await Promise.all([readUntil(0, /(started|refused.*)\n/), readUntil(1, /(started|refused.*)\n/)]);
+    writeFileSync(join(work, "end"), "");
+    await Promise.all(procs.map((p) => p.exited));
+    const results = said.map((s) => (s.includes("started") ? "started" : s.includes("refused 429") ? "refused" : s));
+    expect(results.sort()).toEqual(["refused", "started"]);
+    expect(said.join("")).toContain("1 in another AnviDeck server");
   });
 });

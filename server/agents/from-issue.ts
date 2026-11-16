@@ -223,9 +223,7 @@ export class FromIssue {
     // Checked before anything is made, like the cap below: a refused mode leaves no worktree (#249).
     const mode = this.host.checkStartMode(body.mode, body.confirm, body.githubAccess);
     // The host would refuse anyway; asking first means nothing is made for an agent that cannot run.
-    if (this.host.running >= this.host.cap) {
-      throw new HostError(429, `${this.host.running} agents are running, the most allowed at once is ${this.host.cap}; stop one first`);
-    }
+    this.host.precheckCap();
     const p = await this.plan(body);
     const key = `${p.main}#${p.issue.number}`;
     if (this.inFlight.has(key)) throw refuse(409, "worktree-exists", `issue #${p.issue.number} is being started right now`);
