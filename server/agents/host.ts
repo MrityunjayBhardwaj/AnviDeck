@@ -170,7 +170,13 @@ interface Live {
 
 export type HostEvent =
   | { type: "agent"; data: AgentView }
-  | { type: "agent-message"; data: { id: string; line: TranscriptLine } };
+  | { type: "agent-message"; data: { id: string; line: TranscriptLine } }
+  /**
+   * Whether this server can follow the agents other servers run (#297): `unread` says why it
+   * cannot, `since` is its last good read of the registry (absent if it never had one); `unread`
+   * null means it follows them again.
+   */
+  | { type: "agents-watch"; data: { unread: string | null; since?: string } };
 
 /**
  * `running`: a Claude Code process is alive for it in THIS server (a "done" agent can still be
@@ -292,6 +298,8 @@ export class AgentHost {
   private readonly watched = new Map<string, { view: string; size: number }>();
   private watchedOnce = false;
   private watchUnread: string | null = null;
+  /** When the watch last read the registry (#297): the pages say they follow nothing since then. */
+  private watchGoodAt: string | undefined;
   private watchTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(deps: HostDeps & { query: QueryFn }) {
@@ -516,12 +524,17 @@ export class AgentHost {
   pollOthers(): void {
     const snap = this.snapshot();
     if (snap.unread) {
-      // Nothing is pushed: the pages keep what they last read, and their next list says why.
-      if (this.watchUnread !== snap.unread) console.error(`[agents] could not read other servers' agents: ${snap.unread}`);
+      // No agent is pushed. The pages are told the rows they show are no longer followed (#297).
+      if (this.watchUnread !== snap.unread) {
+        console.error(`[agents] could not read other servers' agents: ${snap.unread}`);
+        this.emitFn({ type: "agents-watch", data: { unread: snap.unread, ...(this.watchGoodAt ? { since: this.watchGoodAt } : {}) } });
+      }
       this.watchUnread = snap.unread;
       return;
     }
+    if (this.watchUnread !== null) this.emitFn({ type: "agents-watch", data: { unread: null } });
     this.watchUnread = null;
+    this.watchGoodAt = new Date().toISOString();
     const first = !this.watchedOnce;
     this.watchedOnce = true;
     for (const v of snap.agents) {
@@ -968,9 +981,17 @@ export class AgentHost {
     const total = here + elsewhere.length;
     if (total < this.cap) return;
     const servers = [...new Set(elsewhere.map((a) => (a.owner!.port !== undefined ? `port ${a.owner!.port}` : `pid ${a.owner!.pid}`)))];
-    const split = elsewhere.length ? ` (${here} here, ${elsewhere.length} in another AnviDeck server: ${servers.join(", ")})` : "";
-    throw new HostError(429, `${total} agent${total === 1 ? " is" : "s are"} running${split}, the most allowed at once is ${this.cap}; stop one first`, {
-      running: { here, elsewhere: elsewhere.length },
+    // Agents whose result is in still hold a slot while their process exits, and offer no Stop
+    // (#300): name them, and do not tell the owner to stop them.
+    const exiting = [...this.live].filter(([id, l]) => id !== replacing && this.isExiting(l)).length;
+    const parts = [
+      ...(elsewhere.length ? [`${here} here, ${elsewhere.length} in another AnviDeck server: ${servers.join(", ")}`] : []),
+      ...(exiting ? [`${exiting} finished and exiting, ended within ${Math.round(this.exitGraceMs / 1000)} s`] : []),
+    ];
+    const split = parts.length ? ` (${parts.join("; ")})` : "";
+    const advice = exiting === 0 ? "stop one first" : exiting === total ? "try again in a moment" : "stop one of the others, or try again in a moment";
+    throw new HostError(429, `${total} agent${total === 1 ? " is" : "s are"} running${split}, the most allowed at once is ${this.cap}; ${advice}`, {
+      running: { here, elsewhere: elsewhere.length, exiting },
       cap: this.cap,
     });
   }

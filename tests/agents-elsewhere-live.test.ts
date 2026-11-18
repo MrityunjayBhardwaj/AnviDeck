@@ -156,21 +156,42 @@ describe("another server's agent, on this server's pages (#223)", () => {
     expect(lineSeqs(B.events, b.id)).toEqual([]);
   });
 
-  test("an unreadable registry pushes nothing and does not throw; the read resumes once it is fixed", async () => {
+  test("an unreadable registry pushes no agent, tells the pages once (#297), and the read resumes once it is fixed", async () => {
     const dir = scratch();
     const A = server(dir, 4309);
     const B = server(dir, 4310);
     const a = A.host.start({ cwd: scratch(), prompt: "A's job" });
     await until(() => A.host.get(a.id).status === "working");
+    const before = Date.now();
     B.host.pollOthers();
     const good = new AgentRegistry(dir).load();
     writeFileSync(join(dir, "agents.json"), "{ not json");
     expect(() => B.host.pollOthers()).not.toThrow();
-    expect(B.events).toEqual([]);
+    B.host.pollOthers(); // still unreadable: said once, not on every read
+    const watch = B.events.filter((e) => e.type === "agents-watch");
+    expect(watch).toHaveLength(1);
+    expect(B.events.filter((e) => e.type !== "agents-watch")).toEqual([]);
+    const w = watch[0].data as { unread: string | null; since?: string };
+    expect(w.unread).toContain("the agent registry could not be read");
+    // `since` is the last good read: the one before the file broke.
+    expect(Date.parse(w.since!)).toBeGreaterThanOrEqual(before - 5);
+    expect(Date.parse(w.since!)).toBeLessThanOrEqual(Date.now());
     writeFileSync(join(dir, "agents.json"), JSON.stringify({ agents: good.map((r) => (r.id === a.id ? { ...r, status: "done" } : r)) }));
     B.host.pollOthers();
+    expect(B.events.filter((e) => e.type === "agents-watch").map((e) => e.data)).toEqual([w, { unread: null }]);
     expect(agentEvents(B.events, a.id).map((v) => v.status)).toEqual(["done"]);
+    B.host.pollOthers();
+    expect(B.events.filter((e) => e.type === "agents-watch")).toHaveLength(2);
     A.host.stop(a.id);
+  });
+
+  test("a registry unreadable from the watch's first read is said without a since", () => {
+    const dir = scratch();
+    const B = server(dir, 4311);
+    writeFileSync(join(dir, "agents.json"), "{ not json");
+    B.host.pollOthers();
+    expect(B.events.map((e) => e.type)).toEqual(["agents-watch"]);
+    expect((B.events[0].data as { since?: string }).since).toBeUndefined();
   });
 });
 

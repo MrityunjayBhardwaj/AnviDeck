@@ -12,7 +12,10 @@ import {
   hostReadDone,
   hostReadFailed,
   hostSourceLine,
+  mayBeStale,
   mergeHostLines,
+  missingAgentText,
+  noAgentsText,
   parseAgentsScreenParams,
   parseRefusal,
   planFrom,
@@ -615,7 +618,8 @@ describe("the screen acts only through the shared pieces", () => {
     expect(app).toContain("AgentsScreen({");
     expect(app).toMatch(/id === "agents" && !parseAgentsScreenParams\(route\.params\)\.replay/);
     expect(app).toContain("agentsScreenLine(m.id, m.line)");
-    expect(app.match(/agentsScreenAgents\(hostAgents\)/g)?.length).toBe(2);
+    // A pushed agent, a full read, and the registry watch's not-followed mark (#297).
+    expect(app.match(/agentsScreenAgents\(hostAgents\)/g)?.length).toBe(3);
   });
 
   test("a reconnected socket re-reads the agents' transcripts (lines sent while it was down)", () => {
@@ -649,4 +653,31 @@ test("an agent in Full access is marked on its tab; others are not (#249)", asyn
     { ...base, id: "a3", mode: "bypassPermissions", permissionMode: "default" },
   ], []);
   expect(Object.fromEntries(tabs.map((t) => [t.id, t.fullAccess ?? false]))).toEqual({ a1: true, a2: false, a3: false });
+});
+
+describe("the list's state in the Agents screen's messages (#299, #297)", () => {
+  test("an agent in the route while the list is still read is not called unreadable", () => {
+    expect(missingAgentText("a1", "loading")).toBe("Reading the agent list for a1…");
+    expect(missingAgentText("a1", "ok")).toBe("No agent a1 in the agent host's list (read).");
+    for (const s of ["off", "failed"] as const) expect(missingAgentText("a1", s)).toBe("No agent a1 in the agent host's list (could not read the list).");
+    expect(missingAgentText("a1", "loading")).not.toContain("could not");
+    expect(noAgentsText("loading")).toBe("Reading the agent list…");
+    expect(noAgentsText("ok")).toContain("No agent AnviDeck started yet");
+    for (const s of ["off", "failed"] as const) expect(noAgentsText(s)).toContain("could not be read");
+  });
+
+  test("AgentsScreen builds those messages from the list's state, not its own wording", () => {
+    const src = readFileSync(join(ROOT, "ui/components/AgentsScreen.ts"), "utf8");
+    expect(src).toContain("missingAgentText(d.route.agent, d.hostAgents.state)");
+    expect(src).toContain("noAgentsText(d.hostAgents.state)");
+    expect(src).not.toContain('"could not read the list"');
+    // The card marks a row that may be stale (#297).
+    expect(src).toMatch(/if \(unfollowed && mayBeStale\(a\)\) \{\s*const note = el\("div", "aw-err", `This row may be out of date: \$\{unfollowedText\(unfollowed\)\}\.`\);/);
+  });
+
+  test("rows that may be stale while other servers are not followed: every agent not running here", () => {
+    expect(mayBeStale({ running: true })).toBe(false);
+    expect(mayBeStale({ running: false })).toBe(true);
+    expect(mayBeStale({ running: false, runsElsewhere: { pid: 1 } })).toBe(true);
+  });
 });

@@ -278,3 +278,46 @@ describe("Resume of an exiting agent at a full cap (#126)", () => {
     expect(h.get(a.id).status).toBe("done");
   });
 });
+
+describe("A start refused at a full cap while agents exit (#300)", () => {
+  // "work" stays in its turn; anything else gives its result and then lingers until ended.
+  const query: QueryFn = ({ prompt, options }) =>
+    (async function* () {
+      const first = await (prompt as AsyncIterable<SDKUserMessage>)[Symbol.asyncIterator]().next();
+      const text = JSON.stringify(first.value?.message?.content ?? "");
+      yield init();
+      if (!text.includes("work")) yield result;
+      await aborted(options);
+    })();
+  const make = (cap: number) =>
+    new AgentHost({ registry: new AgentRegistry(scratch()), query, resolveClaude: () => CLAUDE, env: () => loginOnlyEnv({ PATH: "/usr/bin" }), cap, exitGraceMs: 60_000 });
+
+  test("names the exiting agent and tells you to stop one of the others, not it", async () => {
+    const h = make(2);
+    const w = h.start({ cwd: scratch(), prompt: "work" });
+    const x = h.start({ cwd: scratch(), prompt: "go" });
+    await until(() => h.get(x.id).exiting !== undefined && h.get(w.id).status === "working");
+    const e = refusal(() => h.start({ cwd: scratch(), prompt: "another" }));
+    expect(e.status).toBe(429);
+    expect(e.message).toBe("2 agents are running (1 finished and exiting, ended within 60 s), the most allowed at once is 2; stop one of the others, or try again in a moment");
+    expect(e.detail?.running).toEqual({ here: 2, elsewhere: 0, exiting: 1 });
+    h.stop(w.id);
+  });
+
+  test("with only exiting agents it says to try again in a moment, and never to stop one", async () => {
+    const h = make(1);
+    const x = h.start({ cwd: scratch(), prompt: "go" });
+    await until(() => h.get(x.id).exiting !== undefined);
+    const e = refusal(() => h.start({ cwd: scratch(), prompt: "another" }));
+    expect(e.message).toBe("1 agent is running (1 finished and exiting, ended within 60 s), the most allowed at once is 1; try again in a moment");
+    expect(e.message).not.toContain("stop");
+  });
+
+  test("with no exiting agent the advice is unchanged", async () => {
+    const h = make(1);
+    const w = h.start({ cwd: scratch(), prompt: "work" });
+    await until(() => h.get(w.id).status === "working");
+    expect(refusal(() => h.start({ cwd: scratch(), prompt: "another" })).message).toBe("1 agent is running, the most allowed at once is 1; stop one first");
+    h.stop(w.id);
+  });
+});

@@ -22,7 +22,7 @@ import { agentRequests, keepCardsOf } from "./PermissionRequests";
 import { refusalCall } from "./RefusalCall";
 import { elsewhereText, elsewhereUrl } from "../../shared/agent-elsewhere";
 import { githubAccessInfo, githubAccessLine, type GithubAccess, type GithubAccessInfo, type GithubAccessRead } from "../../shared/github-access";
-import type { AgentsRead } from "../shell/activity";
+import { unfollowedText, type AgentsRead } from "../shell/activity";
 import type { AgentSessionResponse } from "../../shared/agents-screen-types";
 import type { ReplaySessionsResponse } from "../../shared/replay-types";
 import type { AskingAgent } from "../../shared/permission-requests";
@@ -39,6 +39,9 @@ import {
   hostReadFailed,
   hostSourceLine,
   hostTone,
+  mayBeStale,
+  missingAgentText,
+  noAgentsText,
   planProgress,
   restoreFocus,
   sortHostAgents,
@@ -290,8 +293,8 @@ function paint(): void {
   if (d.route.grid) kids.push(grid(agents));
   else if (sel?.kind === "host") kids.push(hostDetail(sel.agent));
   else if (sel?.kind === "terminal") kids.push(terminalDetail(sel.sid));
-  else if (d.route.agent) kids.push(el("div", "aw-empty aw-err", `No agent ${d.route.agent} in the agent host's list (${d.hostAgents.state === "ok" ? "read" : "could not read the list"}).`));
-  else kids.push(el("div", "aw-empty", d.hostAgents.state === "ok" ? "No agent AnviDeck started yet. + New agent starts one on an issue; terminal sessions are in the tabs above." : "The agent host's list could not be read (see above)."));
+  else if (d.route.agent) kids.push(el("div", d.hostAgents.state === "loading" ? "aw-empty" : "aw-empty aw-err", missingAgentText(d.route.agent, d.hostAgents.state)));
+  else kids.push(el("div", "aw-empty", noAgentsText(d.hostAgents.state)));
   root.replaceChildren(...kids);
   // Replacing the children detaches the message box and permission cards for a moment, which
   // blurs them; give the cursor back to where the owner was typing.
@@ -333,13 +336,18 @@ function hostLine(read: AgentsRead): HTMLElement {
     line.append(`Agent host: ${read.agents.length} agent${read.agents.length === 1 ? "" : "s"}, ${running} running here`);
     // Another AnviDeck server sharing the registry runs these (#104). The cap counts them too (#225).
     if (elsewhere) line.append(` and ${elsewhere} in another AnviDeck server`);
+    if (read.unfollowed) {
+      const u = el("span", "aw-err", ` · ${unfollowedText(read.unfollowed)}`);
+      u.dataset.unfollowed = "";
+      line.append(u);
+    }
     const o = S.overview;
     if (o.state === "ok") {
       const l = o.data.login;
       line.append(` (${running + elsewhere} of at most ${o.data.cap}, counted across every AnviDeck server) · login `,
         l.error ? el("span", "aw-err", `could not read (${l.error})`) : el("span", l.ok ? "aw-ok" : "aw-err", `${l.authMethod ?? "?"} · plan ${l.plan ?? "?"}${l.loggedIn ? "" : " · NOT logged in"}`),
         ` · registry ${o.data.registry} (GET /api/agents)`);
-      if (o.data.registryUnread) line.append(" · ", el("span", "aw-err", `${o.data.registryUnread}; only this server's own agents are listed`));
+      if (o.data.registryUnread && !read.unfollowed) line.append(" · ", el("span", "aw-err", `${o.data.registryUnread}; only this server's own agents are listed`));
     } else if (o.state === "error") line.append(el("span", "aw-err", ` · login and cap could not be read (${o.error})`));
   }
   return line;
@@ -686,6 +694,14 @@ function hostCard(a: HostAgent, compact: boolean): HTMLElement {
     title.onclick = () => S.deps!.go(hashFor({ agent: a.id }));
   }
   card.append(head);
+  // This server cannot read the registry (#297): the row may have changed since without a word.
+  const read = S.deps?.hostAgents;
+  const unfollowed = read?.state === "ok" ? read.unfollowed : undefined;
+  if (unfollowed && mayBeStale(a)) {
+    const note = el("div", "aw-err", `This row may be out of date: ${unfollowedText(unfollowed)}.`);
+    note.dataset.unfollowed = "";
+    card.append(note);
+  }
   if (a.reason && !a.running) card.append(el("div", `aw-note ${a.status === "failed" ? "aw-err" : ""}`, a.reason));
   if (compact && tl?.plan) card.append(planBlock(tl, true));
   // Its parked permission requests, each with Allow and Deny: the same cards as Home's.
