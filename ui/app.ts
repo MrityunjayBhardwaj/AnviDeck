@@ -29,7 +29,7 @@ import { HelpScreen } from "./components/HelpScreen";
 import { createTour } from "./shell/tour";
 import { createStartAgent } from "./shell/start-agent";
 import { parseRoute, screen, type Route, type ScreenId } from "./shell/routes";
-import type { AgentsRead, StripAgent } from "./shell/activity";
+import { keepUnfollowed, type AgentsRead, type StripAgent } from "./shell/activity";
 import { paletteEntries, screenHash, type PaletteEntry } from "./shell/palette-model";
 import { createPalette } from "./shell/palette";
 import { setPermissionAgents } from "./components/PermissionRequests";
@@ -420,6 +420,19 @@ function upsertAgent(a: StripAgent) {
   } else renderStrip();
 }
 
+/** The server can or cannot follow other servers' agents (#297): mark the rows, or read the list again. */
+function agentsWatch(w: { unread: string | null; since?: string }) {
+  if (hostAgents.state !== "ok") return; // the next full read says why
+  if (w.unread === null) {
+    pushEvent("ok", "other servers' agents followed again");
+    void loadAgents(); // what changed meanwhile
+    return;
+  }
+  hostAgents = { ...hostAgents, unfollowed: { reason: w.unread, ...(w.since ? { since: w.since } : {}) } };
+  agentsScreenAgents(hostAgents);
+  pushEvent("warn", "other servers' agents not followed: the registry could not be read");
+}
+
 function connectWebSocket(): void {
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
   const url = `${protocol}//${location.host}/ws`;
@@ -443,6 +456,8 @@ function connectWebSocket(): void {
         if (msg.type === "heartbeat") return;
         if (msg.type === "agent") {
           upsertAgent(msg.data as StripAgent);
+        } else if ((msg as { type: string }).type === "agents-watch") {
+          agentsWatch((msg as unknown as { data: { unread: string | null; since?: string } }).data);
         } else if ((msg as { type: string }).type === "agent-message") {
           const m = (msg as unknown as { data: { id: string; line: Parameters<typeof agentsScreenLine>[1] } }).data;
           agentsScreenLine(m.id, m.line);
@@ -497,7 +512,8 @@ function repaintHome() {
 }
 
 async function loadAgents() {
-  hostAgents = await api.agentsRead();
+  const read = await api.agentsRead();
+  hostAgents = keepUnfollowed(hostAgents, read); // the list as it is now, not as when the read began
   setPermissionAgents(hostAgents);
   agentsScreenAgents(hostAgents);
   recountAsks();

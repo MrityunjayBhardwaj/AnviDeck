@@ -474,7 +474,7 @@ describe("the cap counts every server's running agents (#225)", () => {
     const e = refusal(() => B.host.start({ cwd: scratch(), prompt: "B's job" }));
     expect(e.status).toBe(429);
     expect(e.message).toBe("1 agent is running (0 here, 1 in another AnviDeck server: port 4135), the most allowed at once is 1; stop one first");
-    expect(e.detail).toEqual({ running: { here: 0, elsewhere: 1 }, cap: 1 });
+    expect(e.detail).toEqual({ running: { here: 0, elsewhere: 1, exiting: 0 }, cap: 1 });
     // Nothing was written for the refused start.
     expect(onDisk(dir).map((r) => r.id)).toEqual([a.id]);
     // from-issue asks the same before it makes a worktree.

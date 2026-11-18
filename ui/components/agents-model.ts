@@ -748,3 +748,32 @@ export function parseAgentsScreenParams(params: URLSearchParams): AgentsScreenRo
     replay: params.get("view") === "replay" || params.has("sid"),
   };
 }
+
+/** The agent list as the Agents screen reads it: only its state matters to the messages below. */
+export type ListState = "loading" | "ok" | "off" | "failed";
+
+/**
+ * The route names an agent the list does not have (#299). While the list is still being read
+ * that is no answer yet; only a read that failed, or a host that is off, could not read it.
+ */
+export function missingAgentText(id: string, state: ListState): string {
+  if (state === "loading") return `Reading the agent list for ${id}…`;
+  if (state === "ok") return `No agent ${id} in the agent host's list (read).`;
+  return `No agent ${id} in the agent host's list (could not read the list).`;
+}
+
+/** No agent selected and none listed: say so only once the list is read (#299). */
+export function noAgentsText(state: ListState): string {
+  if (state === "loading") return "Reading the agent list…";
+  if (state === "ok") return "No agent AnviDeck started yet. + New agent starts one on an issue; terminal sessions are in the tabs above.";
+  return "The agent host's list could not be read (see above).";
+}
+
+/**
+ * Whether a row may have changed without the page hearing of it while other servers' agents are
+ * not followed (#297): every agent this server does not run now. Its own running agents are
+ * still pushed as they change.
+ */
+export function mayBeStale(a: { running: boolean; runsElsewhere?: unknown }): boolean {
+  return !!a.runsElsewhere || !a.running;
+}

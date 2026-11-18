@@ -56,8 +56,11 @@ async function agentsRead(): Promise<AgentsRead> {
   } catch (e) {
     return { state: "failed", reason: (e as Error).message };
   }
-  const body = (await res.json().catch(() => null)) as { agents?: StripAgent[]; error?: string } | null;
-  if (res.ok && body && Array.isArray(body.agents)) return { state: "ok", agents: body.agents };
+  const body = (await res.json().catch(() => null)) as { agents?: StripAgent[]; error?: string; registryUnread?: string } | null;
+  if (res.ok && body && Array.isArray(body.agents)) {
+    // Only this server's own agents are listed then; other servers' are not followed (#297).
+    return { state: "ok", agents: body.agents, ...(body.registryUnread ? { unfollowed: { reason: body.registryUnread } } : {}) };
+  }
   if (res.status === 503 && body?.error) return { state: "off", reason: body.error };
   return { state: "failed", reason: `${res.status} ${body?.error ?? (res.statusText || "no readable answer")}` };
 }

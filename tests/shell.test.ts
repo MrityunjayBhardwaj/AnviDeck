@@ -4,7 +4,8 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { OLDER_VIEWS, PROJECT_TABS, RAIL, SCREENS, hashFor, parseRoute, screen, type ScreenId } from "../ui/shell/routes";
-import { activityCounts, activityText, activityTitle, type StripAgent } from "../ui/shell/activity";
+import { activityCounts, activityText, activityTitle, keepUnfollowed, unfollowedText, type StripAgent } from "../ui/shell/activity";
+import { api } from "../ui/api";
 import { GUARDS, guardsLabel } from "../ui/shell/guards";
 import { filterEntries, fuzzyScore, initialSelection, paletteEntries, screenHash, type PaletteInput } from "../ui/shell/palette-model";
 
@@ -121,6 +122,58 @@ describe("activity strip", () => {
       expect(activityText(read)).not.toMatch(/\d/);
     }
     expect(activityTitle({ state: "off", reason: "registry broken" })).toContain("registry broken");
+  });
+
+  test("other servers' agents not followed are said in the strip, its hover and the note (#297)", () => {
+    const agents = [agent("a", "working")];
+    const since = "2026-11-18T10:07:47.000Z";
+    const hhmmss = new Date(since).toLocaleTimeString([], { hour12: false });
+    const u = { reason: "the agent registry could not be read: bad JSON", since };
+    expect(activityText({ state: "ok", agents, unfollowed: u })).toBe(`1 agent · 1 working · 0 waiting on you · other servers not followed since ${hhmmss}`);
+    expect(activityTitle({ state: "ok", agents, unfollowed: u })).toContain("could not be read: bad JSON");
+    expect(unfollowedText(u)).toBe(`other AnviDeck servers' agents not followed since ${hhmmss}: the agent registry could not be read: bad JSON`);
+    // No last good read (a list read that could only list this server's own): no time is made up.
+    expect(unfollowedText({ reason: "r" })).toBe("other AnviDeck servers' agents not followed: r");
+    expect(activityText({ state: "ok", agents, unfollowed: { reason: "r" } })).toBe("1 agent · 1 working · 0 waiting on you · other servers not followed");
+    expect(activityText({ state: "ok", agents })).not.toContain("followed");
+  });
+
+  test("a list read while not followed keeps the other servers' rows the page showed, instead of dropping them (#297)", () => {
+    const mine = agent("m", "working");
+    const theirs = { ...agent("t", "working"), runsElsewhere: { pid: 7, port: 4135 } };
+    const done = agent("d", "done");
+    const prev = { state: "ok" as const, agents: [mine, theirs, done], unfollowed: { reason: "pushed", since: "2026-11-18T10:00:00.000Z" } };
+    const next = { state: "ok" as const, agents: [{ ...mine, status: "waiting" }], unfollowed: { reason: "the agent registry could not be read: x" } };
+    const r = keepUnfollowed(prev, next);
+    expect(r.state === "ok" && r.agents.map((a) => `${a.id}:${a.status}`)).toEqual(["m:waiting", "t:working", "d:done"]);
+    expect(r.state === "ok" && r.unfollowed).toEqual({ reason: "the agent registry could not be read: x", since: "2026-11-18T10:00:00.000Z" });
+    // A read that follows them again replaces the list whole; so does any read after a failed one.
+    const fine = { state: "ok" as const, agents: [mine] };
+    expect(keepUnfollowed(prev, fine)).toBe(fine);
+    expect(keepUnfollowed({ state: "failed", reason: "x" }, next)).toBe(next);
+  });
+
+  test("the page's list read carries the server's registryUnread as not followed (#297)", async () => {
+    const real = globalThis.fetch;
+    const answer = (body: unknown) => (globalThis.fetch = (async () => new Response(JSON.stringify(body), { status: 200 })) as unknown as typeof fetch);
+    try {
+      answer({ agents: [], registryUnread: "the agent registry could not be read: x" });
+      expect(await api.agentsRead()).toEqual({ state: "ok", agents: [], unfollowed: { reason: "the agent registry could not be read: x" } });
+      answer({ agents: [] });
+      expect(await api.agentsRead()).toEqual({ state: "ok", agents: [] });
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+
+  test("app.ts handles the server's agents-watch event: marks the rows, and reads the list again once followed (#297)", () => {
+    const app = readFileSync(new URL("../ui/app.ts", import.meta.url), "utf8");
+    expect(app).toMatch(/type === "agents-watch"\) \{\s*agentsWatch\(/);
+    const fn = app.slice(app.indexOf("function agentsWatch("), app.indexOf("function connectWebSocket("));
+    expect(fn).toContain("unfollowed: { reason: w.unread");
+    expect(fn).toMatch(/w\.unread === null\) \{[^}]*loadAgents\(\)/);
+    // Merged with the list as it is once the read answers: a slow read must not undo what arrived meanwhile.
+    expect(app).toMatch(/const read = await api\.agentsRead\(\);\s*hostAgents = keepUnfollowed\(hostAgents, read\);/);
   });
 });
 
