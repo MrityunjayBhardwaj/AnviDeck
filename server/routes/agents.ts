@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { AgentHost, HostError, type HostEvent, type QueryFn } from "../agents/host";
 import { loginOnlyEnv, readLogin, resolveClaude, type LoginStatus } from "../agents/login";
-import { sameOriginWrites } from "../guard";
+import { AUDIT_KEY, sameOriginWrites } from "../guard";
+import { answersLine } from "../../shared/permission-requests";
 import { replayFromEnv } from "../agents/replay";
 import { FromIssue } from "../agents/from-issue";
 import { PushPr } from "../agents/push-pr";
@@ -112,9 +113,24 @@ export function agentRoutes(
   });
   // Answer a parked permission request (#77): { decision: "allow" } or { decision: "deny", message? }.
   // 200 with the agent; 409 when the request is no longer waiting (answered, or withdrawn).
+  // Also { decision: "answer", answers } for the agent's question (#302) and { decision:
+  // "approve-plan", mode } for its plan (#303). The answers and the mode go into the action log.
   r.post("/:id/permissions/:requestId", async (c) => {
     const b = await body(c);
+    const audit: Record<string, string> = { decision: String(b.decision) };
+    if (b.decision === "answer" && b.answers && typeof b.answers === "object") audit.answers = answersLine(b.answers as Record<string, string>);
+    if (b.decision === "approve-plan") audit.mode = String(b.mode);
+    (c.set as (k: string, v: unknown) => void)(AUDIT_KEY, audit);
     return c.json(host.answer(c.req.param("id"), c.req.param("requestId"), b));
+  });
+  // Move a running agent to another permission mode (#306): { mode }. The cap and Full access are
+  // checked by the server (checkModeChange); the mode it left is in the action log.
+  r.post("/:id/mode", async (c) => {
+    const b = await body(c);
+    const id = c.req.param("id");
+    const before = host.get(id).mode ?? "default";
+    (c.set as (k: string, v: unknown) => void)(AUDIT_KEY, { from: before, to: String(b.mode) });
+    return c.json(host.setMode(id, b));
   });
   // Checkpoints per turn (#248): what each turn changed; Undo's preview (GET) and press (POST,
   // { current }); Clear. The GETs write nothing to the agent's folder or the record.

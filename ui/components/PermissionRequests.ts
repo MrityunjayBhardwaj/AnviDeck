@@ -1,7 +1,9 @@
 /**
  * Permission requests (#77): an agent asks to use a tool the owner's own rules did not cover,
  * and waits. Shown on Home (PermissionQueue) and on the agent's row of /agent-host
- * (requestCard), with Allow and Deny (Deny takes an optional message the agent reads).
+ * (requestCard), with Allow and Deny (Deny takes an optional message the agent reads). The agent's
+ * multiple-choice question gets its questions and options to answer instead (#302), and its finished
+ * plan gets Approve and continue in a mode, Keep planning with feedback, or Stop (#303).
  *
  * Each card is built once per request and kept until the request leaves the host, so a deny
  * message being typed survives every re-render of the page around it. Answers go through
@@ -10,12 +12,20 @@
  */
 import { write, WriteError } from "../write";
 import type { AgentsRead } from "../shell/activity";
-import { askerOf, askSummary, permissionQueue, subagentDetail, type AskingAgent, type PendingPermission, requestInputText } from "../../shared/permission-requests";
+import { askerOf, askSummary, permissionQueue, PLAN_TOOL, QUESTION_TOOL, readPlan, readQuestions, subagentDetail, type AgentQuestion, type AskingAgent, type PendingPermission, requestInputText } from "../../shared/permission-requests";
+import { modesOnOffer } from "../shell/mode-picker";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
   if (cls) e.className = cls;
   if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+/** An element of class `cls` holding `kids`. */
+function box2(tag: "div" | "label", cls: string, ...kids: (Node | string)[]): HTMLElement {
+  const e = el(tag, cls);
+  e.append(...kids);
   return e;
 }
 
@@ -61,6 +71,10 @@ export function requestCard(agent: AskingAgent, p: PendingPermission): HTMLEleme
   input.title = `${shown.chars} characters; scroll to read all of it`;
   card.append(what, meta, sub);
   if (p.decisionReason) card.append(el("div", "perm-meta", `Why it asks: ${p.decisionReason}`));
+  // The agent's question (#302) and its finished plan (#303) are answered in their own way.
+  const questions = p.toolName === QUESTION_TOOL ? readQuestions(p.input) : null;
+  if (questions) return keep(p, questionForm(card, agent, p, questions));
+  if (p.toolName === PLAN_TOOL) return keep(p, planForm(card, agent, p, input));
   card.append(input);
   if (shown.chars > 600) card.append(el("div", "perm-meta", `Input is ${shown.chars} characters: scroll the box to read all of it before you answer.`));
 
@@ -96,7 +110,169 @@ export function requestCard(agent: AskingAgent, p: PendingPermission): HTMLEleme
   };
   allow.onclick = () => void send({ decision: "allow" });
   deny.onclick = () => void send({ decision: "deny", message: msg.value });
+  return keep(p, card);
+}
+
+function keep(p: PendingPermission, card: HTMLElement): HTMLElement {
   cards.set(p.requestId, card);
+  return card;
+}
+
+type Answer =
+  | { decision: "deny"; message: string }
+  | { decision: "answer"; answers: Record<string, string> }
+  | { decision: "approve-plan"; mode: string };
+
+/** Send one answer from a card; every control in it is disabled while it goes, and after a 409. */
+async function sendAnswer(card: HTMLElement, agent: AskingAgent, p: PendingPermission, body: Answer, done: string): Promise<void> {
+  const controls = [...card.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>("button, input, select, textarea")];
+  const status = card.querySelector<HTMLElement>(".perm-status")!;
+  for (const c of controls) c.disabled = true;
+  status.className = "perm-status";
+  status.textContent = "sending…";
+  try {
+    await write("POST", `/api/agents/${encodeURIComponent(agent.id)}/permissions/${encodeURIComponent(p.requestId)}`, body);
+    card.dataset.answered = body.decision;
+    status.className = "perm-status ok";
+    status.textContent = done;
+  } catch (e) {
+    status.className = "perm-status err";
+    status.textContent = (e as Error).message;
+    if (!(e instanceof WriteError && e.status === 409)) for (const c of controls) c.disabled = false;
+  }
+  afterAnswer();
+}
+
+/**
+ * The agent's multiple-choice question (#302): each question with its options (a description, and
+ * a preview when it has one), radio buttons or, for a multiple choice, boxes; and a box for your
+ * own answer, used instead of the options when filled. Answer sends every question's answer.
+ */
+function questionForm(card: HTMLElement, agent: AskingAgent, p: PendingPermission, questions: AgentQuestion[]): HTMLElement {
+  card.classList.add("perm-question");
+  card.querySelector(".perm-what")!.replaceChildren(el("span", "perm-asker", askerOf(p)), ` asks ${questions.length === 1 ? "a question" : `${questions.length} questions`}`);
+  const read: (() => string)[] = [];
+  questions.forEach((q, qi) => {
+    const box = el("fieldset", "perm-q");
+    box.dataset.question = q.question;
+    const legend = el("legend", "");
+    if (q.header) legend.append(el("span", "perm-q-head", q.header), " ");
+    legend.append(el("b", "", q.question), q.multiSelect ? el("span", "perm-meta", " (choose any)") : "");
+    box.append(legend);
+    const picks: HTMLInputElement[] = [];
+    q.options.forEach((o, oi) => {
+      const pick = el("input", "");
+      pick.type = q.multiSelect ? "checkbox" : "radio";
+      pick.name = `${p.requestId}-q${qi}`;
+      pick.value = o.label;
+      pick.id = `${p.requestId}-q${qi}-o${oi}`;
+      picks.push(pick);
+      const label = el("label", "perm-opt");
+      label.htmlFor = pick.id;
+      label.append(pick, " ", el("b", "", o.label));
+      if (o.description) label.append(el("span", "perm-meta", ` ${o.description}`));
+      box.append(label);
+      if (o.preview) box.append(el("pre", "perm-input perm-preview", o.preview));
+    });
+    const own = el("input", "perm-own");
+    own.placeholder = "or your own answer";
+    own.size = 40;
+    box.append(box2("label", "perm-opt", "Other: ", own));
+    read.push(() => own.value.trim() || picks.filter((x) => x.checked).map((x) => x.value).join(", "));
+    card.append(box);
+  });
+  const answer = el("button", "perm-allow", "Answer");
+  answer.dataset.act = "answer";
+  const msg = el("input", "perm-msg");
+  msg.placeholder = "optional message the agent reads";
+  msg.size = 30;
+  const deny = el("button", "perm-deny", "Decline");
+  deny.dataset.act = "deny";
+  const status = el("span", "perm-status");
+  card.append(box2("div", "perm-actions", answer, " ", deny, " ", msg, " ", status));
+  answer.onclick = () => {
+    const answers: Record<string, string> = {};
+    questions.forEach((q, i) => (answers[q.question] = read[i]!()));
+    const missing = questions.filter((q) => !answers[q.question]);
+    if (missing.length) {
+      status.className = "perm-status err";
+      status.textContent = `Answer every question first: ${missing.map((q) => q.header ?? q.question).join(", ")}.`;
+      return;
+    }
+    void sendAnswer(card, agent, p, { decision: "answer", answers }, "Answered. The agent reads your answers.");
+  };
+  deny.onclick = () => void sendAnswer(card, agent, p, { decision: "deny", message: msg.value }, "Declined. The agent reads your message.");
+  return card;
+}
+
+/**
+ * The agent's finished plan (#303): the plan as it wrote it, then Approve and continue in a mode
+ * (the modes this machine allows, never Full access), Keep planning with feedback, or Stop.
+ */
+function planForm(card: HTMLElement, agent: AskingAgent, p: PendingPermission, wholeInput: HTMLElement): HTMLElement {
+  card.classList.add("perm-plan");
+  card.querySelector(".perm-what")!.replaceChildren(el("span", "perm-asker", askerOf(p)), " has a plan and asks to go ahead");
+  const plan = readPlan(p.input);
+  if (plan) {
+    const box = el("pre", "perm-input perm-plan-text", plan.plan);
+    box.title = `${plan.plan.length} characters; scroll to read all of it`;
+    card.append(box);
+    if (plan.file) card.append(el("div", "perm-meta", `Saved by Claude Code to ${plan.file}`));
+  } else {
+    card.append(el("div", "perm-meta err", "The request carries no plan text; its whole input follows."), wholeInput);
+  }
+  const mode = el("select", "perm-mode");
+  mode.setAttribute("aria-label", "Mode to continue in");
+  mode.dataset.act = "plan-mode";
+  mode.append(el("option", "", "reading the modes…"));
+  mode.disabled = true;
+  const approve = el("button", "perm-allow", "Approve and continue in");
+  approve.dataset.act = "approve-plan";
+  approve.disabled = true;
+  const feedback = el("input", "perm-msg");
+  feedback.placeholder = "what to change in the plan";
+  feedback.size = 36;
+  const keepPlanning = el("button", "perm-deny", "Keep planning");
+  keepPlanning.dataset.act = "keep-planning";
+  const stop = el("button", "perm-deny", "Stop");
+  stop.dataset.act = "stop";
+  const status = el("span", "perm-status");
+  const note = el("div", "perm-meta");
+  card.append(box2("div", "perm-actions", approve, " ", mode), box2("div", "perm-actions", keepPlanning, " ", feedback, " ", stop, " ", status), note);
+  void modesOnOffer().then((r) => {
+    if (!r.ok) {
+      mode.replaceChildren(el("option", "", "modes not known"));
+      note.className = "perm-meta err";
+      note.textContent = `Could not read the modes this machine allows (${r.why}), so the plan cannot be approved here yet. Reload to try again.`;
+      return;
+    }
+    mode.replaceChildren(...r.modes.filter((m) => m.mode !== "plan").map((m) => {
+      const o = el("option", "", m.allowed ? m.label : `${m.label} (${m.why})`);
+      o.value = m.mode;
+      o.disabled = !m.allowed;
+      return o;
+    }));
+    const pick = r.modes.find((m) => m.mode === "acceptEdits" && m.allowed) ?? r.modes.find((m) => m.mode === "default" && m.allowed);
+    if (pick) mode.value = pick.mode;
+    mode.disabled = approve.disabled = card.dataset.answered !== undefined;
+    note.textContent = r.note;
+  });
+  approve.onclick = () => void sendAnswer(card, agent, p, { decision: "approve-plan", mode: mode.value }, `Approved. The agent goes on in ${mode.selectedOptions[0]?.textContent ?? mode.value}.`);
+  keepPlanning.onclick = () => void sendAnswer(card, agent, p, { decision: "deny", message: feedback.value.trim() || "Keep planning: the plan is not approved yet." }, "Sent back. The agent keeps planning with your feedback.");
+  stop.onclick = async () => {
+    status.className = "perm-status";
+    status.textContent = "stopping…";
+    try {
+      await write("POST", `/api/agents/${encodeURIComponent(agent.id)}/stop`);
+      card.dataset.answered = "stop";
+      status.className = "perm-status ok";
+      status.textContent = "Stopped.";
+    } catch (e) {
+      status.className = "perm-status err";
+      status.textContent = `Stop refused: ${(e as Error).message}`;
+    }
+    afterAnswer();
+  };
   return card;
 }
 
@@ -188,6 +364,13 @@ const PERMISSION_CSS = `
   .perm-actions button { background: var(--bg-3); color: var(--text-0); border: 1px solid var(--border-active); border-radius: 4px; font: inherit; padding: 2px 10px; cursor: pointer; }
   .perm-actions .perm-allow { border-color: var(--green); }
   .perm-actions .perm-deny { border-color: var(--red); }
+  .perm-q { border: 1px solid var(--border); border-radius: 4px; margin: 6px 0; padding: 4px 8px; }
+  .perm-q-head { font-size: 11px; padding: 0 6px; border: 1px solid var(--border-active); border-radius: 8px; color: var(--text-1); }
+  .perm-opt { display: block; margin: 2px 0; }
+  .perm-preview { max-height: 100px; margin-left: 22px; }
+  .perm-plan-text { max-height: 320px; }
+  .perm-actions { margin-top: 4px; }
+  .perm-actions select, .perm-q input.perm-own { background: var(--bg-1); color: var(--text-0); border: 1px solid var(--border); border-radius: 4px; font: inherit; padding: 2px 6px; }
   .perm-actions input { background: var(--bg-1); color: var(--text-0); border: 1px solid var(--border); border-radius: 4px; font: inherit; padding: 2px 6px; }
 `;
 

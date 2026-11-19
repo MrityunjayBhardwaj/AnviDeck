@@ -19,6 +19,7 @@ import { modeLine } from "../../shared/agent-modes";
 import { write, WriteError } from "../write";
 import type { PushAnswer, PushPlanAnswer } from "../../shared/push-pr-types";
 import { agentRequests, keepCardsOf } from "./PermissionRequests";
+import { keepModeControlsOf, modeControl } from "./ModeControl";
 import { refusalCall } from "./RefusalCall";
 import { elsewhereText, elsewhereUrl } from "../../shared/agent-elsewhere";
 import { githubAccessInfo, githubAccessLine, type GithubAccess, type GithubAccessInfo, type GithubAccessRead } from "../../shared/github-access";
@@ -273,6 +274,7 @@ function paint(): void {
   if (!root || !d || !root.isConnected && root.childElementCount > 0) return;
   const agents = hostAgents();
   keepCardsOf(agents as unknown as AskingAgent[]);
+  keepModeControlsOf(new Set(agents.filter((x) => x.running && !x.exiting && !x.runsElsewhere).map((x) => x.id)));
   const sel = selected();
 
   const gridBtn = el("button", `aw-btn${d.route.grid ? " on" : ""}`, d.route.grid ? "Tabs" : "2×2 grid");
@@ -534,6 +536,8 @@ function controls(a: HostAgent, out: HTMLElement): HTMLElement {
     const stop = el("button", "aw-btn sm bad", "Stop");
     stop.dataset.act = "stop";
     stop.onclick = () => void act("Stop", `/api/agents/${encodeURIComponent(a.id)}/stop`);
+    // Its mode can be changed while it runs (#306); Full access is set when an agent starts.
+    if (a.mode !== "bypassPermissions") box.append(modeControl(a), " ");
     box.append(stop);
   } else if (a.sessionId) {
     // Its result is in and its process is exiting (#105): no Stop; a resume ends it first (#126).

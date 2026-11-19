@@ -5,7 +5,7 @@
  * GitHub access the agent would get (#270). What it sends
  * comes from startModeBody; the server checks the mode and the cap again.
  */
-import { DEFAULT_MODE, FULL_ACCESS_CONFIRM, fullAccessOnGithub, MODES, modeInfo, startModeBody, type OfferedMode } from "../../shared/agent-modes";
+import { DEFAULT_MODE, FULL_ACCESS_CONFIRM, FULL_ACCESS_FIXED, fullAccessOnGithub, MODES, modeInfo, modesForChange, startModeBody, type OfferedMode } from "../../shared/agent-modes";
 import type { GithubAccess, GithubAccessRead } from "../../shared/github-access";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Record<string, string> = {}, ...kids: (Node | string)[]): HTMLElementTagNameMap[K] {
@@ -90,4 +90,29 @@ export function createModePicker(idPrefix: string): ModePicker {
     },
     body: () => startModeBody(select.value, tick.checked, offered, github ?? null),
   };
+}
+
+export type ChangeModes = { ok: true; modes: OfferedMode[]; note: string } | { ok: false; why: string };
+let changeModes: { at: number; p: Promise<ChangeModes> } | null = null;
+
+/**
+ * The modes a running agent can be moved to (#303 plan approval, #306 the picker on its card):
+ * what this machine allows, from GET /api/agents, without Full access (modesForChange). Read at
+ * most every 30 s. Could not read is said as such; the server checks the mode again either way.
+ */
+export function modesOnOffer(now = Date.now()): Promise<ChangeModes> {
+  if (changeModes && now - changeModes.at < 30_000) return changeModes.p;
+  const p = (async (): Promise<ChangeModes> => {
+    try {
+      const res = await fetch("/api/agents");
+      const j = (await res.json()) as { modes?: { cap: string; from: string; offered: OfferedMode[] } };
+      if (!res.ok || !j.modes) throw new Error(`status ${res.status}`);
+      return { ok: true, modes: modesForChange(j.modes.offered), note: `Highest mode on this machine: ${modeInfo(j.modes.cap as OfferedMode["mode"]).label}, from ${j.modes.from}. ${FULL_ACCESS_FIXED}.` };
+    } catch (e) {
+      changeModes = null;
+      return { ok: false, why: (e as Error).message };
+    }
+  })();
+  changeModes = { at: now, p };
+  return p;
 }
