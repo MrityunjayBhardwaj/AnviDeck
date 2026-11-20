@@ -135,7 +135,7 @@ describe("answering on the host", () => {
     const h = asking();
     const { id, requestId } = await parked(h);
     expect(() => h.host.answer("nope", requestId, { decision: "allow" })).toThrow("no agent");
-    expect(() => h.host.answer(id, requestId, { decision: "maybe" })).toThrow('"allow" or "deny"');
+    expect(() => h.host.answer(id, requestId, { decision: "maybe" })).toThrow('"allow", "deny", "answer" or "approve-plan"');
     expect(() => h.host.answer(id, "no-such-request", { decision: "allow" })).toThrow("no longer waiting");
     expect(h.host.get(id).pendingPermissions.length).toBe(1);
     h.host.answer(id, requestId, { decision: "deny" });

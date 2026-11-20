@@ -10,9 +10,9 @@ import type {
 import { AgentRegistry, LIVE_STATUSES, ownerProcessAlive, RegistryLockedError, type AgentOwner, type AgentRecord, type AgentStatus, type TranscriptLine } from "./registry";
 import { explainStartFailure, loginOnlyEnv, resolveClaude, type AgentEnv, type ClaudeBinary } from "./login";
 import { messagesIn, parseMessageRequest, renderForAgent, type SentMessage } from "../../shared/agent-messages";
-import { parsePermissionAnswer, type PendingPermission } from "../../shared/permission-requests";
+import { checkAnswers, parsePermissionAnswer, PLAN_TOOL, QUESTION_TOOL, readQuestions, type PendingPermission } from "../../shared/permission-requests";
 import { elsewhereText, type RunsElsewhere } from "../../shared/agent-elsewhere";
-import { checkMode, DEFAULT_MODE, FULL_ACCESS_CONFIRM, fullAccessGithubChanged, isAgentMode, MODE_CAP_ENV, modeCapFrom, modeInfo, rank, type AgentMode, type ModeCap } from "../../shared/agent-modes";
+import { checkMode, checkModeChange, DEFAULT_MODE, FULL_ACCESS_CONFIRM, fullAccessGithubChanged, isAgentMode, MODE_CAP_ENV, modeCapFrom, modeInfo, rank, type AgentMode, type ModeCap } from "../../shared/agent-modes";
 import { githubAccessInfo, unavailable, type GithubAccess, type GithubAccessRead } from "../../shared/github-access";
 import { emptyGhConfigDir, readGithubAccess, withGithubAccess } from "./github-access";
 import type { CheckpointStore } from "./checkpoints";
@@ -163,6 +163,10 @@ interface Live {
   cutOff?: string;
   /** A resume waits for this run's process to exit, then launches the next run (#126). */
   handoff?: () => void;
+  /** The running query's mode switch (#306), once Claude Code has started. */
+  query?: { setPermissionMode(mode: AgentMode): Promise<void> };
+  /** While a move to another mode is on its way to Claude Code: the mode it is leaving, which still passes the safety check. */
+  modeAllowance?: AgentMode;
   /** Timers of this run (exit grace, message wait), cleared when it ends. */
   timers: Set<ReturnType<typeof setTimeout>>;
   messageWait?: ReturnType<typeof setTimeout>;
@@ -933,14 +937,104 @@ export class AgentHost {
         status,
       });
     }
-    const result: PermissionResult =
-      a.decision === "allow" ? { behavior: "allow", updatedInput: p.input } : { behavior: "deny", message: a.message };
-    this.answerPermission(id, requestId, result);
+    if (a.decision === "deny") {
+      this.answerPermission(id, requestId, { behavior: "deny", message: a.message });
+      return this.view(rec);
+    }
+    // A question is answered, and a plan approved with the mode to go on in: a bare Allow would
+    // send no answer (#302), or leave the agent in Plan only, unable to carry the plan out (#303).
+    if (a.decision === "allow") {
+      if (p.toolName === QUESTION_TOOL && readQuestions(p.input)) throw new HostError(400, "this is the agent's question: answer it (decision \"answer\" with answers), or deny it");
+      if (p.toolName === PLAN_TOOL) throw new HostError(400, "this is the agent's plan: approve it with the mode it goes on in (decision \"approve-plan\" with mode), or deny it with feedback to keep planning");
+      this.answerPermission(id, requestId, { behavior: "allow", updatedInput: p.input });
+      return this.view(rec);
+    }
+    if (a.decision === "answer") {
+      const questions = p.toolName === QUESTION_TOOL ? readQuestions(p.input) : null;
+      if (!questions) throw new HostError(400, `request ${requestId} is not a question the card can read (${p.toolName}); allow or deny it`);
+      const wrong = checkAnswers(questions, a.answers);
+      if (wrong) throw new HostError(400, wrong);
+      const answers = Object.fromEntries(questions.map((q) => [q.question, a.answers[q.question]!.trim()]));
+      this.answerPermission(id, requestId, { behavior: "allow", updatedInput: { ...p.input, answers } }, { answers });
+      return this.view(rec);
+    }
+    if (p.toolName !== PLAN_TOOL) throw new HostError(400, `request ${requestId} is not a plan (${p.toolName}); allow or deny it`);
+    const from = rec.mode ?? DEFAULT_MODE;
+    const c = checkModeChange(from, a.mode, this.modeCap);
+    if (!c.ok) throw new HostError(c.status, `the plan was not approved: ${c.error}`, { modeCap: this.modeCap.cap, mode: from });
+    // The mode goes with the answer itself (a session setMode), so Claude Code leaves plan mode
+    // straight into the chosen one; recorded first, so the next init is checked against it.
+    this.switchMode(rec, live!, c.mode, "plan approved");
+    this.answerPermission(id, requestId, { behavior: "allow", updatedInput: p.input, updatedPermissions: [{ type: "setMode", mode: c.mode, destination: "session" }] }, { mode: c.mode });
     return this.view(rec);
   }
 
-  /** Settle a parked permission request. */
-  answerPermission(id: string, requestId: string, result: PermissionResult): boolean {
+  /**
+   * Move a running agent to another permission mode (#306), as Shift+Tab does in the terminal:
+   * checked by checkModeChange (the cap; never into or out of Full access), recorded on the agent
+   * so its card, its tab and a resume use it, then sent to Claude Code (`setPermissionMode`).
+   * Until Claude Code confirms, the mode it ran in before still passes the safety check, so a
+   * move to a narrower mode does not stop the agent on a report sent before the move landed.
+   */
+  setMode(id: string, body: Record<string, unknown>): AgentView {
+    const live = this.live.get(id);
+    const rec = live ? this.agents.get(id) : this.find(id);
+    if (!rec) throw new HostError(404, `no agent ${id}`);
+    if (!live) this.refuseElsewhere(rec, "change its mode");
+    if (!live || live.ending || this.isExiting(live)) {
+      const shown = this.view(rec);
+      throw new HostError(409, `the agent is not running (${shown.status}); its mode can be changed only while it runs`, { status: shown.status });
+    }
+    if (!live.query) throw new HostError(409, "Claude Code has not started yet; change the mode once it runs");
+    if (live.modeAllowance !== undefined) throw new HostError(409, "a mode change is still on its way to Claude Code; try again in a moment");
+    const from = rec.mode ?? DEFAULT_MODE;
+    const c = checkModeChange(from, body.mode, this.modeCap);
+    if (!c.ok) throw new HostError(c.status, c.error, { modeCap: this.modeCap.cap, mode: from });
+    if (c.mode === from) return this.view(rec);
+    this.switchMode(rec, live, c.mode, "changed on its card");
+    live.modeAllowance = from;
+    this.changed(rec);
+    const q = live.query;
+    void q.setPermissionMode(c.mode).then(
+      () => {
+        if (live.modeAllowance === from) live.modeAllowance = undefined;
+        this.record(id, "host", { event: "mode-confirmed", mode: c.mode });
+      },
+      (e: unknown) => {
+        // Not taken: the agent stays in the mode it had, and the card says so.
+        live.modeAllowance = undefined;
+        if (live.ending || this.live.get(id) !== live) return;
+        rec.mode = from;
+        this.record(id, "host", { event: "mode-change-failed", from, to: c.mode, reason: (e as Error)?.message ?? String(e) });
+        this.changed(rec);
+      },
+    );
+    return this.view(rec);
+  }
+
+  /** The one place a running agent's mode changes (#303, #306): recorded on it and in its transcript. */
+  private switchMode(rec: AgentRecord, live: Live, to: AgentMode, via: string): void {
+    const from = rec.mode ?? DEFAULT_MODE;
+    rec.mode = to;
+    this.record(rec.id, "host", { event: "mode-changed", from, to, via });
+  }
+
+  /** Why a mode Claude Code reports may not run, or null when it may. */
+  private modeTooWide(rec: AgentRecord, live: Live, reported: unknown): string | null {
+    const allowed = this.allowedMode(rec, live);
+    if (reported === undefined) return `Stopped at once: Claude Code did not report its permission mode, so it could not be checked against the ${modeInfo(allowed).label} it was given`;
+    if (!isAgentMode(reported) || rank(reported) > rank(allowed)) return `Stopped at once: Claude Code reported permission mode "${String(reported)}", wider than the ${modeInfo(allowed).label} it was given`;
+    return null;
+  }
+
+  /** The widest mode Claude Code may report now: the agent's, or the one it is leaving while a change lands. */
+  private allowedMode(rec: AgentRecord, live: Live): AgentMode {
+    const mode = rec.mode ?? DEFAULT_MODE;
+    return live.modeAllowance !== undefined && rank(live.modeAllowance) > rank(mode) ? live.modeAllowance : mode;
+  }
+
+  /** Settle a parked permission request. `extra` (answers given, mode approved) goes into the transcript with it. */
+  answerPermission(id: string, requestId: string, result: PermissionResult, extra: { answers?: Record<string, string>; mode?: AgentMode } = {}): boolean {
     const live = this.live.get(id);
     const p = live?.pending.get(requestId);
     if (!live || !p) return false;
@@ -950,6 +1044,7 @@ export class AgentHost {
       requestId,
       behavior: result.behavior,
       ...(result.behavior === "deny" ? { message: result.message } : {}),
+      ...extra,
     });
     p.resolve(result);
     const rec = this.agents.get(id)!;
@@ -1125,6 +1220,8 @@ export class AgentHost {
         return;
       }
       live.close = q.close?.bind(q);
+      const set = (q as { setPermissionMode?: unknown }).setPermissionMode;
+      if (typeof set === "function") live.query = { setPermissionMode: (m) => (set as (m: AgentMode) => Promise<void>).call(q, m) };
       void this.consume(rec, live, q);
     };
     const store = this.checkpoints;
@@ -1176,15 +1273,9 @@ export class AgentHost {
       rec.permissionMode = m.permissionMode;
       // A mode wider than the one chosen, or one this host does not know, never runs (#249). A
       // narrower one runs, and the card shows both (e.g. Full access that your settings turn off).
-      const asked = rec.mode ?? DEFAULT_MODE;
-      if (!isAgentMode(m.permissionMode) || rank(m.permissionMode) > rank(asked)) {
-        this.endRun(rec.id, live, {
-          status: "failed",
-          reason:
-            m.permissionMode === undefined
-              ? `Stopped at once: Claude Code did not report its permission mode, so it could not be checked against the ${modeInfo(asked).label} it was started in`
-              : `Stopped at once: Claude Code reported permission mode "${m.permissionMode}", wider than the ${modeInfo(asked).label} it was started in`,
-        });
+      const wide = this.modeTooWide(rec, live, m.permissionMode);
+      if (wide) {
+        this.endRun(rec.id, live, { status: "failed", reason: wide });
         return;
       }
       if (m.apiKeySource !== "none") {
@@ -1195,6 +1286,17 @@ export class AgentHost {
         return;
       }
       if (rec.status === "starting") this.setStatus(rec, "working");
+      else this.changed(rec);
+      return;
+    }
+    // Claude Code says when its mode changes mid-session (system/status, sdk.d.ts SDKStatusMessage):
+    // after a change from AnviDeck (#303, #306), or one the agent made itself. Held to the same
+    // check as init, against the mode the agent has now.
+    if (m.type === "system" && m.subtype === "status" && m.permissionMode !== undefined) {
+      rec.permissionMode = m.permissionMode;
+      if (live.modeAllowance !== undefined && m.permissionMode === rec.mode) live.modeAllowance = undefined;
+      const wide = this.modeTooWide(rec, live, m.permissionMode);
+      if (wide) this.endRun(rec.id, live, { status: "failed", reason: wide });
       else this.changed(rec);
       return;
     }

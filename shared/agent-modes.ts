@@ -117,6 +117,29 @@ export function checkMode(requested: unknown, c: ModeCap, confirm?: unknown): Mo
 }
 
 /**
+ * A running agent moved to another mode (#303 approving a plan, #306 the picker on its card). The
+ * one check both go through, on the server: a mode the cap allows, never into or out of Full
+ * access. Full access is decided when Claude Code starts (it then runs with no permission callback
+ * and `allowDangerouslySkipPermissions`), so it cannot be switched on or off in a running session.
+ */
+export type ModeChangeCheck = { ok: true; mode: AgentMode } | { ok: false; status: 400 | 403 | 409; error: string };
+
+export const FULL_ACCESS_FIXED = "Full access is set when the agent starts, not while it runs";
+
+export function checkModeChange(from: AgentMode, requested: unknown, c: ModeCap): ModeChangeCheck {
+  if (!isAgentMode(requested)) return { ok: false, status: 400, error: `mode must be one of ${MODES.map((m) => m.mode).join(", ")}` };
+  if (from === "bypassPermissions") return { ok: false, status: 409, error: `this agent runs in Full access; ${FULL_ACCESS_FIXED}` };
+  if (requested === "bypassPermissions") return { ok: false, status: 409, error: `${FULL_ACCESS_FIXED}: start a new agent in Full access instead` };
+  if (rank(requested) > rank(c.cap)) return { ok: false, status: 403, error: `${modeInfo(requested).label} is ${modesOffered(c)[rank(requested)]!.why}` };
+  return { ok: true, mode: requested };
+}
+
+/** The modes a running agent can be moved to, as the pickers offer them: Full access never. */
+export function modesForChange(offered: readonly OfferedMode[]): OfferedMode[] {
+  return offered.map((m) => (m.mode === "bypassPermissions" ? { ...m, allowed: false, why: FULL_ACCESS_FIXED } : m));
+}
+
+/**
  * An agent's mode as its card says it (#249): the mode chosen and, once Claude Code has reported
  * it, the mode it runs in when that is narrower (a wider one is stopped at once by the host).
  * `wide` marks Full access, shown in red wherever the agent is.

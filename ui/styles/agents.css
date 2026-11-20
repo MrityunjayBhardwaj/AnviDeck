@@ -9,6 +9,8 @@
 .aw-sub { color: var(--sh-ink-2); }
 .aw-acts { margin-left: auto; display: flex; gap: 8px; }
 .aw-btn { background: var(--sh-panel-2); color: var(--sh-ink); border: 1px solid var(--sh-line); border-radius: 7px; padding: 5px 11px; font: 13px var(--sh-font-ui); cursor: pointer; }
+/* A running agent's mode picker on its card (#306). */
+.aw-mode-pick { background: var(--sh-panel-2); color: var(--sh-ink); border: 1px solid var(--sh-line); border-radius: 7px; padding: 3px 6px; font: 12px var(--sh-font-ui); width: auto; max-width: 16em; }
 .aw-btn:hover { border-color: var(--sh-ink-3); }
 .aw-btn.on { border-color: var(--accent); background: var(--sh-accent-soft); }
 .aw-btn.sm { padding: 2px 8px; font-size: 12px; }
