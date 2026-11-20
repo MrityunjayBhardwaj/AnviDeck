@@ -18,6 +18,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 use std::sync::OnceLock;
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_notification::NotificationExt;
 use tokio::sync::oneshot;
 
 const RS: char = '\u{1e}';
@@ -99,6 +100,52 @@ async fn write(state: tauri::State<'_, Sidecar>, method: String, path: String, b
     rx.await.map_err(|_| "AnviDeck's server stopped before answering".to_string())
 }
 
+/// Notifications shown and not yet clicked: the notification's id → the agent it is about (#314).
+type Shown = Arc<Mutex<HashMap<i32, String>>>;
+
+/// The page's own link to an agent's card, as the screens write it.
+fn agent_card_js(agent: &str) -> String {
+    let hash = serde_json::to_string(&format!("#agents?agent={}", urlencode(agent))).unwrap_or_else(|_| "\"#agents\"".into());
+    format!("(function(h){{if(/\\/(index\\.html)?$/.test(location.pathname))location.hash=h;else location.href='/index.html'+h;}})({hash});")
+}
+
+fn urlencode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+/// One ANVIDECK-NOTIFY line from the server (#314): shown only while the window is not in front.
+/// What the server sends is already only what you asked to be told about.
+fn notify(app: &AppHandle, shown: &Shown, next_id: &AtomicU64, v: &Value) {
+    let (Some(agent), Some(title), Some(body)) = (v["agentId"].as_str(), v["title"].as_str(), v["body"].as_str()) else {
+        eprintln!("[anvideck] notify: a line without agentId, title and body was ignored");
+        return;
+    };
+    let kind = v["kind"].as_str().unwrap_or("?");
+    let (focused, minimized) = app
+        .get_webview_window("main")
+        .map(|w| (w.is_focused().ok(), w.is_minimized().ok()))
+        .unwrap_or((None, None));
+    if focused == Some(true) && minimized != Some(true) {
+        println!("[anvideck] notify: not shown ({kind}, agent {agent}): the window is in front");
+        return;
+    }
+    println!("[anvideck] notify: window focused={focused:?} minimized={minimized:?}");
+    let id = (next_id.fetch_add(1, Ordering::SeqCst) % i32::MAX as u64) as i32;
+    shown.lock().unwrap().insert(id, agent.to_string());
+    match app.notification().builder().id(id).title(title).body(body).show() {
+        Ok(()) => println!("[anvideck] notify: shown ({kind}, agent {agent}, id {id})"),
+        Err(e) => {
+            shown.lock().unwrap().remove(&id);
+            eprintln!("[anvideck] notify: could not show ({kind}, agent {agent}): {e}");
+        }
+    }
+}
+
 fn sidecar_path() -> std::path::PathBuf {
     if let Ok(p) = std::env::var("ANVIDECK_SIDECAR") {
         return p.into();
@@ -121,6 +168,8 @@ fn main() {
     // Why the server is not there, when it is not: shown in the window instead of the screens.
     let gone: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let (ready_tx, ready_rx) = mpsc::channel::<u16>();
+    let shown: Shown = Arc::new(Mutex::new(HashMap::new()));
+    let notify_ids = Arc::new(AtomicU64::new(1));
     let mut stdin = None;
 
     match spawned {
@@ -132,6 +181,7 @@ fn main() {
             let stdout = c.stdout.take().expect("sidecar stdout");
             *child.lock().unwrap() = Some(c);
             let (pend, kid, app, why) = (pending.clone(), child.clone(), handle.clone(), gone.clone());
+            let (shown, notify_ids) = (shown.clone(), notify_ids.clone());
             std::thread::spawn(move || {
                 for line in BufReader::new(stdout).lines() {
                     let Ok(line) = line else { break };
@@ -142,6 +192,12 @@ fn main() {
                     if let Some(j) = rest.strip_prefix("ANVIDECK-READY ") {
                         if let Some(port) = serde_json::from_str::<Value>(j).ok().and_then(|v| v["port"].as_u64()) {
                             let _ = ready_tx.send(port as u16);
+                        }
+                    } else if let Some(j) = rest.strip_prefix("ANVIDECK-NOTIFY ") {
+                        match (serde_json::from_str::<Value>(j), app.get()) {
+                            (Ok(v), Some(a)) => notify(a, &shown, &notify_ids, &v),
+                            (Err(e), _) => eprintln!("[anvideck] notify: a line that is not JSON was ignored ({e})"),
+                            (_, None) => eprintln!("[anvideck] notify: the window is not open yet; not shown"),
                         }
                     } else if let Some(j) = rest.strip_prefix("ANVIDECK-REPLY ") {
                         if let Ok(v) = serde_json::from_str::<Value>(j) {
@@ -194,7 +250,7 @@ fn main() {
         }
     };
 
-    let builder = tauri::Builder::default();
+    let builder = tauri::Builder::default().plugin(tauri_plugin_notification::init());
     #[cfg(feature = "e2e")]
     let builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
     let app = builder
@@ -207,6 +263,22 @@ fn main() {
         .invoke_handler(tauri::generate_handler![write])
         .setup(move |app| {
             let _ = handle.set(app.handle().clone());
+            // A click on a notification (#314) brings the window to the front on the agent's card.
+            let (h, clicked) = (app.handle().clone(), shown.clone());
+            app.notification().on_action(move |a| {
+                if a.action_id() != "tap" {
+                    return;
+                }
+                let Some(id) = a.notification().map(|n| n.id()) else { return };
+                let Some(agent) = clicked.lock().unwrap().remove(&id) else { return };
+                println!("[anvideck] notify: clicked (agent {agent}, id {id})");
+                if let Some(w) = h.get_webview_window("main") {
+                    let _ = w.unminimize();
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                    let _ = w.eval(&agent_card_js(&agent));
+                }
+            })?;
             let mut init = String::new();
             if port != 0 {
                 init.push_str(&format!("window.__ANVIDECK_ORIGIN__ = 'http://127.0.0.1:{port}';"));

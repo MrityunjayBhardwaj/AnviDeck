@@ -295,7 +295,9 @@ export class AgentHost {
   private readonly ghConfigDir: (agentId: string) => string;
   private readonly resolve: () => ClaudeBinary | null;
   private readonly envFn: () => AgentEnv;
-  private emitFn: (e: HostEvent) => void;
+  private emitFn!: (e: HostEvent) => void;
+  /** Who else hears every event besides the pages (#314: the desktop notifier). */
+  private readonly listeners: ((e: HostEvent) => void)[] = [];
   /** This server, as the agents it runs name it in the registry (#104). */
   readonly owner: AgentOwner;
   private readonly ownerAlive: (o: AgentOwner) => boolean;
@@ -337,7 +339,7 @@ export class AgentHost {
     this.modeCap = deps.modeCap ?? modeCapFrom(process.env[MODE_CAP_ENV]);
     this.githubAccessFn = deps.githubAccess ?? (() => readGithubAccess(this.registry.dir));
     this.ghConfigDir = deps.ghConfigDir ?? emptyGhConfigDir;
-    this.emitFn = deps.emit ?? (() => {});
+    this.setEmit(deps.emit ?? (() => {}));
     const port = Number.parseInt(process.env.PORT ?? "4000", 10);
     this.owner = {
       pid: process.pid,
@@ -521,7 +523,25 @@ export class AgentHost {
   }
 
   onEvent(fn: (e: HostEvent) => void): void {
-    this.emitFn = fn;
+    this.setEmit(fn);
+  }
+
+  /** Hear every event the pages get (#314). A listener that throws is logged and never stops the others or the pages. */
+  addListener(fn: (e: HostEvent) => void): void {
+    this.listeners.push(fn);
+  }
+
+  private setEmit(fn: (e: HostEvent) => void): void {
+    this.emitFn = (e) => {
+      fn(e);
+      for (const l of this.listeners) {
+        try {
+          l(e);
+        } catch (err) {
+          console.error(`[agents] an event listener failed: ${(err as Error)?.message ?? String(err)}`);
+        }
+      }
+    };
   }
 
   /**

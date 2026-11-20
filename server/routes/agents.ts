@@ -13,6 +13,8 @@ import { CheckpointStore } from "../agents/checkpoints";
 import { AgentRegistry } from "../agents/registry";
 import { modesOffered } from "../../shared/agent-modes";
 import { writeGithubAccess } from "../agents/github-access";
+import { readNotify, writeNotify } from "../notify";
+import { isNotifyKind, NOTIFY_INFO, NOTIFY_KINDS, type NotifySettings } from "../../shared/notifications";
 import { GITHUB_ACCESS, githubAccessInfo, isGithubAccess, unavailable } from "../../shared/github-access";
 
 // The write guard (writes only from the desktop app's channel, #241) and the action log are installed
@@ -48,6 +50,7 @@ export function agentRoutes(
       modes: { cap: host.modeCap.cap, from: host.modeCap.from, ...(host.modeCap.invalid ? { invalid: host.modeCap.invalid } : {}), offered: modesOffered(host.modeCap) },
       // Agent GitHub access (#147): the setting, and each choice with why it cannot be picked yet.
       githubAccess: { setting: host.githubAccess(), options: GITHUB_ACCESS.map((g) => ({ ...g, unavailable: unavailable(g.access) })) },
+      notifications: { setting: readNotify(host.registry.dir), kinds: NOTIFY_KINDS.map((k) => ({ kind: k, ...NOTIFY_INFO[k] })) },
       // The models Claude Code offers on this login, as last read (#305); null: never read yet.
       models: host.models(),
       running: host.running,
@@ -88,6 +91,30 @@ export function agentRoutes(
       throw new HostError(503, (e as Error).message);
     }
     return c.json({ setting: host.githubAccess(), running: host.running });
+  });
+
+  // Desktop notifications (#314): { permission?, question?, ended? }, each true or false; a kind
+  // left out keeps what it was. A write: only from the desktop app.
+  r.post("/settings/notifications", async (c) => {
+    const b = await body(c);
+    const keys = Object.keys(b);
+    if (!keys.length) throw new HostError(400, `say which to change: ${NOTIFY_KINDS.join(", ")}`);
+    for (const k of keys) {
+      if (!isNotifyKind(k)) throw new HostError(400, `${k} is not one of ${NOTIFY_KINDS.join(", ")}`);
+      if (typeof b[k] !== "boolean") throw new HostError(400, `${k} must be true or false`);
+    }
+    const now = readNotify(host.registry.dir);
+    if (now.status !== "ok") throw new HostError(503, `the notification setting could not be read (${now.file}: ${now.reason}); fix or move the file first`);
+    const next: NotifySettings = { ...now.settings };
+    for (const k of NOTIFY_KINDS) if (typeof b[k] === "boolean") next[k] = b[k] as boolean;
+    try {
+      writeNotify(host.registry.dir, next);
+    } catch (e) {
+      throw new HostError(503, (e as Error).message);
+    }
+    const line = (o: NotifySettings) => NOTIFY_KINDS.map((k) => `${k} ${o[k] ? "on" : "off"}`).join(", ");
+    (c.set as (k: string, v: unknown) => void)(AUDIT_KEY, { from: line(now.settings), to: line(next) });
+    return c.json({ setting: readNotify(host.registry.dir) });
   });
 
   // How an agent was asked to run (#305), for the action log: the model, effort and extra folders.
