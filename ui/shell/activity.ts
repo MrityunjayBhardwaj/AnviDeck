@@ -15,6 +15,8 @@ export interface StripAgent {
   issue?: number;
   sessionId?: string;
   pendingPermissions: unknown[];
+  /** Interrupted by you (#304): it waits for your message, so it waits on you. */
+  interrupted?: string;
   /** Another AnviDeck server runs it (#104): counted apart, never as working here. */
   runsElsewhere?: { pid: number; port?: number };
 }
@@ -71,7 +73,7 @@ export function activityCounts(agents: StripAgent[]): ActivityCounts {
   return {
     total: agents.length,
     working: here.filter((a) => a.status === "working" || a.status === "starting").length,
-    waiting: here.filter((a) => a.pendingPermissions.length > 0).length,
+    waiting: here.filter((a) => a.pendingPermissions.length > 0 || !!a.interrupted).length,
     elsewhere: agents.length - here.length,
   };
 }
@@ -94,5 +96,5 @@ export function activityTitle(read: AgentsRead): string {
   if (read.state === "failed") return `${src} The request failed: ${read.reason}`;
   if (read.state === "loading") return src;
   const c = activityCounts(read.agents);
-  return `${src} Waiting on you = agents with a permission request parked (${c.waiting} now); answer them on Home or on the agent's row at /agent-host. Working and waiting count only this server's agents; ${c.elsewhere} run in other AnviDeck servers sharing the registry.${read.unfollowed ? ` Now: ${unfollowedText(read.unfollowed)}.` : ""}`;
+  return `${src} Waiting on you = agents with a permission request parked, or interrupted and waiting for your message (${c.waiting} now); answer them on Home or on the agent's row at /agent-host. Working and waiting count only this server's agents; ${c.elsewhere} run in other AnviDeck servers sharing the registry.${read.unfollowed ? ` Now: ${unfollowedText(read.unfollowed)}.` : ""}`;
 }

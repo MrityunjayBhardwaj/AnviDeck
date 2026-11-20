@@ -20,6 +20,9 @@ import { write, WriteError } from "../write";
 import type { PushAnswer, PushPlanAnswer } from "../../shared/push-pr-types";
 import { agentRequests, keepCardsOf } from "./PermissionRequests";
 import { keepModeControlsOf, modeControl } from "./ModeControl";
+import { keepModelControlsOf, modelControl } from "./ModelControl";
+import { createRunOptionsPicker, type RunOptionsPicker } from "../shell/run-options";
+import { runOptionsLine } from "../../shared/agent-run-options";
 import { refusalCall } from "./RefusalCall";
 import { elsewhereText, elsewhereUrl } from "../../shared/agent-elsewhere";
 import { githubAccessInfo, githubAccessLine, type GithubAccess, type GithubAccessInfo, type GithubAccessRead } from "../../shared/github-access";
@@ -274,7 +277,10 @@ function paint(): void {
   if (!root || !d || !root.isConnected && root.childElementCount > 0) return;
   const agents = hostAgents();
   keepCardsOf(agents as unknown as AskingAgent[]);
-  keepModeControlsOf(new Set(agents.filter((x) => x.running && !x.exiting && !x.runsElsewhere).map((x) => x.id)));
+  const runningHere = new Set(agents.filter((x) => x.running && !x.exiting && !x.runsElsewhere).map((x) => x.id));
+  keepModeControlsOf(runningHere);
+  keepModelControlsOf(runningHere);
+  for (const id of [...resumePickers.keys()]) if (runningHere.has(id) || !agents.some((x) => x.id === id)) resumePickers.delete(id);
   const sel = selected();
 
   const gridBtn = el("button", `aw-btn${d.route.grid ? " on" : ""}`, d.route.grid ? "Tabs" : "2×2 grid");
@@ -502,10 +508,19 @@ function modeChip(a: HostAgent): HTMLElement {
 }
 
 function statusChip(a: HostAgent): HTMLElement {
+  // Interrupted (#304): its turn was cut short and it waits for your message.
+  if (a.interrupted && a.running) {
+    const chip = el("span", "aw-chip warn", "interrupted · send it a message");
+    chip.dataset.interrupted = a.interrupted;
+    return chip;
+  }
   const waiting = a.pendingPermissions.length;
   const cls = waiting ? "warn" : a.status === "failed" ? "bad" : a.status === "done" ? "ok" : "";
   return el("span", `aw-chip ${cls}`, waiting ? `waiting on you · ${waiting}` : a.status);
 }
+
+/** The model and effort beside each Resume (#305), kept across redraws so a choice is not reset. */
+const resumePickers = new Map<string, RunOptionsPicker>();
 
 function controls(a: HostAgent, out: HTMLElement): HTMLElement {
   const box = el("span", "r");
@@ -538,6 +553,25 @@ function controls(a: HostAgent, out: HTMLElement): HTMLElement {
     stop.onclick = () => void act("Stop", `/api/agents/${encodeURIComponent(a.id)}/stop`);
     // Its mode can be changed while it runs (#306); Full access is set when an agent starts.
     if (a.mode !== "bypassPermissions") box.append(modeControl(a), " ");
+    // Its model too, from its next turn (#305).
+    box.append(modelControl(a), " ");
+    // Interrupt (#304), as Esc in the terminal: its turn stops, the session stays for your message.
+    if (a.interrupted) {
+      const note = el("span", "aw-note aw-warn", "interrupted: your next message goes on from here ");
+      note.dataset.interrupted = a.interrupted;
+      box.append(note);
+    } else if (a.interrupting) {
+      box.append(el("span", "aw-note", "interrupting… "));
+    } else {
+      const intr = el("button", "aw-btn sm", "Interrupt");
+      intr.dataset.act = "interrupt";
+      intr.title = "Stop what it is doing now; it stays running and waits for your message (no resume needed). Requests it asked are withdrawn.";
+      intr.onclick = () =>
+        void act("Interrupt", `/api/agents/${encodeURIComponent(a.id)}/interrupt`).then(() => {
+          if (out.classList.contains("aw-ok")) S.composers.get(a.id)?.querySelector("textarea")?.focus();
+        });
+      box.append(intr, " ");
+    }
     box.append(stop);
   } else if (a.sessionId) {
     // Its result is in and its process is exiting (#105): no Stop; a resume ends it first (#126).
@@ -549,13 +583,27 @@ function controls(a: HostAgent, out: HTMLElement): HTMLElement {
     const resume = el("button", "aw-btn sm", "Resume");
     resume.dataset.act = "resume";
     resume.title = "Resume its session; the message box's text, if any, is the prompt (else \"Continue.\")";
+    // The model and effort it resumes on (#305): what it had, unless chosen again here.
+    let picker = resumePickers.get(a.id);
+    if (!picker) {
+      picker = createRunOptionsPicker(`aw-resume-${a.id}`, { folders: false, kept: { model: a.requestedModel, effort: a.effort } });
+      resumePickers.set(a.id, picker);
+      void picker.load();
+    }
+    const p = picker;
     resume.onclick = () => {
       const ta = S.composers.get(a.id)?.querySelector("textarea");
-      void act("Resume", `/api/agents/${encodeURIComponent(a.id)}/resume`, { prompt: ta?.value ?? "" }).then(() => {
+      const o = p.body();
+      if (!o.ok) {
+        out.className = "aw-composer-out aw-err";
+        out.textContent = `Resume refused: ${o.why}`;
+        return;
+      }
+      void act("Resume", `/api/agents/${encodeURIComponent(a.id)}/resume`, { prompt: ta?.value ?? "", ...o.body }).then(() => {
         if (ta && out.classList.contains("aw-ok")) ta.value = "";
       });
     };
-    box.append(resume);
+    box.append(p.element, " ", resume);
   }
   // An agent under Agent GitHub access None commits but cannot push (#147): you do it, here (#268).
   if (!a.runsElsewhere && !a.running && a.githubAccess === "none") {
@@ -754,6 +802,8 @@ function hostDetail(a: HostAgent): HTMLElement {
         ["folder", a.cwd],
         ["session", a.sessionId ?? "not reported yet"],
         ["model", a.model ?? "not reported yet"],
+        // What was asked for (#305): the model, the effort and the extra folders it may work in.
+        ["asked for", runOptionsLine(a)],
         ["permission mode", modeLine(a.mode, a.permissionMode).text],
         ["GitHub", githubAccessLine(a.githubAccess).text],
         ["login source", a.apiKeySource === undefined ? "not reported yet" : a.apiKeySource === "none" ? "claude.ai login (apiKeySource none)" : `NOT the login: ${a.apiKeySource}`],
@@ -1131,6 +1181,7 @@ const STATE_ICON: Record<ToolCall["state"], [string, string, string]> = {
   blocked: ["✕", "aw-err", "blocked by a hook"],
   denied: ["✕", "aw-warn", "denied"],
   "no-result": ["?", "aw-warn", "no result recorded"],
+  interrupted: ["■", "aw-warn", "cut short by your interrupt"],
 };
 
 function log(tl: Timeline, last: number | undefined, cwd: string | undefined): HTMLElement {

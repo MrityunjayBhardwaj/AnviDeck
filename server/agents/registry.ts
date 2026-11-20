@@ -1,5 +1,6 @@
 import type { AgentMode } from "../../shared/agent-modes";
 import type { GithubAccess } from "../../shared/github-access";
+import type { Effort } from "../../shared/agent-run-options";
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, linkSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -138,7 +139,17 @@ export interface AgentRecord {
   /** What that access took out of its environment (names only). */
   githubRemoved?: string[];
   claudeCodeVersion?: string;
+  /** The model Claude Code reported at init on the last turn, as it said it. */
   model?: string;
+  /**
+   * The model asked for (#305), a value from Claude Code's own list ("sonnet", "claude-opus-5"):
+   * at the start, the resume, or changed while it ran. Absent: Claude Code's default model.
+   */
+  requestedModel?: string;
+  /** The effort level asked for (#305). Absent: the model's default. */
+  effort?: Effort;
+  /** Folders it may work in besides its own (#305, Claude Code's additionalDirectories). */
+  extraDirs?: string[];
   /** The claude binary the last run used, as PATH named it and what it pointed at. */
   claudePath?: string;
   claudeRealPath?: string;
@@ -150,6 +161,14 @@ export interface AgentRecord {
   updatedAt: string;
   runs: number;
   messageCount: number;
+}
+
+/**
+ * Every folder an agent works in (#305): its own, then its extra folders. Wherever AnviDeck asks
+ * who is working where (Undo, Code edits, a held folder), each of these counts as the agent's.
+ */
+export function agentFolders(a: Pick<AgentRecord, "cwd" | "extraDirs">): string[] {
+  return [a.cwd, ...(Array.isArray(a.extraDirs) ? a.extraDirs.filter((d) => typeof d === "string") : [])];
 }
 
 export interface TranscriptLine {

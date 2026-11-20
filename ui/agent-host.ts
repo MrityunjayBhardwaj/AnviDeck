@@ -14,6 +14,9 @@ import { elsewhereText, type RunsElsewhere } from "../shared/agent-elsewhere";
 import { agentRequests, keepCardsOf, onAnswerSent } from "./components/PermissionRequests";
 
 interface Agent {
+  /** Interrupted by you (#304), when; an interrupt on its way (#304). */
+  interrupted?: string;
+  interrupting?: string;
   id: string;
   /** Its result is in and its Claude Code process is exiting (#105): no Stop; Resume ends it first (#126). */
   exiting?: { since: string; endsBy: string };
@@ -255,6 +258,13 @@ function renderList(): void {
     } else if (live && !a.exiting) {
       const b = el("button", { "data-act": "stop" }, "Stop");
       b.onclick = (ev) => { ev.stopPropagation(); void act(() => call("POST", `/${a.id}/stop`)); };
+      // Interrupt (#304): its turn stops, it stays running and waits for a message.
+      if (a.interrupted) actions.append(el("span", { class: "k", "data-interrupted": a.interrupted }, "interrupted: message it to go on "));
+      else if (!a.interrupting) {
+        const i = el("button", { "data-act": "interrupt" }, "Interrupt");
+        i.onclick = (ev) => { ev.stopPropagation(); void act(() => call("POST", `/${a.id}/interrupt`)); };
+        actions.append(i, " ");
+      }
       actions.append(b);
     } else if (a.sessionId) {
       // Its result is in and its process is exiting (#105): no Stop; a resume ends it first (#126).
@@ -268,7 +278,7 @@ function renderList(): void {
     const tr = el("tr", { "data-id": a.id, class: a.id === selected ? "sel" : "" },
       el("td", {}, a.id),
       el("td", {}, el("span", { class: "status", style: `color:${STATUS_COLOR[a.status] ?? "inherit"}` },
-        a.status === "waiting" ? `waiting on you (${a.pendingPermissions.map((p) => p.toolName).join(", ")})` : a.status),
+        a.interrupted && a.running ? "interrupted, waits for your message" : a.status === "waiting" ? `waiting on you (${a.pendingPermissions.map((p) => p.toolName).join(", ")})` : a.status),
         // Its parked permission requests (#77), each with Allow and Deny.
         ...agentRequests(a)),
       el("td", { class: modeLine(a.mode, a.permissionMode).wide ? "err" : "", "data-mode": a.mode ?? "default" }, modeLine(a.mode, a.permissionMode).text),

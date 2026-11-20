@@ -96,7 +96,7 @@ export { EDIT_TOOLS };
 /** The part of the agent host this module asks (AgentHost satisfies it). */
 export interface HostLike {
   readonly registry: { dir: string };
-  list(): { id: string; status: string; running: boolean; cwd: string; prompt: string; sessionId?: string }[];
+  list(): { id: string; status: string; running: boolean; cwd: string; extraDirs?: string[]; prompt: string; sessionId?: string }[];
   transcript(id: string): { lines: { at: string; from: string; message: unknown }[]; unreadable: number };
 }
 
@@ -105,6 +105,8 @@ export interface AgentFact {
   status: string;
   running: boolean;
   cwd: string;
+  /** Folders it may work in besides its own (#305): each holds files it may write, as its own does. */
+  extraDirs?: string[];
   prompt: string;
   /** Claude Code's session id, once its init arrived: its live session file has this id (#252). */
   sessionId?: string;
@@ -130,7 +132,7 @@ export function agentFacts(host: HostLike): AgentFact[] {
     } catch (e) {
       unreadable = `its transcript could not be read: ${(e as Error).message}`;
     }
-    return { id: a.id, status: a.status, running: a.running, cwd: a.cwd, prompt: a.prompt, ...(a.sessionId ? { sessionId: a.sessionId } : {}), edits, ...(unreadable ? { unreadable } : {}) };
+    return { id: a.id, status: a.status, running: a.running, cwd: a.cwd, ...(a.extraDirs?.length ? { extraDirs: a.extraDirs } : {}), prompt: a.prompt, ...(a.sessionId ? { sessionId: a.sessionId } : {}), edits, ...(unreadable ? { unreadable } : {}) };
   });
 }
 
@@ -167,8 +169,10 @@ export function touching(abs: string, agents: AgentFact[], keyOf: (p: string) =>
   for (const a of agents) {
     if (!isLive(a)) continue;
     const cwd = realOr(a.cwd);
-    if (inside(file, cwd)) {
-      out.push({ id: a.id, status: a.status, why: "works in this folder", detail: `agent ${a.id} (${a.status}) works in ${a.cwd}, which holds this file` });
+    // Its own folder or one of its extra folders (#305): either may be written at any moment.
+    const holder = [a.cwd, ...(a.extraDirs ?? [])].find((d) => inside(file, realOr(d)));
+    if (holder) {
+      out.push({ id: a.id, status: a.status, why: "works in this folder", detail: `agent ${a.id} (${a.status}) works in ${holder}${holder === a.cwd ? "" : " (one of its extra folders)"}, which holds this file` });
       continue;
     }
     const hit = a.edits.find((e) => realOr(e.abs) === file || (fileKey !== null && keyOf(e.abs) === fileKey));

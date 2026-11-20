@@ -1,13 +1,14 @@
 import { randomUUID, type UUID } from "node:crypto";
-import { closeSync, existsSync, openSync, readSync, realpathSync, statSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { closeSync, existsSync, openSync, readFileSync, readSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
+import { homedir } from "node:os";
 import type {
   Options,
   PermissionResult,
   SDKMessage,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import { AgentRegistry, LIVE_STATUSES, ownerProcessAlive, RegistryLockedError, type AgentOwner, type AgentRecord, type AgentStatus, type TranscriptLine } from "./registry";
+import { AgentRegistry, agentFolders, LIVE_STATUSES, ownerProcessAlive, RegistryLockedError, type AgentOwner, type AgentRecord, type AgentStatus, type TranscriptLine } from "./registry";
 import { explainStartFailure, loginOnlyEnv, resolveClaude, type AgentEnv, type ClaudeBinary } from "./login";
 import { messagesIn, parseMessageRequest, renderForAgent, type SentMessage } from "../../shared/agent-messages";
 import { checkAnswers, parsePermissionAnswer, PLAN_TOOL, QUESTION_TOOL, readQuestions, type PendingPermission } from "../../shared/permission-requests";
@@ -16,6 +17,7 @@ import { checkMode, checkModeChange, DEFAULT_MODE, FULL_ACCESS_CONFIRM, fullAcce
 import { githubAccessInfo, unavailable, type GithubAccess, type GithubAccessRead } from "../../shared/github-access";
 import { emptyGhConfigDir, readGithubAccess, withGithubAccess } from "./github-access";
 import type { CheckpointStore } from "./checkpoints";
+import { checkRunOptions, EFFORTS, readModels, type ModelList, type RunOptions } from "../../shared/agent-run-options";
 
 export type { PendingPermission };
 
@@ -163,8 +165,24 @@ interface Live {
   cutOff?: string;
   /** A resume waits for this run's process to exit, then launches the next run (#126). */
   handoff?: () => void;
-  /** The running query's mode switch (#306), once Claude Code has started. */
-  query?: { setPermissionMode(mode: AgentMode): Promise<void> };
+  /** The running query's controls, once Claude Code has started: mode (#306), interrupt (#304), model (#305). */
+  query?: {
+    setPermissionMode(mode: AgentMode): Promise<void>;
+    interrupt?: () => Promise<unknown>;
+    setModel?: (model?: string) => Promise<void>;
+    supportedModels?: () => Promise<unknown>;
+  };
+  /** An interrupt was sent (#304) and the turn it cuts short has not ended yet. */
+  interrupting?: string;
+  /**
+   * The turn was cut short by an interrupt (#304): the run stays open and waits for your message,
+   * which starts the next turn on the same Claude Code session, as after Esc in the terminal.
+   */
+  interrupted?: string;
+  /** A model change is on its way to Claude Code (#305): another waits until it has landed. */
+  modelChanging?: boolean;
+  /** The model list was asked of this run once (#305). */
+  askedModels?: boolean;
   /** While a move to another mode is on its way to Claude Code: the mode it is leaving, which still passes the safety check. */
   modeAllowance?: AgentMode;
   /** Timers of this run (exit grace, message wait), cleared when it ends. */
@@ -196,6 +214,10 @@ export type AgentView = AgentRecord & {
    * resume ends that process first (#126). `endsBy`: when AnviDeck ends it at the latest.
    */
   exiting?: { since: string; endsBy: string };
+  /** Interrupted by you (#304), when: its turn was cut short and it waits for your message. */
+  interrupted?: string;
+  /** An interrupt is on its way to Claude Code (#304), sent when. */
+  interrupting?: string;
 };
 
 export interface HostDeps {
@@ -378,7 +400,8 @@ export class AgentHost {
     this.holds.delete(id);
   }
 
-  private refuseHeld(id: string | null, cwd: string): void {
+  /** Refused while this agent, or an agent whose folder is one of `folders` (its own or an extra one, #305), is held. */
+  private refuseHeld(id: string | null, folders: string[]): void {
     const real = (p: string) => {
       try {
         return realpathSync(p);
@@ -386,8 +409,9 @@ export class AgentHost {
         return p;
       }
     };
+    const mine = new Set(folders.map(real));
     for (const [hid, h] of this.holds) {
-      if (hid === id || real(h.cwd) === real(cwd)) throw new HostError(409, `${hid === id ? "this agent" : `agent ${hid}, in the same folder,`} is busy: ${h.what}; try again when it is done`, { refusal: "busy" });
+      if (hid === id || mine.has(real(h.cwd))) throw new HostError(409, `${hid === id ? "this agent" : `agent ${hid}, in ${h.cwd},`} is busy: ${h.what}; try again when it is done`, { refusal: "busy" });
     }
   }
 
@@ -678,6 +702,107 @@ export class AgentHost {
   }
 
   /**
+   * The model, effort and extra folders a start or resume asks for (#305), checked against the
+   * models Claude Code offers on this login (checkRunOptions), and each extra folder against the
+   * disk. Enforced here, on the server; the dialogs only show them.
+   */
+  checkRunOptions(body: { model?: unknown; effort?: unknown; extraDirs?: unknown }, cwd?: string, kept?: string): RunOptions {
+    // A resume keeps the model the agent ran on (`kept`) even if the list has not been read on this
+    // server: it was checked when chosen. Any other model needs the list.
+    const list = this.models() ?? (kept && body.model === kept ? { models: [{ value: kept, displayName: kept, efforts: [...EFFORTS] }], at: "", from: "the agent's own record" } : null);
+    const c = checkRunOptions(body, list, cwd);
+    if (!c.ok) throw new HostError(c.status, c.error);
+    for (const d of c.options.extraDirs ?? []) {
+      let ok = false;
+      try {
+        ok = statSync(d).isDirectory();
+      } catch {
+        ok = false;
+      }
+      if (!ok) throw new HostError(400, `extra folder ${d} does not exist or is not a folder`);
+    }
+    return c.options;
+  }
+
+  private modelList: ModelList | null | undefined;
+  private get modelsFile(): string {
+    return join(this.registry.dir, "models.json");
+  }
+
+  /**
+   * The models Claude Code offers on this login, as it last said (#305): kept from each agent's
+   * run (`supportedModels()` once it has started) or from Read models, in models.json in
+   * AnviDeck's own folder so the dialogs have it after a restart. Null: never read.
+   */
+  models(): ModelList | null {
+    if (this.modelList !== undefined) return this.modelList;
+    try {
+      const j = JSON.parse(readFileSync(this.modelsFile, "utf8")) as Partial<ModelList>;
+      const models = readModels(j.models);
+      this.modelList = models.length && typeof j.at === "string" && typeof j.from === "string" ? { models, at: j.at, from: j.from } : null;
+    } catch {
+      this.modelList = null;
+    }
+    return this.modelList;
+  }
+
+  private keepModels(raw: unknown, from: string): ModelList | null {
+    const models = readModels(raw);
+    if (!models.length) return null;
+    const list: ModelList = { models, at: new Date().toISOString(), from };
+    this.modelList = list;
+    try {
+      const tmp = `${this.modelsFile}.tmp`;
+      writeFileSync(tmp, JSON.stringify(list, null, 2));
+      renameSync(tmp, this.modelsFile);
+    } catch (e) {
+      console.error("[agents] the model list could not be saved:", (e as Error).message);
+    }
+    return list;
+  }
+
+  /**
+   * Read models (#305): start Claude Code in `cwd` without a prompt, ask it which models this
+   * login offers, and end it. No message is sent to the model, so it costs no usage; Claude Code
+   * does run its SessionStart hooks, as any start in that folder does. A press in a dialog.
+   */
+  async lookupModels(cwdIn: unknown): Promise<ModelList> {
+    // In your home folder unless a folder is named (a folder's settings can narrow the list).
+    const cwd = cwdIn === undefined || cwdIn === null || cwdIn === "" ? homedir() : typeof cwdIn === "string" ? cwdIn.trim() : "";
+    if (!cwd || !isAbsolute(cwd)) throw new HostError(400, "folder must be an absolute path: the models are read as Claude Code offers them there");
+    let isDir = false;
+    try {
+      isDir = statSync(cwd).isDirectory();
+    } catch {
+      isDir = false;
+    }
+    if (!isDir) throw new HostError(400, `folder ${cwd} does not exist or is not a folder`);
+    const claude = this.requireClaude();
+    const input = new MessageQueue();
+    const abort = new AbortController();
+    const q = this.queryFn({ prompt: input, options: { cwd, pathToClaudeCodeExecutable: claude.path, env: this.envFn().env, abortController: abort, permissionMode: "plan" } });
+    const ask = (q as { supportedModels?: () => Promise<unknown> }).supportedModels;
+    try {
+      if (typeof ask !== "function") throw new Error("this Claude Code cannot list its models");
+      const timeout = new Promise<never>((_, no) => setTimeout(() => no(new Error("Claude Code did not answer within 30 s")), 30_000).unref?.());
+      const raw = await Promise.race([ask.call(q), timeout]);
+      const list = this.keepModels(raw, `Read models in ${cwd}`);
+      if (!list) throw new Error("Claude Code listed no models");
+      return list;
+    } catch (e) {
+      throw new HostError(502, `the models could not be read: ${(e as Error).message}`);
+    } finally {
+      input.end();
+      abort.abort();
+      try {
+        q.close?.();
+      } catch {
+        /* already closed */
+      }
+    }
+  }
+
+  /**
    * The permission mode a start asks for, checked against this machine's cap (#249): 400 for a
    * mode that is not one, or Full access without its confirmation; 403 for one above the cap; 409
    * for Full access confirmed for another Agent GitHub access than the setting now (#270).
@@ -713,7 +838,7 @@ export class AgentHost {
   }
 
   /** Start an agent in `cwd` with `prompt`. Refused, not queued, when the cap is reached. */
-  start(req: { cwd: unknown; prompt: unknown; issue?: unknown; mode?: unknown; confirm?: unknown; githubAccess?: unknown }): AgentView {
+  start(req: { cwd: unknown; prompt: unknown; issue?: unknown; mode?: unknown; confirm?: unknown; githubAccess?: unknown; model?: unknown; effort?: unknown; extraDirs?: unknown }): AgentView {
     const cwd = typeof req.cwd === "string" ? req.cwd.trim() : "";
     const prompt = typeof req.prompt === "string" ? req.prompt.trim() : "";
     if (!cwd || !isAbsolute(cwd)) throw new HostError(400, "folder must be an absolute path");
@@ -731,7 +856,8 @@ export class AgentHost {
       if (!Number.isInteger(issue) || issue <= 0) throw new HostError(400, "issue must be a positive whole number");
     }
     const mode = this.checkStartMode(req.mode, req.confirm, req.githubAccess);
-    this.refuseHeld(null, cwd);
+    const run = this.checkRunOptions(req, cwd);
+    this.refuseHeld(null, [cwd, ...(run.extraDirs ?? [])]);
     const github = this.requireGithubAccess();
     const claude = this.requireClaude();
     const now = new Date().toISOString();
@@ -742,6 +868,9 @@ export class AgentHost {
       prompt,
       issue,
       mode,
+      ...(run.model ? { requestedModel: run.model } : {}),
+      ...(run.effort ? { effort: run.effort } : {}),
+      ...(run.extraDirs ? { extraDirs: run.extraDirs } : {}),
       status: "starting",
       createdAt: now,
       updatedAt: now,
@@ -761,15 +890,20 @@ export class AgentHost {
   }
 
   /** Resume a finished, failed or stopped agent's session with a new prompt. */
-  resume(id: string, promptIn: unknown): AgentView {
+  resume(id: string, promptIn: unknown, choices: { model?: unknown; effort?: unknown; extraDirs?: unknown } = {}): AgentView {
     const found = this.find(id);
     if (!found) throw new HostError(404, `no agent ${id}`);
     // A finished agent whose process is still exiting can be resumed: that process is ended and
     // the resume starts once it has exited (#126). One still in its turn cannot.
     const exiting = this.live.get(id);
-    if (exiting && !this.isExiting(exiting)) throw new HostError(409, exiting.handoff ? "agent is already being resumed" : "agent is still running");
+    if (exiting && !this.isExiting(exiting)) {
+      throw new HostError(409, exiting.handoff ? "agent is already being resumed" : exiting.interrupted ? "the agent is interrupted and still running: send it a message to go on, no resume needed" : "agent is still running");
+    }
     this.refuseElsewhere(found, "resume it");
-    this.refuseHeld(id, found.cwd);
+    // A resume keeps the model, effort and extra folders it had, unless the body chooses again (#305).
+    const kept = { model: found.requestedModel, effort: found.effort, extraDirs: found.extraDirs };
+    const opts = this.checkRunOptions({ ...kept, ...Object.fromEntries(Object.entries(choices).filter(([, v]) => v !== undefined)) }, found.cwd, found.requestedModel);
+    this.refuseHeld(id, [found.cwd, ...(opts.extraDirs ?? [])]);
     if (!found.sessionId) throw new HostError(409, "agent never reached Claude Code, so there is no session to resume; start a new one");
     const prompt = typeof promptIn === "string" && promptIn.trim() ? promptIn.trim() : "Continue.";
     // A resume keeps the mode it was started in, and is refused if the cap has been lowered since.
@@ -785,7 +919,7 @@ export class AgentHost {
       const now = i >= 0 ? agents[i]! : found;
       this.refuseElsewhere(now, "resume it");
       this.checkCap(agents, exiting ? id : undefined);
-      const claimed: AgentRecord = { ...now, owner: this.owner, status: "starting", reason: undefined, updatedAt: new Date().toISOString() };
+      const claimed: AgentRecord = { ...now, owner: this.owner, status: "starting", reason: undefined, updatedAt: new Date().toISOString(), requestedModel: opts.model, effort: opts.effort, extraDirs: opts.extraDirs };
       const next = [...agents];
       if (i >= 0) next[i] = claimed;
       else next.push(claimed);
@@ -857,6 +991,13 @@ export class AgentHost {
       throw new HostError(409, `agent is not running (${this.view(rec).status})`);
     }
     if (live.handoff) throw new HostError(409, "the agent is being resumed; stop it once it has started", { status: rec.status });
+    // Interrupted, waiting for your message (#304): Stop ends the run, as at any other time it runs.
+    if (live.interrupted) {
+      for (const u of live.undelivered) this.record(id, "host", { event: "message-not-delivered", messageId: u, reason: `${reason} before Claude Code took it in` });
+      live.undelivered.clear();
+      this.endRun(id, live, { status: "stopped", reason });
+      return this.view(rec);
+    }
     // Its result is in: Stop would only relabel it (#114). Its process is ended for it (#105).
     if (this.isExiting(live)) {
       throw new HostError(409, `agent is already ${rec.status}: its result stands, and its Claude Code process is exiting (AnviDeck ends it within ${Math.round(this.exitGraceMs / 1000)} s of the result)`, {
@@ -1012,6 +1153,87 @@ export class AgentHost {
     return this.view(rec);
   }
 
+  /** A running agent, for a control sent while it runs; 409 saying why when it is not running here. */
+  private running409(id: string, doing: string): { rec: AgentRecord; live: Live } {
+    const live = this.live.get(id);
+    const rec = live ? this.agents.get(id) : this.find(id);
+    if (!rec) throw new HostError(404, `no agent ${id}`);
+    if (!live) this.refuseElsewhere(rec, doing);
+    if (!live || live.ending || live.handoff || this.isExiting(live)) {
+      const shown = this.view(rec);
+      throw new HostError(409, `the agent is not running (${shown.status}); you can ${doing} only while it runs`, { status: shown.status });
+    }
+    if (!live.query) throw new HostError(409, `Claude Code has not started yet; ${doing} once it runs`);
+    return { rec, live };
+  }
+
+  /**
+   * Interrupt (#304), as Esc in the terminal: Claude Code stops what it is doing now and its turn
+   * ends, but the session stays open; your next message starts the next turn, no resume needed.
+   * Only while a turn is under way. Requests it had parked are withdrawn first, with the reason.
+   */
+  interrupt(id: string): AgentView {
+    const { rec, live } = this.running409(id, "interrupt it");
+    if (!live.query!.interrupt) throw new HostError(409, "this Claude Code cannot be interrupted; stop it instead");
+    if (live.interrupted) throw new HostError(409, "the agent is already interrupted and waits for your message");
+    if (live.interrupting) throw new HostError(409, "an interrupt is already on its way to Claude Code");
+    if (live.turnOver) throw new HostError(409, "the agent's turn is already over: there is nothing to interrupt");
+    const at = new Date().toISOString();
+    live.interrupting = at;
+    const withdrawn = live.pending.size;
+    this.withdrawAll(id, live, "interrupted by you");
+    this.record(id, "host", { event: "interrupt-sent", ...(withdrawn ? { withdrawn } : {}) });
+    if (rec.status === "waiting") rec.status = "working";
+    this.changed(rec);
+    void live.query!.interrupt().then(
+      (receipt) => {
+        const still = (receipt as { still_queued?: unknown } | undefined)?.still_queued;
+        if (Array.isArray(still) && still.length) this.record(id, "host", { event: "interrupt-receipt", stillQueued: still });
+      },
+      (e: unknown) => {
+        if (live.interrupting !== at || this.live.get(id) !== live) return;
+        live.interrupting = undefined;
+        this.record(id, "host", { event: "interrupt-failed", reason: (e as Error)?.message ?? String(e) });
+        this.changed(rec);
+      },
+    );
+    return this.view(rec);
+  }
+
+  /**
+   * Change a running agent's model (#305), as /model in the terminal: checked against the models
+   * Claude Code offers, recorded on the agent (a resume keeps it), then sent (`setModel`). It
+   * applies from the next turn; the card shows the model Claude Code reports, not the one asked.
+   */
+  setModel(id: string, body: Record<string, unknown>): AgentView {
+    const { rec, live } = this.running409(id, "change its model");
+    if (!live.query!.setModel) throw new HostError(409, "this Claude Code cannot change its model while it runs");
+    if (live.modelChanging) throw new HostError(409, "a model change is still on its way to Claude Code; try again in a moment");
+    const c = checkRunOptions({ model: body.model, effort: undefined }, this.models());
+    if (!c.ok) throw new HostError(c.status, c.error);
+    const from = rec.requestedModel;
+    const to = c.options.model;
+    if (from === to) return this.view(rec);
+    rec.requestedModel = to;
+    live.modelChanging = true;
+    this.record(id, "host", { event: "model-changed", from: from ?? "default", to: to ?? "default" });
+    this.changed(rec);
+    void live.query!.setModel(to).then(
+      () => {
+        live.modelChanging = false;
+        this.record(id, "host", { event: "model-confirmed", model: to ?? "default" });
+      },
+      (e: unknown) => {
+        live.modelChanging = false;
+        if (live.ending || this.live.get(id) !== live) return;
+        rec.requestedModel = from;
+        this.record(id, "host", { event: "model-change-failed", from: from ?? "default", to: to ?? "default", reason: (e as Error)?.message ?? String(e) });
+        this.changed(rec);
+      },
+    );
+    return this.view(rec);
+  }
+
   /** The one place a running agent's mode changes (#303, #306): recorded on it and in its transcript. */
   private switchMode(rec: AgentRecord, live: Live, to: AgentMode, via: string): void {
     const from = rec.mode ?? DEFAULT_MODE;
@@ -1143,7 +1365,7 @@ export class AgentHost {
       const endsBy = new Date(Date.parse(live.exitingSince!) + this.exitGraceMs).toISOString();
       return { ...a, running: true, pendingPermissions, exiting: { since: live.exitingSince!, endsBy } };
     }
-    return { ...a, running: true, pendingPermissions };
+    return { ...a, running: true, pendingPermissions, ...(live.interrupted ? { interrupted: live.interrupted } : {}), ...(live.interrupting ? { interrupting: live.interrupting } : {}) };
   }
 
   private launch(rec: AgentRecord, prompt: string, claude: ClaudeBinary, resumeId: string | undefined, github: GithubAccess): void {
@@ -1185,6 +1407,9 @@ export class AgentHost {
       event: resumeId ? "resumed" : "started",
       prompt,
       mode,
+      ...(rec.requestedModel ? { model: rec.requestedModel } : {}),
+      ...(rec.effort ? { effort: rec.effort } : {}),
+      ...(rec.extraDirs?.length ? { extraDirs: rec.extraDirs } : {}),
       githubAccess: github,
       githubRemoved: removed,
       claudePath: claude.path,
@@ -1201,6 +1426,10 @@ export class AgentHost {
       resume: resumeId,
       // Always said, never left to the folder's settings, so the agent runs in the mode shown (#249).
       permissionMode: mode,
+      // Only what was asked for (#305): absent, Claude Code uses its own default.
+      ...(rec.requestedModel ? { model: rec.requestedModel } : {}),
+      ...(rec.effort ? { effort: rec.effort } : {}),
+      ...(rec.extraDirs?.length ? { additionalDirectories: rec.extraDirs } : {}),
       // Under Full access Claude Code approves every call before any callback is asked (only deny
       // rules still stop one), so no permission callback is given: the SDK warns that it would never
       // be called (sdk.mjs, CLAUDE_SDK_CAN_USE_TOOL_SHADOWED), and nothing can come to you to answer.
@@ -1220,8 +1449,17 @@ export class AgentHost {
         return;
       }
       live.close = q.close?.bind(q);
-      const set = (q as { setPermissionMode?: unknown }).setPermissionMode;
-      if (typeof set === "function") live.query = { setPermissionMode: (m) => (set as (m: AgentMode) => Promise<void>).call(q, m) };
+      const o = q as unknown as Record<string, unknown>;
+      const fn = <T extends unknown[], R>(name: string) => (typeof o[name] === "function" ? (...a: T) => (o[name] as (...a: T) => Promise<R>).apply(q, a) : undefined);
+      const set = fn<[AgentMode], void>("setPermissionMode");
+      if (set) {
+        live.query = {
+          setPermissionMode: set,
+          interrupt: fn<[], unknown>("interrupt"),
+          setModel: fn<[string?], void>("setModel"),
+          supportedModels: fn<[], unknown>("supportedModels"),
+        };
+      }
       void this.consume(rec, live, q);
     };
     const store = this.checkpoints;
@@ -1285,6 +1523,15 @@ export class AgentHost {
         });
         return;
       }
+      // The models this login offers (#305), asked once per run, kept for the start dialogs.
+      const ask = live.query?.supportedModels;
+      if (ask && !live.askedModels) {
+        live.askedModels = true;
+        void ask().then(
+          (raw) => this.keepModels(raw, `agent ${rec.id}'s Claude Code`),
+          (e: unknown) => console.error(`[agents] ${rec.id}: the model list could not be read:`, (e as Error)?.message ?? e),
+        );
+      }
       if (rec.status === "starting") this.setStatus(rec, "working");
       else this.changed(rec);
       return;
@@ -1303,6 +1550,25 @@ export class AgentHost {
     if (m.type === "result") {
       live.sawResult = true;
       rec.costEstimateUsd = m.total_cost_usd;
+      // The turn an interrupt cut short (#304): Claude Code ends it with an error result (seen:
+      // error_during_execution, terminal_reason aborted_streaming) and its session stays open. The
+      // run waits for your message instead of ending. A turn that finished before the interrupt
+      // landed ends as usual.
+      if (live.interrupting) {
+        const at = live.interrupting;
+        live.interrupting = undefined;
+        if (m.subtype !== "success" || m.is_error || String((m as { terminal_reason?: unknown }).terminal_reason ?? "").startsWith("aborted")) {
+          live.interrupted = at;
+          live.turnOver = { status: "done", reason: "interrupted by you; its turn was cut short" };
+          this.record(rec.id, "host", { event: "interrupted", requested: at, result: m.subtype, terminalReason: (m as { terminal_reason?: unknown }).terminal_reason });
+          this.checkpointTurn(rec, live, "after-turn");
+          rec.reason = undefined;
+          this.setStatus(rec, "waiting");
+          if (live.undelivered.size) this.waitForMessages(rec, live);
+          return;
+        }
+        this.record(rec.id, "host", { event: "interrupt-too-late", requested: at, reason: "the turn had finished before the interrupt reached Claude Code" });
+      }
       if (!live.sawInit) {
         live.turnOver = { status: "failed", reason: "Claude Code ended before it said which login it was using" };
       } else if (m.subtype === "success" && !m.is_error) {
@@ -1374,7 +1640,8 @@ export class AgentHost {
    * exits (see header), and take the turn's status. True when it did.
    */
   private maybeEndTurn(rec: AgentRecord, live: Live): boolean {
-    if (!live.turnOver || live.undelivered.size || !live.input.open || live.ending) return false;
+    // Interrupted (#304): the session stays open for your next message, however long that takes.
+    if (!live.turnOver || live.undelivered.size || !live.input.open || live.ending || live.interrupted) return false;
     live.input.end();
     rec.status = live.turnOver.status;
     rec.reason = live.turnOver.reason;
@@ -1408,6 +1675,11 @@ export class AgentHost {
         live.turnsStarted += 1;
       }
       live.turnOver = undefined;
+      // After an interrupt (#304) the message starts the next turn: the agent works again.
+      if (live.interrupted) {
+        live.interrupted = undefined;
+        if (rec.status === "waiting" && live.pending.size === 0) rec.status = "working";
+      }
     }
     for (const r of refused) {
       if (!live.undelivered.delete(r.uuid)) continue;

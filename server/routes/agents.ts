@@ -48,6 +48,8 @@ export function agentRoutes(
       modes: { cap: host.modeCap.cap, from: host.modeCap.from, ...(host.modeCap.invalid ? { invalid: host.modeCap.invalid } : {}), offered: modesOffered(host.modeCap) },
       // Agent GitHub access (#147): the setting, and each choice with why it cannot be picked yet.
       githubAccess: { setting: host.githubAccess(), options: GITHUB_ACCESS.map((g) => ({ ...g, unavailable: unavailable(g.access) })) },
+      // The models Claude Code offers on this login, as last read (#305); null: never read yet.
+      models: host.models(),
       running: host.running,
       registry: host.registry.dir,
       // This server, as its agents name it; an agent with runsElsewhere is another server's (#104).
@@ -88,10 +90,23 @@ export function agentRoutes(
     return c.json({ setting: host.githubAccess(), running: host.running });
   });
 
+  // How an agent was asked to run (#305), for the action log: the model, effort and extra folders.
+  const runAudit = (c: { set: unknown }, b: Record<string, unknown>) => {
+    const d: Record<string, string> = {};
+    if (typeof b.model === "string" && b.model) d.model = b.model;
+    if (typeof b.effort === "string" && b.effort) d.effort = b.effort;
+    if (Array.isArray(b.extraDirs) && b.extraDirs.length) d.extraDirs = b.extraDirs.map(String).join(", ");
+    if (Object.keys(d).length) (c.set as (k: string, v: unknown) => void)(AUDIT_KEY, d);
+  };
+
   r.post("/", async (c) => {
     const b = await body(c);
-    return c.json(host.start({ cwd: b.cwd, prompt: b.prompt, issue: b.issue, mode: b.mode, confirm: b.confirm, githubAccess: b.githubAccess }), 201);
+    runAudit(c, b);
+    return c.json(host.start({ cwd: b.cwd, prompt: b.prompt, issue: b.issue, mode: b.mode, confirm: b.confirm, githubAccess: b.githubAccess, model: b.model, effort: b.effort, extraDirs: b.extraDirs }), 201);
   });
+  // Read models (#305): Claude Code started in { cwd } without a prompt says which models this
+  // login offers; kept for the dialogs. A write (it starts Claude Code): only from the desktop app.
+  r.post("/models/read", async (c) => c.json(await host.lookupModels((await body(c)).cwd)));
   // Start an agent from an issue, in its own worktree (#78). The GET says what it would do, or
   // why it would refuse, without making anything; the POST does it.
   r.get("/from-issue/plan", async (c) => c.json(await fromIssue.plan(c.req.query())));
@@ -99,11 +114,16 @@ export function agentRoutes(
   // which pushes only the branch and commit the card showed.
   r.get("/:id/push-pr", async (c) => c.json(await pushPr.plan(c.req.param("id"))));
   r.post("/:id/push-pr", async (c) => c.json(await pushPr.push(c.req.param("id"), await body(c)), 201));
-  r.post("/from-issue", async (c) => c.json(await fromIssue.start(await body(c)), 201));
+  r.post("/from-issue", async (c) => {
+    const b = await body(c);
+    runAudit(c, b);
+    return c.json(await fromIssue.start(b), 201);
+  });
   r.post("/:id/stop", (c) => c.json(host.stop(c.req.param("id"))));
   r.post("/:id/resume", async (c) => {
     const b = await body(c);
-    return c.json(host.resume(c.req.param("id"), b.prompt));
+    runAudit(c, b);
+    return c.json(host.resume(c.req.param("id"), b.prompt, { model: b.model, effort: b.effort, extraDirs: b.extraDirs }));
   });
   // Talk to a running agent (#79): { text } or { comment: { file, line, lineText, text } }.
   // 202: queued, its delivery follows in the transcript. 409 { resumable }: not running.
@@ -131,6 +151,15 @@ export function agentRoutes(
     const before = host.get(id).mode ?? "default";
     (c.set as (k: string, v: unknown) => void)(AUDIT_KEY, { from: before, to: String(b.mode) });
     return c.json(host.setMode(id, b));
+  });
+  // Interrupt (#304): the agent's turn is cut short, its session stays open for your next message.
+  r.post("/:id/interrupt", (c) => c.json(host.interrupt(c.req.param("id"))));
+  // Change a running agent's model (#305): { model }, one Claude Code offers ("" for its default).
+  r.post("/:id/model", async (c) => {
+    const b = await body(c);
+    const id = c.req.param("id");
+    (c.set as (k: string, v: unknown) => void)(AUDIT_KEY, { from: host.get(id).requestedModel ?? "default", to: typeof b.model === "string" && b.model ? b.model : "default" });
+    return c.json(host.setModel(id, b));
   });
   // Checkpoints per turn (#248): what each turn changed; Undo's preview (GET) and press (POST,
   // { current }); Clear. The GETs write nothing to the agent's folder or the record.
