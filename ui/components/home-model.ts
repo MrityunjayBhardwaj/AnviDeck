@@ -422,7 +422,8 @@ export interface AgentsModel {
 }
 
 function hostRow(a: StripAgent): AgentRow {
-  const waiting = a.pendingPermissions.length > 0;
+  // A parked request, or interrupted and waiting for your message (#304): either needs you.
+  const waiting = a.pendingPermissions.length > 0 || !!a.interrupted;
   const firstLine = (a.prompt ?? "").split("\n").find((l) => l.trim()) ?? "";
   const dot: AgentRow["dot"] = waiting ? "warn" : a.status === "working" || a.status === "starting" ? "info" : a.status === "failed" ? "bad" : a.status === "done" ? "ok" : "muted";
   return {

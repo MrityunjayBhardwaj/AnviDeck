@@ -24,7 +24,7 @@ import { AgentHost, HostError, type AgentView } from "./host";
 import { CheckpointError } from "./checkpoints";
 import { readLiveSessionsReport } from "../readers/sessions";
 import { sessionEdits, type SessionEdits } from "../readers/session-edits";
-import { LIVE_STATUSES } from "./registry";
+import { agentFolders, LIVE_STATUSES } from "./registry";
 import type { CheckpointsAnswer, UndoAnswer, UndoPlan } from "../../shared/checkpoint-types";
 import type { ReadReport } from "../../shared/types";
 
@@ -82,6 +82,8 @@ export class AgentTurns {
    */
   private busy(a: AgentView): { why: string | null; warnings: string[] } {
     const warnings: string[] = [];
+    // Checkpoints are of its own folder only (#305): what it changed in an extra folder stays.
+    if (a.extraDirs?.length) warnings.push(`Undo puts back only ${a.cwd}: its extra folders (${a.extraDirs.join(", ")}) are not in its checkpoints, so what it changed there stays`);
     const no = (why: string) => ({ why, warnings });
     if (a.runsElsewhere) return no(`it runs on another AnviDeck server (pid ${a.runsElsewhere.pid}); stop it there first`);
     if (a.running || LIVE_STATUSES.has(a.status)) return no(`it is ${a.status}; stop it first`);
@@ -94,9 +96,13 @@ export class AgentTurns {
     }
     for (const o of others) {
       if (o.id === a.id || !(o.running || o.runsElsewhere || LIVE_STATUSES.has(o.status))) continue;
-      const there = realOr(o.cwd);
-      if (within(there, here)) return no(`agent ${o.id} is ${o.status} in ${o.cwd}`);
-      if (above(there, here)) warnings.push(`agent ${o.id} is ${o.status} in ${o.cwd}, which holds this folder: make sure it is not editing here`);
+      // Each folder it works in counts: its own and its extra folders (#305).
+      for (const d of agentFolders(o)) {
+        const there = realOr(d);
+        const which = d === o.cwd ? `in ${d}` : `with ${d} as an extra folder`;
+        if (within(there, here)) return no(`agent ${o.id} is ${o.status} ${which}`);
+        if (above(there, here)) warnings.push(`agent ${o.id} is ${o.status} ${which}, which holds this folder: make sure it is not editing here`);
+      }
     }
     let read: ReturnType<SessionsRead>;
     try {

@@ -70,7 +70,7 @@ export interface Refusal {
   text: string;
 }
 
-export type ToolState = "running" | "ok" | "error" | "refused" | "blocked" | "denied" | "no-result";
+export type ToolState = "running" | "ok" | "error" | "refused" | "blocked" | "denied" | "no-result" | "interrupted";
 
 export interface ToolCall {
   kind: "tool";
@@ -86,6 +86,8 @@ export interface ToolCall {
   hooks: HookRun[];
   context: GivenContext[];
   hookLog: HookLogRow[];
+  /** Its turn was cut short by your interrupt (#304) before it had a result. */
+  cutShort?: boolean;
   /** A permission request the host parked for this call, and what became of it. */
   permission?: { requestId: string; answer?: "allow" | "deny" | "withdrawn"; message?: string; reason?: string };
   /**
@@ -284,7 +286,7 @@ function isOwnerText(s: string): boolean {
 
 function settle(t: ToolCall, live: boolean): void {
   if (t.permission?.answer === "deny" || t.permission?.answer === "withdrawn") t.state = "denied";
-  else if (!t.result) t.state = live ? "running" : "no-result";
+  else if (!t.result) t.state = t.cutShort ? "interrupted" : live ? "running" : "no-result";
   else if (t.refusal) t.state = "refused";
   else if (t.result.isError && /^PreToolUse:\w+ hook (?:error|blocking)/.test(t.result.text)) t.state = "blocked";
   else t.state = t.result.isError ? "error" : "ok";
@@ -318,10 +320,27 @@ export function buildTimeline(input: TimelineInput): Timeline {
     t.hooks.push({ source: "transcript", name, event: str(a.hookEvent) || undefined, outcome, ms: typeof a.durationMs === "number" ? a.durationMs : undefined });
   };
 
+  // An interrupt was sent (#304): the next turn result that is not a success is the turn it cut short.
+  let interruptSent = false;
   for (const l of input.lines) {
     const m = l.message;
     if (l.from === "host") {
       const ev = str(m.event);
+      if (ev === "interrupt-sent") {
+        interruptSent = true;
+        items.push({ kind: "event", at: l.at, text: `you interrupted it${typeof m.withdrawn === "number" ? ` (${m.withdrawn} request${m.withdrawn === 1 ? "" : "s"} withdrawn)` : ""}`, tone: "info" });
+        continue;
+      }
+      if (ev === "interrupt-too-late" || ev === "interrupt-failed") {
+        interruptSent = false;
+        items.push({ kind: "event", at: l.at, text: ev === "interrupt-failed" ? `the interrupt failed: ${str(m.reason)}` : "the interrupt came after the turn had finished", tone: ev === "interrupt-failed" ? "bad" : "info" });
+        continue;
+      }
+      // The model asked for while it ran (#305): from its next turn.
+      if (ev === "model-changed" || ev === "model-change-failed") {
+        items.push({ kind: "event", at: l.at, text: ev === "model-changed" ? `model ${str(m.from)} → ${str(m.to)}, from its next turn` : `model change to ${str(m.to)} refused by Claude Code: ${str(m.reason)}; it stays on ${str(m.from)}`, tone: ev === "model-changed" ? "info" : "bad" });
+        continue;
+      }
       if (ev === "started" || ev === "resumed") {
         items.push({ kind: "you", at: l.at, text: str(m.prompt) });
         if (ev === "resumed") items.push({ kind: "event", at: l.at, text: "resumed", tone: "info" });
@@ -359,6 +378,13 @@ export function buildTimeline(input: TimelineInput): Timeline {
     }
     if (m.type === "result" && l.from === "sdk") {
       const ok = m.subtype === "success" && !m.is_error;
+      if (interruptSent && !ok) {
+        interruptSent = false;
+        for (const t of tools) if (!t.result) t.cutShort = true;
+        items.push({ kind: "event", at: l.at, text: "turn cut short by your interrupt: your next message goes on from here", tone: "warn" });
+        continue;
+      }
+      interruptSent = false;
       items.push({ kind: "event", at: l.at, text: ok ? "turn finished" : `turn ended: ${str(m.subtype)}`, tone: ok ? "ok" : "bad" });
       continue;
     }
@@ -615,6 +641,14 @@ export interface HostAgent {
   costEstimateUsd?: number;
   /** How many runs it has had (start, then each resume). */
   runs?: number;
+  /** The model, effort and extra folders asked for (#305); `model` above is what Claude Code reports. */
+  requestedModel?: string;
+  effort?: string;
+  extraDirs?: string[];
+  /** Interrupted by you (#304): its turn was cut short and it waits for your message. */
+  interrupted?: string;
+  /** An interrupt is on its way to Claude Code (#304). */
+  interrupting?: string;
   pendingPermissions: { requestId: string; toolName: string; input: Record<string, unknown>; askedAt: string; decisionReason?: string; blockedPath?: string; toolUseId?: string; subagent?: { id: string; type?: string; description?: string } }[];
 }
 
