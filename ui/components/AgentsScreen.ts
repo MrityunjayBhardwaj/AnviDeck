@@ -16,7 +16,8 @@
  * Writes go through ui/write.ts only. All text from agents is set as text, never as HTML.
  */
 import { modeLine } from "../../shared/agent-modes";
-import { write, WriteError } from "../write";
+import { inDesktop, write, WriteError } from "../write";
+import { type NotifyKind, type NotifyRead } from "../../shared/notifications";
 import type { PushAnswer, PushPlanAnswer } from "../../shared/push-pr-types";
 import { agentRequests, keepCardsOf } from "./PermissionRequests";
 import { keepModeControlsOf, modeControl } from "./ModeControl";
@@ -83,6 +84,8 @@ interface Overview {
   registryUnread?: string;
   /** Agent GitHub access (#147): the setting, and each choice with why it cannot be picked yet. Absent from older servers. */
   githubAccess?: { setting: GithubAccessRead; options: (GithubAccessInfo & { unavailable: string | null })[] };
+  /** Desktop notifications (#314): the setting and what each kind means. Absent from older servers. */
+  notifications?: { setting: NotifyRead; kinds: { kind: NotifyKind; label: string; means: string }[] };
 }
 
 // ── state kept across renders (the screen is rebuilt on every navigation) ───────────────────
@@ -297,7 +300,7 @@ function paint(): void {
     el("span", "aw-sub", "agents AnviDeck started, live · sessions started in a terminal, view only"),
     el("div", "aw-acts", gridBtn, newBtn));
 
-  const kids: HTMLElement[] = [head, hostLine(d.hostAgents), githubLine(), tabsRow(agents, sel)];
+  const kids: HTMLElement[] = [head, hostLine(d.hostAgents), githubLine(), notifyLine(), tabsRow(agents, sel)];
   if (d.route.grid) kids.push(grid(agents));
   else if (sel?.kind === "host") kids.push(hostDetail(sel.agent));
   else if (sel?.kind === "terminal") kids.push(terminalDetail(sel.sid));
@@ -417,6 +420,56 @@ function githubLine(): HTMLElement {
   if (G.said) {
     const said = el("span", G.said.ok ? "aw-ok" : "aw-err", ` ${G.said.text}`);
     said.id = "aw-github-said";
+    line.append(said);
+  }
+  return line;
+}
+
+/** What the last notification save said, kept across repaints. */
+const N = { said: null as { ok: boolean; text: string } | null };
+
+/**
+ * Desktop notifications (#314): a box per kind, saved when ticked. Only the desktop app notifies,
+ * and never while its window is in front; in a browser the boxes are shown but cannot be changed.
+ */
+function notifyLine(): HTMLElement {
+  const line = el("div", "aw-note");
+  line.id = "aw-notify";
+  const o = S.overview;
+  if (o.state !== "ok" || !o.data.notifications) return line;
+  const { setting: s, kinds } = o.data.notifications;
+  line.append("Notify me, when the app's window is not in front, of: ");
+  if (s.status !== "ok") {
+    line.append(el("span", "aw-err", `the setting could not be read (${s.file}: ${s.reason}); every kind is notified until it is fixed. `));
+    return line;
+  }
+  const desktop = inDesktop();
+  for (const k of kinds) {
+    const box = el("input") as HTMLInputElement;
+    box.type = "checkbox";
+    box.id = `aw-notify-${k.kind}`;
+    box.checked = s.settings[k.kind];
+    box.disabled = !desktop;
+    box.onchange = async () => {
+      box.disabled = true;
+      try {
+        await write("POST", "/api/agents/settings/notifications", { [k.kind]: box.checked });
+        N.said = { ok: true, text: `Saved: ${k.label.toLowerCase()} ${box.checked ? "on" : "off"}.` };
+        loadOverview();
+      } catch (e) {
+        N.said = { ok: false, text: `Not saved: ${e instanceof WriteError ? e.message : (e as Error).message}` };
+        paint();
+      }
+    };
+    const lab = el("label", "");
+    lab.title = k.means;
+    lab.append(box, ` ${k.label} `);
+    line.append(lab);
+  }
+  if (!desktop) line.append(el("span", "aw-note", "(set in the desktop app; this browser page never notifies)"));
+  if (N.said) {
+    const said = el("span", N.said.ok ? "aw-ok" : "aw-err", ` ${N.said.text}`);
+    said.id = "aw-notify-said";
     line.append(said);
   }
   return line;

@@ -4,8 +4,10 @@ import api from "./routes/api";
 import ws, { broadcast } from "./routes/ws";
 import { installGuard } from "./guard";
 import { ActionLog, actionRoutes } from "./action-log";
-import { DESKTOP_ORIGINS, isFromApp } from "./desktop";
+import { DESKTOP_ORIGINS, emit, isFromApp } from "./desktop";
 import type { AgentHost } from "./agents/host";
+import { Notifier, readNotify } from "./notify";
+import type { Notice } from "../shared/notifications";
 
 /**
  * The whole app, every route mounted, nothing served or watched yet (#241). server/index.ts
@@ -18,6 +20,11 @@ export async function buildApp(opts: {
   log?: ActionLog;
   /** Tests pass a host with a fake agent runner, so no check can ever start a real agent. */
   makeAgentHost?: () => AgentHost;
+  /**
+   * Where a desktop notification goes (#314). In the desktop app: to the app, on its private
+   * channel. Without the app (a browser, `bun run dev`) nothing notifies.
+   */
+  notify?: (n: Notice) => void;
 }) {
   const app = new Hono();
   const actionLog = opts.log ?? new ActionLog();
@@ -45,6 +52,19 @@ export async function buildApp(opts: {
   const { createAgentHost } = await import("./routes/agents");
   const agents = opts.makeAgentHost ? createAgentHost(broadcast, opts.makeAgentHost) : createAgentHost(broadcast);
   app.route("/api/agents", agents.api);
+  // Desktop notifications (#314): the moments an agent needs you, to the app; it shows them only
+  // while its window is not in front.
+  const notify = opts.notify ?? (opts.desktop ? (n: Notice) => emit("NOTIFY", n) : undefined);
+  const host = agents.host;
+  if (notify && host) {
+    const notifier = new Notifier({
+      mine: (v) => v.owner?.instance === host.owner.instance,
+      settings: () => readNotify(host.registry.dir),
+      send: notify,
+      log: (line) => console.error(line),
+    });
+    host.addListener((e) => notifier.see(e));
+  }
   app.route("/", agents.page);
   // Project · Code (#88): its edits ask the agent host which files a running agent is touching.
   app.route("/api/code", (await import("./routes/code")).codeRoutes({ host: () => agents.host, hostOff: () => "the agent host is off: its registry could not be read (GET /api/agents says why)" }));

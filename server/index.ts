@@ -5,6 +5,7 @@ import { websocket } from "hono/bun";
 import { bindHost, isLoopback } from "./access";
 import { DESKTOP, emit, serveWritePipe } from "./desktop";
 import { buildApp } from "./app";
+import { APP_CLOSED, SHUT_DOWN } from "../shared/notifications";
 
 const hostname = bindHost();
 // Every route, behind the guard: reads on loopback, writes only through the desktop app (#241).
@@ -27,7 +28,7 @@ process.on("SIGINT", () => {
   console.log("\nShutting down...");
   stopWatching();
   stopHookLogs();
-  agents.stopAll("AnviDeck shut down");
+  agents.stopAll(SHUT_DOWN);
   process.exit(0);
 });
 
@@ -61,7 +62,7 @@ if (DESKTOP) {
     onClose: () => {
       stopWatching();
       stopHookLogs();
-      agents.stopAll("AnviDeck app closed");
+      agents.stopAll(APP_CLOSED);
       process.exit(0);
     },
   });

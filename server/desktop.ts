@@ -11,6 +11,10 @@ import type { Hono } from "hono";
  *   in:  {"id": 7, "method": "POST", "path": "/api/agents/a-1/stop", "body": {...}}
  *   out: <RS>ANVIDECK-REPLY {"id": 7, "status": 200, "body": {...}}
  *
+ * The server also tells the app, unasked, when an agent needs you (#314, server/notify.ts):
+ *
+ *   out: <RS>ANVIDECK-NOTIFY {"agentId": "a-1", "kind": "permission", "key": "…", "title": "…", "body": "…"}
+ *
  * dispatch() runs each one through the same app (guard, action log, routes) by calling app.fetch
  * in-process with FROM_APP, an env object no HTTP request can carry, so every route and the log
  * behave as they would for any request, and the guard knows it came from the app.
@@ -29,7 +33,7 @@ export const isFromApp = (env: unknown): boolean => !!env && typeof env === "obj
 
 /** Lines the app reads; anything else on stdout is a log line. */
 const RS = "\u001e";
-export function emit(kind: "READY" | "REPLY", payload: unknown): void {
+export function emit(kind: "READY" | "REPLY" | "NOTIFY", payload: unknown): void {
   process.stdout.write(`${RS}ANVIDECK-${kind} ${JSON.stringify(payload)}\n`);
 }
 
