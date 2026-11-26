@@ -15,7 +15,7 @@ import { dispatch } from "../server/desktop";
 import { ActionLog } from "../server/action-log";
 import { readNotify, writeNotify } from "../server/notify";
 import { modeCapFrom } from "../shared/agent-modes";
-import { DEFAULT_NOTIFY, noticesFor, type Notice, type NoticeAgent } from "../shared/notifications";
+import { DEFAULT_NOTIFY, noticesFor, notifyKnownProblem, type Notice, type NoticeAgent } from "../shared/notifications";
 
 const dirs: string[] = [];
 const scratch = () => {
@@ -230,6 +230,8 @@ describe("the server tells the app when an agent needs you (#314)", () => {
     const got = await (await app.fetch(new Request("http://127.0.0.1:4999/api/agents", { headers: { host: "127.0.0.1:4999" } }))).json();
     expect(got.notifications.setting).toMatchObject({ status: "ok", source: "set", settings: { permission: true, question: true, ended: false } });
     expect(got.notifications.kinds.map((k: { kind: string }) => k.kind)).toEqual(["permission", "question", "ended"]);
+    // The parked macOS problem (#320) is said beside the boxes on a Mac, and only there.
+    expect(got.notifications.knownProblem).toEqual(notifyKnownProblem(process.platform));
     const log = await (await app.fetch(new Request("http://127.0.0.1:4999/api/actions", { headers: { host: "127.0.0.1:4999" } }))).json();
     const line = JSON.stringify(log);
     expect(line).toContain("ended on");
@@ -272,5 +274,16 @@ describe("the server tells the app when an agent needs you (#314)", () => {
     expect(app.length).toBe(1);
     expect(app[0].startsWith("\u001eANVIDECK-NOTIFY {")).toBe(true);
     expect(JSON.parse(app[0].slice(app[0].indexOf("{")))).toMatchObject({ kind: "permission", body: "The agent asks to use Bash." });
+  });
+});
+
+describe("the known problem showing notifications (#320, parked)", () => {
+  test("on macOS it is said, naming the issue; elsewhere nothing is said", () => {
+    const mac = notifyKnownProblem("darwin");
+    expect(mac?.issue).toBe(320);
+    expect(mac?.text).toContain("do not appear");
+    expect(mac?.text).toContain("#320");
+    expect(notifyKnownProblem("linux")).toBeNull();
+    expect(notifyKnownProblem("win32")).toBeNull();
   });
 });

@@ -14,7 +14,7 @@ import { AgentRegistry } from "../agents/registry";
 import { modesOffered } from "../../shared/agent-modes";
 import { writeGithubAccess } from "../agents/github-access";
 import { readNotify, writeNotify } from "../notify";
-import { isNotifyKind, NOTIFY_INFO, NOTIFY_KINDS, type NotifySettings } from "../../shared/notifications";
+import { isNotifyKind, NOTIFY_INFO, NOTIFY_KINDS, notifyKnownProblem, type NotifySettings } from "../../shared/notifications";
 import { GITHUB_ACCESS, githubAccessInfo, isGithubAccess, unavailable } from "../../shared/github-access";
 
 // The write guard (writes only from the desktop app's channel, #241) and the action log are installed
@@ -50,7 +50,7 @@ export function agentRoutes(
       modes: { cap: host.modeCap.cap, from: host.modeCap.from, ...(host.modeCap.invalid ? { invalid: host.modeCap.invalid } : {}), offered: modesOffered(host.modeCap) },
       // Agent GitHub access (#147): the setting, and each choice with why it cannot be picked yet.
       githubAccess: { setting: host.githubAccess(), options: GITHUB_ACCESS.map((g) => ({ ...g, unavailable: unavailable(g.access) })) },
-      notifications: { setting: readNotify(host.registry.dir), kinds: NOTIFY_KINDS.map((k) => ({ kind: k, ...NOTIFY_INFO[k] })) },
+      notifications: { setting: readNotify(host.registry.dir), kinds: NOTIFY_KINDS.map((k) => ({ kind: k, ...NOTIFY_INFO[k] })), knownProblem: notifyKnownProblem(process.platform) },
       // The models Claude Code offers on this login, as last read (#305); null: never read yet.
       models: host.models(),
       running: host.running,
