@@ -85,7 +85,7 @@ interface Overview {
   /** Agent GitHub access (#147): the setting, and each choice with why it cannot be picked yet. Absent from older servers. */
   githubAccess?: { setting: GithubAccessRead; options: (GithubAccessInfo & { unavailable: string | null })[] };
   /** Desktop notifications (#314): the setting and what each kind means. Absent from older servers. */
-  notifications?: { setting: NotifyRead; kinds: { kind: NotifyKind; label: string; means: string }[] };
+  notifications?: { setting: NotifyRead; kinds: { kind: NotifyKind; label: string; means: string }[]; knownProblem?: { issue: number; text: string } | null };
 }
 
 // ── state kept across renders (the screen is rebuilt on every navigation) ───────────────────
@@ -467,6 +467,12 @@ function notifyLine(): HTMLElement {
     line.append(lab);
   }
   if (!desktop) line.append(el("span", "aw-note", "(set in the desktop app; this browser page never notifies)"));
+  const kp = o.data.notifications.knownProblem;
+  if (kp) {
+    const warn = el("span", "aw-err", ` ${kp.text}`);
+    warn.id = "aw-notify-known";
+    line.append(warn);
+  }
   if (N.said) {
     const said = el("span", N.said.ok ? "aw-ok" : "aw-err", ` ${N.said.text}`);
     said.id = "aw-notify-said";

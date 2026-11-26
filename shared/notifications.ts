@@ -18,6 +18,17 @@ export const NOTIFY_INFO: Record<NotifyKind, { label: string; means: string }> =
   ended: { label: "Runs that end", means: "an agent finishes, fails, or is stopped by something other than you" },
 };
 
+/**
+ * A known problem with showing notifications on this platform, said wherever you would turn them on.
+ * macOS (#320, parked): the app hands each notification to macOS, which records it as presented,
+ * yet nothing appears on screen, so there is nothing to click.
+ */
+export function notifyKnownProblem(platform: string): { issue: number; text: string } | null {
+  if (platform === "darwin")
+    return { issue: 320, text: "On macOS these notifications do not appear yet: macOS takes them but shows nothing (#320, parked). Keep an eye on Home or Agents instead." };
+  return null;
+}
+
 export type NotifySettings = Record<NotifyKind, boolean>;
 /** Every kind is on until you turn it off. */
 export const DEFAULT_NOTIFY: NotifySettings = { permission: true, question: true, ended: true };
